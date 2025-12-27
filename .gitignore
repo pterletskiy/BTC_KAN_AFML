@@ -1,0 +1,9 @@
+# Ignorar ambientes virtuais
+env_ML/
+.conda/
+venv/
+
+# Ignorar dados e ficheiros temporários do Jupyter
+.ipynb_checkpoints/
+data/
+*.csv
