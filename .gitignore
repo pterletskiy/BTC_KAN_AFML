@@ -1,3 +1,7 @@
+# Pastas de resultados e modelos (adicionado agora)
+figures/
+model/
+
 # Ignorar ambientes virtuais
 env_ML/
 .conda/
