@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -70,8 +70,7 @@ def fetch_primary_asset(
     ticker: str,
     start: str = "2014-09-17",
     end: str = "2026-02-07",
-    interval: str = "1d",
-) -> pd.DataFrame:
+    interval: str = "1d") -> pd.DataFrame:
     """Download OHLCV data for a single primary asset via yfinance.
 
     Parameters
@@ -116,8 +115,7 @@ def fetch_coinmetrics(
     asset: str = "btc",
     metrics: Optional[List[str]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-02-07",
-) -> pd.DataFrame:
+    end: str = "2026-02-07") -> pd.DataFrame:
     """Fetch on-chain metrics from the CoinMetrics community API.
 
     If *metrics* is ``None``, **all** available daily metrics for the
@@ -160,8 +158,7 @@ def fetch_coinmetrics(
         metrics=metrics,
         start_time=start,
         end_time=end,
-        frequency="1d",
-    )
+        frequency="1d")
     df = raw.to_dataframe()
 
     # Drop the 'asset' column if present
@@ -207,8 +204,7 @@ BLOCKCHAIN_COM_METRICS: Dict[str, str] = {
 def fetch_blockchain_com(
     metrics: Optional[Dict[str, str]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-02-07",
-) -> pd.DataFrame:
+    end: str = "2026-02-07") -> pd.DataFrame:
     """Fetch on-chain data from the Blockchain.com public charts API.
 
     Parameters
@@ -593,18 +589,142 @@ def load_from_config(config: Dict[str, Any]) -> pd.DataFrame:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Multi-Asset Catalog & Date Helper
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Registry of known assets and their available secondary data sources.
+#: ``category`` controls which menus appear in the interactive wizard.
+#: Crypto assets get on-chain options; traditional assets do not.
+ASSET_CATALOG: Dict[str, Dict[str, Any]] = {
+    # ── Crypto ─────────────────────────────────────────────────────────
+    "BTC-USD": {
+        "name": "Bitcoin",
+        "category": "crypto",
+        "onchain_asset": "btc",
+        "onchain_providers": ["coinmetrics", "blockchain_com", "both"],
+        "macro_options": {
+            "DX-Y.NYB": "US Dollar Index (DXY)",
+            "^VIX":     "CBOE Volatility Index (VIX)",
+            "^TNX":     "10-Year Treasury Yield",
+            "^IRX":     "3-Month T-Bill Rate",
+            "^GSPC":    "S&P 500 Index",
+        },
+    },
+    "ETH-USD": {
+        "name": "Ethereum",
+        "category": "crypto",
+        "onchain_asset": "eth",
+        "onchain_providers": ["coinmetrics"],  # blockchain.com is BTC-only
+        "macro_options": {
+            "DX-Y.NYB": "US Dollar Index (DXY)",
+            "^VIX":     "CBOE Volatility Index (VIX)",
+            "^TNX":     "10-Year Treasury Yield",
+            "^IRX":     "3-Month T-Bill Rate",
+        },
+    },
+    "SOL-USD": {
+        "name": "Solana",
+        "category": "crypto",
+        "onchain_asset": "sol",
+        "onchain_providers": ["coinmetrics"],
+        "macro_options": {
+            "DX-Y.NYB": "US Dollar Index (DXY)",
+            "^VIX":     "CBOE Volatility Index (VIX)",
+            "^TNX":     "10-Year Treasury Yield",
+        },
+    },
+    # ── Traditional ───────────────────────────────────────────────────
+    "GLD": {
+        "name": "SPDR Gold Shares (Gold ETF)",
+        "category": "traditional",
+        "macro_options": {
+            "DX-Y.NYB": "US Dollar Index (DXY)",
+            "^VIX":     "CBOE Volatility Index (VIX)",
+            "^TNX":     "10-Year Treasury Yield",
+            "^IRX":     "3-Month T-Bill Rate",
+            "^GSPC":    "S&P 500 Index",
+            "SI=F":     "Silver Futures",
+        },
+    },
+    "SLV": {
+        "name": "iShares Silver Trust (Silver ETF)",
+        "category": "traditional",
+        "macro_options": {
+            "DX-Y.NYB": "US Dollar Index (DXY)",
+            "^VIX":     "CBOE Volatility Index (VIX)",
+            "^TNX":     "10-Year Treasury Yield",
+            "^IRX":     "3-Month T-Bill Rate",
+            "GC=F":     "Gold Futures",
+        },
+    },
+    "SPY": {
+        "name": "SPDR S&P 500 ETF",
+        "category": "traditional",
+        "macro_options": {
+            "DX-Y.NYB": "US Dollar Index (DXY)",
+            "^VIX":     "CBOE Volatility Index (VIX)",
+            "^TNX":     "10-Year Treasury Yield",
+            "^IRX":     "3-Month T-Bill Rate",
+            "GC=F":     "Gold Futures",
+            "CL=F":     "Crude Oil Futures",
+        },
+    },
+    "QQQ": {
+        "name": "Invesco QQQ Trust (Nasdaq-100 ETF)",
+        "category": "traditional",
+        "macro_options": {
+            "DX-Y.NYB": "US Dollar Index (DXY)",
+            "^VIX":     "CBOE Volatility Index (VIX)",
+            "^TNX":     "10-Year Treasury Yield",
+            "^GSPC":    "S&P 500 Index",
+        },
+    },
+}
+
+
+def prompt_date_range(
+    default_start: str = "2014-09-17",
+    default_end: str = "2026-02-07",
+) -> Tuple[str, str]:
+    """Prompt the user for a date range and return consistent dates.
+
+    This is the **single point of date input**.  Both returned strings
+    are used by every fetching function so that all data is aligned
+    to the same period.
+
+    Parameters
+    ----------
+    default_start, default_end : str
+        Fallback dates shown if the user presses Enter.
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(start_date, end_date)`` in ``'YYYY-MM-DD'`` format.
+    """
+    print("\n📅 Date Range")
+    print(f"  All data sources will use the same period.")
+    start = input(f"  Start date [YYYY-MM-DD] (default {default_start}): ").strip()
+    start = start if start else default_start
+    end = input(f"  End date   [YYYY-MM-DD] (default {default_end}): ").strip()
+    end = end if end else default_end
+    print(f"  → Period: {start} to {end}")
+    return start, end
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Interactive Notebook Config Builder
 # ═══════════════════════════════════════════════════════════════════════════
 def interactive_config() -> Dict[str, Any]:
     """Build a dataset configuration interactively via ``input()`` prompts.
 
-    Designed to be called from a Jupyter Notebook cell.  Walks the user
-    through selecting:
+    Multi-step wizard designed for Jupyter Notebook cells:
 
-    1. Primary asset ticker (with common presets).
-    2. Date range.
-    3. On-chain data provider (CoinMetrics / Blockchain.com / both / none).
-    4. Macro features (DXY, VIX, etc.).
+    1. **Asset Selection** — presets from :data:`ASSET_CATALOG` or custom.
+    2. **Date Range** — via :func:`prompt_date_range`.
+    3. **Secondary Data** — dynamic menu based on asset category:
+       - *Crypto* assets: on-chain provider selection + macro checklist.
+       - *Traditional* assets: macro checklist only.
 
     Returns
     -------
@@ -612,61 +732,131 @@ def interactive_config() -> Dict[str, Any]:
         A config dict compatible with :func:`load_from_config`.
     """
     print("=" * 60)
-    print("  MFW Dataset Configuration Wizard")
+    print("  MFW Multi-Asset Dataset Configuration Wizard")
     print("=" * 60)
 
-    # --- Primary asset ---
-    print("\n📈 Primary Asset")
-    print("  Common presets:")
-    print("    [1] BTC-USD  (Bitcoin)")
-    print("    [2] ETH-USD  (Ethereum)")
-    print("    [3] SPY      (S&P 500 ETF)")
-    print("    [4] GLD      (Gold ETF)")
-    print("    [5] Custom ticker")
-    choice = input("  Select [1-5]: ").strip()
-    preset_map = {"1": "BTC-USD", "2": "ETH-USD", "3": "SPY", "4": "GLD"}
-    if choice in preset_map:
-        ticker = preset_map[choice]
-    else:
-        ticker = input("  Enter custom yfinance ticker: ").strip()
-    print(f"  → Primary asset: {ticker}")
+    # ── Step 1: Asset Selection ────────────────────────────────────────
+    print("\n📈 Step 1 — Select the asset you want to predict")
+    catalog_keys = list(ASSET_CATALOG.keys())
+    for i, key in enumerate(catalog_keys, 1):
+        entry = ASSET_CATALOG[key]
+        cat_tag = "🟠 Crypto" if entry["category"] == "crypto" else "🔵 Traditional"
+        print(f"    [{i}] {key:10s}  {entry['name']:35s}  {cat_tag}")
+    print(f"    [{len(catalog_keys) + 1}] Custom ticker")
 
-    # --- Date range ---
-    print("\n📅 Date Range")
-    start = input("  Start date [YYYY-MM-DD] (default 2014-09-17): ").strip()
-    start = start if start else "2014-09-17"
-    end = input("  End date   [YYYY-MM-DD] (default 2026-02-07): ").strip()
-    end = end if end else "2026-02-07"
-    print(f"  → Period: {start} to {end}")
+    choice = input(f"  Select [1-{len(catalog_keys) + 1}]: ").strip()
 
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(catalog_keys):
+            ticker = catalog_keys[idx]
+            catalog_entry = ASSET_CATALOG[ticker]
+        else:
+            ticker = input("  Enter custom yfinance ticker (e.g. AAPL): ").strip()
+            cat_q = input("  Is this a crypto asset? [y/n] (default n): ").strip().lower()
+            category = "crypto" if cat_q == "y" else "traditional"
+            catalog_entry: Dict[str, Any] = {
+                "name": ticker,
+                "category": category,
+                "macro_options": {
+                    "DX-Y.NYB": "US Dollar Index (DXY)",
+                    "^VIX":     "CBOE Volatility Index (VIX)",
+                    "^TNX":     "10-Year Treasury Yield",
+                },
+            }
+            if category == "crypto":
+                oc_asset = input("  CoinMetrics asset id (e.g. btc, eth): ").strip().lower()
+                catalog_entry["onchain_asset"] = oc_asset or "btc"
+                catalog_entry["onchain_providers"] = ["coinmetrics"]
+    except ValueError:
+        ticker = choice
+        catalog_entry: Dict[str, Any] = {
+            "name": ticker, "category": "traditional",
+            "macro_options": {"DX-Y.NYB": "DXY", "^VIX": "VIX", "^TNX": "10Y Yield"},
+        }
+
+    print(f"  → Primary asset: {ticker} ({catalog_entry['name']})")
+    is_crypto = catalog_entry["category"] == "crypto"
+
+    # ── Step 2: Date Range ────────────────────────────────────────────
+    start, end = prompt_date_range()
+
+    # ── Step 3: Secondary Data Sources ────────────────────────────────
     feature_list: List[Dict[str, Any]] = []
 
-    # --- On-chain features ---
-    print("\n🔗 On-Chain Features")
-    print("  [1] CoinMetrics only")
-    print("  [2] Blockchain.com only")
-    print("  [3] Both providers")
-    print("  [4] None")
-    oc_choice = input("  Select [1-4]: ").strip()
-    if oc_choice in ("1", "2", "3"):
-        provider_map = {"1": "coinmetrics", "2": "blockchain_com", "3": "both"}
-        oc_asset = input(f"  Crypto asset for on-chain data (default 'btc'): ").strip()
-        oc_asset = oc_asset if oc_asset else "btc"
-        feature_list.append({
-            "source": "onchain",
-            "provider": provider_map[oc_choice],
-            "asset": oc_asset,
-        })
+    # 3a. On-chain data (crypto only)
+    if is_crypto:
+        providers = catalog_entry.get("onchain_providers", [])
+        oc_asset = catalog_entry.get("onchain_asset", "btc")
 
-    # --- Macro features ---
-    print("\n🌍 Macro Features (via yfinance)")
-    print("  Enter tickers separated by commas, or press Enter to skip.")
-    print("  Common: DX-Y.NYB (DXY), ^VIX, ^TNX (10Y yield), ^IRX (3M T-bill)")
-    macro_input = input("  Tickers: ").strip()
-    if macro_input:
-        for t in [s.strip() for s in macro_input.split(",") if s.strip()]:
-            feature_list.append({"source": "yfinance", "ticker": t})
+        print("\n🔗 Step 3a — On-Chain Data")
+        print(f"  Available providers for {ticker}:")
+        provider_options: List[str] = []
+        for i, prov in enumerate(providers, 1):
+            label = {
+                "coinmetrics": "CoinMetrics",
+                "blockchain_com": "Blockchain.com",
+                "both": "Both (CoinMetrics + Blockchain.com)",
+            }.get(prov, prov)
+            print(f"    [{i}] {label}")
+            provider_options.append(prov)
+        skip_idx = len(provider_options) + 1
+        print(f"    [{skip_idx}] None — skip on-chain data")
 
+        oc_choice = input(f"  Select [1-{skip_idx}]: ").strip()
+        try:
+            oc_idx = int(oc_choice) - 1
+            if 0 <= oc_idx < len(provider_options):
+                feature_list.append({
+                    "source": "onchain",
+                    "provider": provider_options[oc_idx],
+                    "asset": oc_asset,
+                })
+                print(f"  → On-chain: {provider_options[oc_idx]} ({oc_asset})")
+            else:
+                print("  → On-chain: skipped")
+        except ValueError:
+            print("  → On-chain: skipped")
+
+    # 3b. Macro features (all assets)
+    macro_opts = catalog_entry.get("macro_options", {})
+    if macro_opts:
+        step_label = "3b" if is_crypto else "3"
+        print(f"\n🌍 Step {step_label} — Macro / Market Features")
+        print(f"  Available for {ticker}:")
+        macro_keys = list(macro_opts.keys())
+        for i, (tk, desc) in enumerate(macro_opts.items(), 1):
+            print(f"    [{i}] {tk:12s}  {desc}")
+        print("  Enter the numbers you want, separated by commas.")
+        print("  Or press Enter to skip, or type 'all' to select everything.")
+
+        macro_input = input("  Selection: ").strip().lower()
+        if macro_input == "all":
+            selected_macros = macro_keys
+        elif macro_input:
+            selected_macros = []
+            for part in macro_input.split(","):
+                part = part.strip()
+                try:
+                    m_idx = int(part) - 1
+                    if 0 <= m_idx < len(macro_keys):
+                        selected_macros.append(macro_keys[m_idx])
+                except ValueError:
+                    # Allow direct ticker input as fallback
+                    if part:
+                        selected_macros.append(part)
+        else:
+            selected_macros = []
+
+        for tk in selected_macros:
+            feature_list.append({"source": "yfinance", "ticker": tk})
+
+        if selected_macros:
+            print(f"  → Macro features: {selected_macros}")
+        else:
+            print("  → Macro features: skipped")
+
+    # ── Build config ──────────────────────────────────────────────────
     config: Dict[str, Any] = {
         "ticker": ticker,
         "start": start,
@@ -678,7 +868,16 @@ def interactive_config() -> Dict[str, Any]:
     print("\n" + "=" * 60)
     print("  ✅ Configuration Ready")
     print("=" * 60)
-    print(f"  {config}")
+    n_secondary = len(feature_list)
+    print(f"  Asset:    {ticker}")
+    print(f"  Period:   {start} → {end}")
+    print(f"  Category: {catalog_entry['category']}")
+    print(f"  Secondary sources: {n_secondary}")
+    for spec in feature_list:
+        if spec["source"] == "onchain":
+            print(f"    • On-chain ({spec['provider']}, asset={spec['asset']})")
+        elif spec["source"] == "yfinance":
+            print(f"    • Macro: {spec['ticker']}")
     return config
 
 
@@ -692,11 +891,7 @@ DEFAULT_BTC_CONFIG: Dict[str, Any] = {
     "start": "2014-09-17",
     "end": "2026-02-07",
     "feature_list": [
-        {
-            "source": "onchain",
-            "provider": "coinmetrics",
-            "asset": "btc",
-        },
+        {"source": "onchain", "provider": "coinmetrics", "asset": "btc"},
     ],
 }
 
@@ -706,12 +901,46 @@ DEFAULT_BTC_FULL_CONFIG: Dict[str, Any] = {
     "start": "2014-09-17",
     "end": "2026-02-07",
     "feature_list": [
-        {
-            "source": "onchain",
-            "provider": "both",
-            "asset": "btc",
-        },
-        {"source": "yfinance", "ticker": "DX-Y.NYB"},   # DXY
-        {"source": "yfinance", "ticker": "^VIX"},        # VIX
+        {"source": "onchain", "provider": "both", "asset": "btc"},
+        {"source": "yfinance", "ticker": "DX-Y.NYB"},
+        {"source": "yfinance", "ticker": "^VIX"},
+        {"source": "yfinance", "ticker": "^TNX"},
+    ],
+}
+
+#: ETH config — CoinMetrics on-chain + macro.
+DEFAULT_ETH_CONFIG: Dict[str, Any] = {
+    "ticker": "ETH-USD",
+    "start": "2017-01-01",
+    "end": "2026-02-07",
+    "feature_list": [
+        {"source": "onchain", "provider": "coinmetrics", "asset": "eth"},
+        {"source": "yfinance", "ticker": "DX-Y.NYB"},
+        {"source": "yfinance", "ticker": "^VIX"},
+    ],
+}
+
+#: GLD config — Traditional macro features only.
+DEFAULT_GLD_CONFIG: Dict[str, Any] = {
+    "ticker": "GLD",
+    "start": "2010-01-01",
+    "end": "2026-02-07",
+    "feature_list": [
+        {"source": "yfinance", "ticker": "DX-Y.NYB"},
+        {"source": "yfinance", "ticker": "^VIX"},
+        {"source": "yfinance", "ticker": "^TNX"},
+    ],
+}
+
+#: SPY config — Traditional macro features only.
+DEFAULT_SPY_CONFIG: Dict[str, Any] = {
+    "ticker": "SPY",
+    "start": "2010-01-01",
+    "end": "2026-02-07",
+    "feature_list": [
+        {"source": "yfinance", "ticker": "DX-Y.NYB"},
+        {"source": "yfinance", "ticker": "^VIX"},
+        {"source": "yfinance", "ticker": "^TNX"},
+        {"source": "yfinance", "ticker": "CL=F"},
     ],
 }
