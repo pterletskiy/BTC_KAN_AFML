@@ -2,6 +2,10 @@
 figures/
 model/
 
+# Ignorar arquivos de cache
+__pycache__/
+*.pyc
+
 # Ignorar ambientes virtuais
 env_ML/
 .conda/
