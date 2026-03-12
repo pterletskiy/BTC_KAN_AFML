@@ -1,13 +1,6 @@
-"""
-econometrics.py — Econometric tests and transformations for the MFW pipeline.
-
-Pure statistical / mathematical functions.  Stateless, no side effects.
-This module does NOT perform any data cleaning, scaling, or feature selection.
-
-Follows ``econometrics.md``:
-  §2  Preserve datetime indices during fractional differencing.
-  §4  Type hints on all functions.  No matplotlib / seaborn imports.
-"""
+# econometrics.py — Econometric tests and transformations for the MFW pipeline.
+# Pure statistical / mathematical functions.  Stateless, no side effects.
+# This module does NOT perform any data cleaning, scaling, or feature selection.
 
 import logging
 from typing import Dict, List, Optional, Tuple
@@ -18,7 +11,6 @@ from scipy.stats import jarque_bera
 from statsmodels.tsa.stattools import adfuller, kpss
 
 logger = logging.getLogger(__name__)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Fractional Differencing (AFML Chapter 5)
@@ -92,12 +84,8 @@ def frac_diff_ffd(
     return pd.Series(res, index=series.index, name=series.name)
 
 
-def find_optimal_d(
-    series: pd.Series,
-    d_range: Optional[np.ndarray] = None,
-    thres: float = 1e-4,
-    alpha: float = 0.05,
-) -> float:
+def find_optimal_d(series: pd.Series, d_range: Optional[np.ndarray] = None,
+                   thres: float = 1e-4, alpha: float = 0.05) -> float:
     """Search for the minimum differencing order *d* that achieves stationarity.
 
     Iterates through *d_range* and returns the first *d* for which the
@@ -132,15 +120,10 @@ def find_optimal_d(
 
     return 1.0  # fallback
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Stationarity Testing (ADF + KPSS)
 # ═══════════════════════════════════════════════════════════════════════════
-def run_stationarity_tests(
-    df: pd.DataFrame,
-    features: List[str],
-    alpha: float = 0.05,
-) -> Tuple[pd.DataFrame, List[str]]:
+def run_stationarity_tests(df: pd.DataFrame, features: List[str], alpha: float = 0.05) -> Tuple[pd.DataFrame, List[str]]:
     """Batch ADF + KPSS stationarity tests on selected features.
 
     **Strict logic:** if *either* test flags the series as non-stationary,
@@ -210,15 +193,11 @@ def run_stationarity_tests(
     )
     return stat_df, features_to_difference
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Distribution Profiling (Skewness, Kurtosis, Jarque-Bera)
 # ═══════════════════════════════════════════════════════════════════════════
-def run_distribution_profile(
-    df: pd.DataFrame,
-    features: List[str],
-    skew_threshold: float = 1.0,
-) -> Tuple[pd.DataFrame, List[str]]:
+def run_distribution_profile(df: pd.DataFrame, features: List[str],
+                             skew_threshold: float = 1.0) -> Tuple[pd.DataFrame, List[str]]:
     """Compute skewness, kurtosis, and Jarque-Bera for each feature.
 
     Returns a results DataFrame and a list of features recommended for
@@ -309,7 +288,6 @@ def run_distribution_profile(
     )
     return dist_df, features_to_log
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Pandas Styler Helpers (for Notebook display)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -388,9 +366,7 @@ def style_stationarity_df(stat_df: pd.DataFrame) -> "pd.io.formats.style.Styler"
             lambda x: highlight_stat(x) if isinstance(x, str) else "",
             subset=["ADF Result", "KPSS Result", "Needs Differencing?"],
         )
-        .format({"ADF p-value": "{:.4f}", "KPSS p-value": "{:.4f}"})
-    )
-
+        .format({"ADF p-value": "{:.4f}", "KPSS p-value": "{:.4f}"}))
 
 def style_distribution_df(dist_df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     """Apply notebook-friendly styling to a distribution profile DataFrame.
@@ -424,5 +400,4 @@ def style_distribution_df(dist_df: pd.DataFrame) -> "pd.io.formats.style.Styler"
             "Kurtosis": "{:.4f}",
             "JB Stat": "{:.2f}",
             "JB p-value": "{:.4e}",
-        })
-    )
+        }))

@@ -1,21 +1,7 @@
-"""
-kan_math_expression.py — KAN symbolic regression / equation extraction.
-
-**Experimental module** for extracting interpretable mathematical formulas
-from a trained PyKAN model.  Kept separate from ``models.py`` to allow
-independent experimentation without affecting the production pipeline.
-
-Usage from the Master Notebook::
-
-    from src.kan_math_expression import extract_symbolic_expression, print_trading_equations
-
-    expr = extract_symbolic_expression(
-        kan_model=pruned_or_trained_kan,
-        feature_names=top_10_features,
-        lib=['x', 'x^2', 'x^3', 'sin', 'exp'],
-    )
-    print_trading_equations(expr)
-"""
+# kan_math_expression.py — KAN symbolic regression / equation extraction.
+# **Experimental module** for extracting interpretable mathematical formulas
+# from a trained PyKAN model.  Kept separate from ``models.py`` to allow
+# independent experimentation without affecting the production pipeline.
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -25,12 +11,7 @@ from kan import KAN
 
 logger = logging.getLogger(__name__)
 
-
-def extract_symbolic_expression(
-    kan_model: KAN,
-    feature_names: List[str],
-    lib: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+def extract_symbolic_expression(kan_model: KAN, feature_names: List[str], lib: Optional[List[str]] = None) -> Dict[str, Any]:
     """Prune a KAN and extract symbolic mathematical expressions.
 
     Steps:

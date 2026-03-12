@@ -1,15 +1,8 @@
-"""
-features.py — Feature engineering for the MFW Asset Direction Predictor.
-
-This module contains **only** feature creation logic.  It does NOT perform:
-  - Train/test splitting  (→ preprocessing.py)
-  - Scaling / normalising  (→ preprocessing.py)
-  - Stationarity tests     (→ econometrics.py)
-
-Follows:
-  financial_data.md  §2  — Log_Return already exists from data_loader.py
-  econometrics.md    §4  — Type hints, no matplotlib/seaborn imports
-"""
+# features.py — Feature engineering for the MFW Asset Direction Predictor.
+# This module contains **only** feature creation logic. It does NOT perform:
+#   - Train/test splitting  (→ preprocessing.py)
+#   - Scaling / normalising  (→ preprocessing.py)
+#   - Stationarity tests     (→ econometrics.py)
 
 import logging
 from typing import List, Tuple
@@ -19,7 +12,6 @@ import pandas as pd
 import ta
 
 logger = logging.getLogger(__name__)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Technical Analysis Features (28 indicators)
@@ -221,10 +213,7 @@ def create_onchain_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
 # ═══════════════════════════════════════════════════════════════════════════
 # NaN Cleanup (rolling-window warm-up)
 # ═══════════════════════════════════════════════════════════════════════════
-def drop_warmup_nans(
-    df: pd.DataFrame,
-    feature_cols: List[str],
-) -> pd.DataFrame:
+def drop_warmup_nans(df: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
     """Drop rows where any *feature_cols* column is NaN.
 
     This removes the leading warm-up rows produced by rolling windows
@@ -256,12 +245,8 @@ def drop_warmup_nans(
 # ═══════════════════════════════════════════════════════════════════════════
 # Autoregressive Lag Features
 # ═══════════════════════════════════════════════════════════════════════════
-def create_lagged_features(
-    df: pd.DataFrame,
-    features_to_lag: List[str],
-    lags: int = 3,
-    drop_na: bool = True,
-) -> Tuple[pd.DataFrame, List[str]]:
+def create_lagged_features(df: pd.DataFrame, features_to_lag: List[str], lags: int = 3, 
+                           drop_na: bool = True,) -> Tuple[pd.DataFrame, List[str]]:
     """Create shifted (lagged) columns for autoregressive modelling.
 
     For each feature in *features_to_lag* and each lag ``1 … lags``,
@@ -316,11 +301,8 @@ def create_lagged_features(
 # ═══════════════════════════════════════════════════════════════════════════
 # Orchestrator
 # ═══════════════════════════════════════════════════════════════════════════
-def create_all_features(
-    df: pd.DataFrame,
-    include_ta: bool = True,
-    include_onchain: bool = True,
-) -> Tuple[pd.DataFrame, List[str]]:
+def create_all_features(df: pd.DataFrame, include_ta: bool = True,
+                        include_onchain: bool = True) -> Tuple[pd.DataFrame, List[str]]:
     """Run all feature engineering steps and return the combined feature list.
 
     Parameters

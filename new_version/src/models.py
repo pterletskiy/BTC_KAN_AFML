@@ -1,21 +1,13 @@
-"""
-models.py — Machine Learning models for the MFW Asset Direction Predictor.
-
-Follows ``kan_modeling.md`` strictly:
-  §1  Absolute Reproducibility — ``set_seed()`` + ``random_seed`` parameter
-  §2  Time-Series Validation — ``TimeSeriesSplit`` only, never shuffle
-  §3  Complete Decoupling — functions accept arrays/tensors only
-  §4  Required Evaluation Metrics — accuracy, F1-macro, confusion matrix
-
-This module contains NO data fetching, scaling, or feature engineering.
-All data passed here is assumed to be fully preprocessed by ``preproc.py``.
-"""
+# models.py — Machine Learning models for the MFW Asset Direction Predictor.
 
 import itertools
 import logging
 import os
 import random
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 import numpy as np
 import pandas as pd
@@ -43,17 +35,16 @@ from tensorflow.keras.layers import (
     Dense,
     Dropout,
     GlobalAveragePooling1D,
-    MaxPooling1D,
-)
+    MaxPooling1D)
+
 from tensorflow.keras.models import Sequential
 
 import xgboost as xgb
 
 logger = logging.getLogger(__name__)
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §1 — Absolute Reproducibility (The Seed Rule)
+# Absolute Reproducibility (The Seed Rule)
 # ═══════════════════════════════════════════════════════════════════════════
 def set_seed(seed: int = 42) -> None:
     """Aggressively lock all sources of stochasticity.
@@ -88,14 +79,10 @@ def set_seed(seed: int = 42) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# §4 — Standardized Evaluation Metrics
+# Standardized Evaluation Metrics
 # ═══════════════════════════════════════════════════════════════════════════
-def evaluate_model(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_pred_proba: Optional[np.ndarray] = None,
-    label_names: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+def evaluate_model(y_true: np.ndarray, y_pred: np.ndarray, y_pred_proba: Optional[np.ndarray] = None,
+                   label_names: Optional[List[str]] = None) -> Dict[str, Any]:
     """Compute standardized evaluation metrics for a binary classifier.
 
     Every model function in this module returns metrics through this
@@ -125,8 +112,11 @@ def evaluate_model(
         "accuracy": accuracy_score(y_true, y_pred),
         "f1_macro": f1_score(y_true, y_pred, average="macro"),
         "confusion_matrix": confusion_matrix(y_true, y_pred),
-        "classification_report": classification_report(
+        "classification_report_dict": classification_report(
             y_true, y_pred, target_names=label_names, output_dict=True,
+        ),
+        "classification_report_text": classification_report(
+            y_true, y_pred, target_names=label_names,
         ),
     }
 
@@ -138,46 +128,133 @@ def evaluate_model(
 
     return metrics
 
+def print_evaluation(metrics: Dict[str, Any], model_name: str = "Model",
+                     best_params: Optional[Dict[str, Any]] = None) -> None:
+    """Pretty-print evaluation results.
 
-def print_evaluation(
-    metrics: Dict[str, Any],
-    model_name: str = "Model",
-) -> None:
-    """Pretty-print a metrics dict produced by :func:`evaluate_model`."""
-    print("=" * 50)
-    print(f" {model_name} — Evaluation Results")
-    print("=" * 50)
-    print(f"  Directional Accuracy : {metrics['accuracy']:.4f}")
-    print(f"  Macro F1-Score       : {metrics['f1_macro']:.4f}")
+    Shows: header, best hyperparameters, F1 + AUC, sklearn classification report.
+    """
+    print("\n" + "=" * 60)
+    print(f"  {model_name} — Evaluation Results")
+    print("=" * 60)
+
+    if best_params:
+        print("\n  Best Hyperparameters:")
+        for k, v in best_params.items():
+            print(f"    {k}: {v}")
+
+    print(f"\n  Macro F1-Score : {metrics['f1_macro']:.4f}")
     if "roc_auc" in metrics:
-        print(f"  ROC-AUC              : {metrics['roc_auc']:.4f}")
-    print(f"\n  Confusion Matrix:\n{metrics['confusion_matrix']}")
-    cr = metrics["classification_report"]
-    print("\n  Classification Report:")
-    print(
-        classification_report(
-            [0], [0], output_dict=False, target_names=["_"],
-        ).split("\n")[0]
-    )  # header trick — just re-print from the dict:
-    for label, vals in cr.items():
-        if isinstance(vals, dict):
-            print(
-                f"  {label:12s}  "
-                f"precision={vals['precision']:.2f}  "
-                f"recall={vals['recall']:.2f}  "
-                f"f1={vals['f1-score']:.2f}  "
-                f"support={vals['support']}"
-            )
+        print(f"  ROC-AUC       : {metrics['roc_auc']:.4f}")
 
+    print(f"\n{metrics['classification_report_text']}")
+
+
+def plot_evaluation(metrics: Dict[str, Any], model_name: str = "Model",
+                    feature_importances: Optional[pd.Series] = None,
+                    top_n: int = 10, figsize: Tuple[int, int] = (14, 5)) -> None:
+    """Plot confusion matrix and feature importance side by side.
+
+    Parameters
+    ----------
+    metrics : dict
+        Output of :func:`evaluate_model`.
+    model_name : str
+        Title prefix.
+    feature_importances : pd.Series, optional
+        Feature importance / coefficient series (top *top_n* shown).
+    top_n : int
+        Number of features to show in the importance plot.
+    figsize : tuple
+        Figure size.
+    """
+    has_imp = feature_importances is not None and len(feature_importances) > 0
+    ncols = 2 if has_imp else 1
+    fig, axes = plt.subplots(1, ncols, figsize=figsize)
+    if ncols == 1:
+        axes = [axes]
+
+    # --- Confusion Matrix ---
+    cm = metrics["confusion_matrix"]
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axes[0],
+                xticklabels=["Down", "Up"], yticklabels=["Down", "Up"])
+    axes[0].set_title(f"{model_name} — Confusion Matrix")
+    axes[0].set_ylabel("Actual")
+    axes[0].set_xlabel("Predicted")
+
+    # --- Feature Importance (top N) ---
+    if has_imp:
+        top = feature_importances.abs().sort_values(ascending=False).head(top_n)
+        top = top.sort_values(ascending=True)  # horizontal bar: largest at top
+        top.plot.barh(ax=axes[1], color="steelblue")
+        axes[1].set_title(f"{model_name} — Top {top_n} Feature Importances")
+        axes[1].set_xlabel("Importance")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def select_best_per_category(results: Dict[str, Dict[str, Any]],
+                             benchmark: str = "AR Logistic",
+                             ml_models: Optional[List[str]] = None,
+                             dl_models: Optional[List[str]] = None,
+                             kan_name: str = "KAN",
+                             metric: str = "roc_auc") -> Dict[str, Dict[str, Any]]:
+    """Pick the best model from each category by a validation metric.
+
+    Categories: Benchmark (AR), Best ML, Best DL, KAN.
+
+    Parameters
+    ----------
+    results : dict
+        ``{model_name: result_dict}`` from the training stage.
+    benchmark, kan_name : str
+        Names of the benchmark and KAN entries.
+    ml_models, dl_models : list of str, optional
+        Model names belonging to ML / DL categories.
+    metric : str
+        Validation metric key inside ``val_metrics`` to compare.
+
+    Returns
+    -------
+    dict
+        ``{category_label: result_dict}`` for the 4 selected models.
+    """
+    if ml_models is None:
+        ml_models = ["Logistic Regression", "Random Forest", "XGBoost"]
+    if dl_models is None:
+        dl_models = ["1D-CNN", "LSTM"]
+
+    def _best(names: List[str]) -> Tuple[str, Dict[str, Any]]:
+        candidates = {n: results[n] for n in names if n in results}
+        best_name = max(candidates, key=lambda n: candidates[n]["val_metrics"].get(metric, 0))
+        return best_name, candidates[best_name]
+
+    selected: Dict[str, Dict[str, Any]] = {}
+
+    # Benchmark
+    if benchmark in results:
+        selected[f"Benchmark ({benchmark})"] = results[benchmark]
+
+    # Best ML
+    ml_name, ml_result = _best(ml_models)
+    selected[f"Best ML ({ml_name})"] = ml_result
+
+    # Best DL
+    dl_name, dl_result = _best(dl_models)
+    selected[f"Best DL ({dl_name})"] = dl_result
+
+    # KAN
+    if kan_name in results:
+        selected[f"KAN"] = results[kan_name]
+
+    return selected
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Utility — Sequence creation for LSTM / CNN
 # ═══════════════════════════════════════════════════════════════════════════
-def create_sequences(
-    X: Union[pd.DataFrame, np.ndarray],
-    y: Union[pd.Series, np.ndarray],
-    time_steps: int = 14,
-) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+def create_sequences(X: Union[pd.DataFrame, np.ndarray], y: Union[pd.Series, np.ndarray],
+                     time_steps: int = 14) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """Slide a window across 2D data to create 3D tensors for RNNs/CNNs.
 
     Parameters
@@ -213,20 +290,12 @@ def create_sequences(
         np.array(dates) if dates else None,
     )
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Baseline 0 — Autoregressive (AR) Logistic Regression
 # ═══════════════════════════════════════════════════════════════════════════
-def fine_tune_ar_logistic(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_val: pd.DataFrame,
-    y_val: pd.Series,
-    random_seed: int = 42,
-    cv_splits: int = 5,
-    param_grid: Optional[Dict[str, list]] = None,
-) -> Dict[str, Any]:
+def fine_tune_ar_logistic(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
+                          random_seed: int = 42, cv_splits: int = 5,
+                          param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
     """Tune an Autoregressive Logistic Regression via ``TimeSeriesSplit``.
 
     This is the **ultimate baseline**: ``Y = logistic(X_t, X_{t-1}, …)``.
@@ -286,20 +355,12 @@ def fine_tune_ar_logistic(
         "feature_importances": importances,
     }
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Baseline 1 — Logistic Regression
 # ═══════════════════════════════════════════════════════════════════════════
-def fine_tune_logistic_regression(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_val: pd.DataFrame,
-    y_val: pd.Series,
-    random_seed: int = 42,
-    cv_splits: int = 5,
-    param_grid: Optional[Dict[str, list]] = None,
-) -> Dict[str, Any]:
+def fine_tune_logistic_regression(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
+                                  random_seed: int = 42, cv_splits: int = 5,
+                                  param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
     """Tune Logistic Regression via ``TimeSeriesSplit`` grid search.
 
     Parameters
@@ -355,20 +416,12 @@ def fine_tune_logistic_regression(
         "feature_importances": importances,
     }
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Baseline 2 — XGBoost
 # ═══════════════════════════════════════════════════════════════════════════
-def fine_tune_xgboost(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_val: pd.DataFrame,
-    y_val: pd.Series,
-    random_seed: int = 42,
-    cv_splits: int = 5,
-    param_grid: Optional[Dict[str, list]] = None,
-) -> Dict[str, Any]:
+def fine_tune_xgboost(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
+                      random_seed: int = 42, cv_splits: int = 5,
+                      param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
     """Tune XGBoost via ``TimeSeriesSplit`` grid search.
 
     Returns
@@ -417,19 +470,12 @@ def fine_tune_xgboost(
         "feature_importances": importances,
     }
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Baseline 3 — Random Forest
 # ═══════════════════════════════════════════════════════════════════════════
-def fine_tune_random_forest(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_val: pd.DataFrame,
-    y_val: pd.Series,
-    random_seed: int = 42,
-    cv_splits: int = 5,
-    param_grid: Optional[Dict[str, list]] = None,
-) -> Dict[str, Any]:
+def fine_tune_random_forest(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
+                            random_seed: int = 42, cv_splits: int = 5,
+                            param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
     """Tune Random Forest via ``TimeSeriesSplit`` grid search.
 
     Returns
@@ -477,21 +523,12 @@ def fine_tune_random_forest(
         "feature_importances": importances,
     }
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Deep Learning 1 — LSTM
 # ═══════════════════════════════════════════════════════════════════════════
-def fine_tune_lstm(
-    X_train_3d: np.ndarray,
-    y_train: np.ndarray,
-    X_val_3d: np.ndarray,
-    y_val: np.ndarray,
-    random_seed: int = 42,
-    epochs: int = 100,
-    batch_size: int = 32,
-    patience: int = 15,
-    learning_rate: float = 0.001,
-) -> Dict[str, Any]:
+def fine_tune_lstm(X_train_3d: np.ndarray, y_train: np.ndarray, X_val_3d: np.ndarray, y_val: np.ndarray,
+                   random_seed: int = 42, epochs: int = 100, batch_size: int = 32,
+                   patience: int = 15, learning_rate: float = 0.001) -> Dict[str, Any]:
     """Build, train, and evaluate an LSTM model.
 
     Expects 3D input tensors from :func:`create_sequences`.
@@ -579,17 +616,9 @@ def fine_tune_lstm(
 # ═══════════════════════════════════════════════════════════════════════════
 # Deep Learning 2 — 1D-CNN
 # ═══════════════════════════════════════════════════════════════════════════
-def fine_tune_cnn(
-    X_train_3d: np.ndarray,
-    y_train: np.ndarray,
-    X_val_3d: np.ndarray,
-    y_val: np.ndarray,
-    random_seed: int = 42,
-    epochs: int = 100,
-    batch_size: int = 32,
-    patience: int = 15,
-    learning_rate: float = 0.001,
-) -> Dict[str, Any]:
+def fine_tune_cnn(X_train_3d: np.ndarray, y_train: np.ndarray, X_val_3d: np.ndarray, y_val: np.ndarray,
+                  random_seed: int = 42, epochs: int = 100, batch_size: int = 32,
+                  patience: int = 15, learning_rate: float = 0.001) -> Dict[str, Any]:
     """Build, train, and evaluate a 1D-CNN model.
 
     Expects 3D input tensors from :func:`create_sequences`.
@@ -668,19 +697,11 @@ def fine_tune_cnn(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Advanced — PyKAN (Kolmogorov-Arnold Network)
+# PyKAN (Kolmogorov-Arnold Network)
 # ═══════════════════════════════════════════════════════════════════════════
-def fine_tune_robust_pykan(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_val: pd.DataFrame,
-    y_val: pd.Series,
-    random_seed: int = 42,
-    cv_splits: int = 3,
-    cv_steps: int = 50,
-    final_steps: int = 200,
-    param_grid: Optional[Dict[str, list]] = None,
-) -> Dict[str, Any]:
+def fine_tune_kan(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
+                  random_seed: int = 42, cv_splits: int = 3, cv_steps: int = 50, final_steps: int = 200,
+                  param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
     """Tune and train a PyKAN model via ``TimeSeriesSplit`` cross-validation.
 
     The best hyperparameters are found through CV, then the final model

@@ -1,18 +1,7 @@
-"""
-preproc.py — Data cleaning, normalization, and feature selection pipeline.
-
-This module orchestrates the full preprocessing flow and enforces the
-**Golden Rule** from ``econometrics.md`` §1:
-
-    Scalers are ONLY fitted on training data.
-    Validation / test sets are ONLY transformed.
-
-Depends on:
-  - ``features.py``      (create_ta_features, create_onchain_features)
-  - ``econometrics.py``   (frac_diff_ffd, find_optimal_d)
-
-Does NOT import matplotlib / seaborn (§4).
-"""
+# preproc.py — Data cleaning, normalization, and feature selection pipeline.
+# Depends on:
+#   - ``features.py``      (create_ta_features, create_onchain_features)
+#   - ``econometrics.py``   (frac_diff_ffd, find_optimal_d)
 
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,15 +17,12 @@ from src.features import create_onchain_features, create_ta_features
 
 logger = logging.getLogger(__name__)
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. Data Cleaning — Noisy / Meaningless Feature Identification
 # ═══════════════════════════════════════════════════════════════════════════
-def get_low_variance_numerical(
-    df: pd.DataFrame,
-    target: str = "Price_Direction",
-    threshold: float = 0.0099,
-) -> List[str]:
+def get_low_variance_numerical(df: pd.DataFrame, target: str = "Price_Direction",
+                               protected: Optional[List[str]] = None,
+                               threshold: float = 0.0099) -> List[str]:
     """Identify numerical features with near-zero variance.
 
     Parameters
@@ -45,6 +31,8 @@ def get_low_variance_numerical(
         Training data.
     target : str
         Target column name to exclude from the check.
+    protected : list of str, optional
+        Additional columns to never flag (default ``['Log_Return']``).
     threshold : float
         Variance threshold (default ``0.99 * (1 - 0.99)``).
 
@@ -53,8 +41,12 @@ def get_low_variance_numerical(
     list of str
         Column names that fall below the variance threshold.
     """
+    if protected is None:
+        protected = ["Log_Return"]
+    exclude = set([target] + protected)
+
     num_df = df.select_dtypes(include=["number"]).drop(
-        columns=[target], errors="ignore"
+        columns=[c for c in exclude if c in df.columns], errors="ignore"
     )
     sel = VarianceThreshold(threshold=threshold)
     sel.fit(num_df)
@@ -66,11 +58,7 @@ def get_low_variance_numerical(
         logger.info("Low-variance numerical features (%d): %s", len(to_drop), to_drop)
     return to_drop
 
-
-def get_low_variance_categorical(
-    df: pd.DataFrame,
-    threshold: float = 0.99,
-) -> List[str]:
+def get_low_variance_categorical(df: pd.DataFrame, threshold: float = 0.99)-> List[str]:
     """Identify categorical features where one value dominates.
 
     Parameters
@@ -97,7 +85,6 @@ def get_low_variance_categorical(
 
     return to_drop
 
-
 def get_noisy_metadata_columns(df: pd.DataFrame) -> List[str]:
     """Identify administrative / metadata columns that are not market features.
 
@@ -120,19 +107,14 @@ def get_noisy_metadata_columns(df: pd.DataFrame) -> List[str]:
 
     to_drop.extend(c for c in df.columns if "-status-time" in c)
     to_drop.extend(c for c in df.columns if "CompletionTime" in c)
-    to_drop.extend(
-        c for c in df.columns if "PriceUSD" in c or "volume_reported_spot_usd_1d" in c
-    )
+    to_drop.extend(c for c in df.columns if "PriceUSD" in c or "volume_reported_spot_usd_1d" in c)
 
     if to_drop:
         logger.info("Noisy metadata columns (%d): %s", len(to_drop), to_drop[:10])
     return to_drop
 
 
-def get_high_missing_features(
-    df: pd.DataFrame,
-    threshold: float = 30.0,
-) -> List[str]:
+def get_high_missing_features(df: pd.DataFrame, threshold: float = 30.0) -> List[str]:
     """Identify features exceeding a missing-value percentage threshold.
 
     Parameters
@@ -157,13 +139,11 @@ def get_high_missing_features(
     return to_drop
 
 
-def identify_noisy_features(
-    df: pd.DataFrame,
-    target: str = "Price_Direction",
-    missing_threshold: float = 30.0,
-    variance_threshold: float = 0.0099,
-    categorical_threshold: float = 0.99,
-) -> List[str]:
+def identify_noisy_features(df: pd.DataFrame, target: str = "Price_Direction",
+                            protected: Optional[List[str]] = None,
+                            missing_threshold: float = 30.0,
+                            variance_threshold: float = 0.0099,
+                            categorical_threshold: float = 0.99) -> List[str]:
     """Orchestrate all noisy-feature detection steps.
 
     Combines:
@@ -178,6 +158,10 @@ def identify_noisy_features(
         Training data.
     target : str
         Target column name.
+    protected : list of str, optional
+        Columns that must **never** be removed, regardless of the checks.
+        Default ``['Log_Return']`` — the log-return feature has tiny variance
+        but is critical for the pipeline.
     missing_threshold, variance_threshold, categorical_threshold
         Thresholds forwarded to the individual detectors.
 
@@ -186,24 +170,25 @@ def identify_noisy_features(
     list of str
         Deduplicated master list of column names to drop.
     """
+    if protected is None:
+        protected = ["Log_Return"]
+    safe = set([target] + protected)
+
     noisy: List[str] = []
-    noisy.extend(get_low_variance_numerical(df, target, variance_threshold))
+    noisy.extend(get_low_variance_numerical(df, target, protected, variance_threshold))
     noisy.extend(get_low_variance_categorical(df, categorical_threshold))
     noisy.extend(get_noisy_metadata_columns(df))
     noisy.extend(get_high_missing_features(df, missing_threshold))
 
-    noisy = sorted(set(noisy))
+    # Safety net — never drop protected or target columns
+    noisy = sorted(set(noisy) - safe)
     logger.info("Total noisy features to remove: %d", len(noisy))
     return noisy
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. Feature Normalization
 # ═══════════════════════════════════════════════════════════════════════════
-def apply_log_transform(
-    df: pd.DataFrame,
-    features: List[str],
-) -> pd.DataFrame:
+def apply_log_transform(df: pd.DataFrame, features: List[str]) -> pd.DataFrame:
     """Apply ``np.log1p`` (log(1 + x)) to the specified columns.
 
     Safe for columns containing zeros.  Columns must **not** contain
@@ -234,12 +219,8 @@ def apply_log_transform(
         )
     return df
 
-
-def apply_fractional_differencing(
-    df: pd.DataFrame,
-    features: List[str],
-    thres: float = 1e-4,
-) -> Tuple[pd.DataFrame, Dict[str, float]]:
+def apply_fractional_differencing(df: pd.DataFrame, features: List[str],
+                                  thres: float = 1e-4) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Find optimal *d* and apply FFD to non-stationary features.
 
     Uses :func:`econometrics.find_optimal_d` per feature, then applies
@@ -274,11 +255,7 @@ def apply_fractional_differencing(
 
     return df, optimal_d
 
-
-def fit_robust_scaler(
-    df: pd.DataFrame,
-    features: List[str],
-) -> Tuple[pd.DataFrame, RobustScaler]:
+def fit_robust_scaler(df: pd.DataFrame, features: List[str]) -> Tuple[pd.DataFrame, RobustScaler]:
     """Fit a ``RobustScaler`` on training data and transform it.
 
     **Golden Rule (§1):** The scaler is fitted **only** here, on the
@@ -306,15 +283,11 @@ def fit_robust_scaler(
     logger.info("RobustScaler fitted on %d features", len(cols))
     return df, scaler
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. Feature Selection
 # ═══════════════════════════════════════════════════════════════════════════
-def remove_highly_correlated_features(
-    X: pd.DataFrame,
-    features: List[str],
-    threshold: float = 0.85,
-) -> Tuple[pd.DataFrame, List[str]]:
+def remove_highly_correlated_features(X: pd.DataFrame, features: List[str], 
+                                      threshold: float = 0.85) -> Tuple[pd.DataFrame, List[str]]:
     """Drop one of each pair of highly Spearman-correlated features.
 
     For every pair above *threshold*, the feature with the **higher**
@@ -359,16 +332,9 @@ def remove_highly_correlated_features(
     )
     return X_reduced, removed
 
-
-def rank_feature_importance(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    top_n: int = 30,
-    random_seed: int = 42,
-) -> Tuple[pd.DataFrame, List[str]]:
+def rank_feature_importance(X_train: pd.DataFrame, y_train: pd.Series, top_n: int = 30,
+                            random_seed: int = 42) -> Tuple[pd.DataFrame, List[str]]:
     """Rank features by combined Mutual Information + Random Forest importance.
-
-    **§3 Reminder:** Call this on **training data only**.
 
     Parameters
     ----------
@@ -423,17 +389,9 @@ def rank_feature_importance(
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. Master Evaluation Pipeline (Val / Test)
 # ═══════════════════════════════════════════════════════════════════════════
-def preprocess_evaluation_set(
-    df_target: pd.DataFrame,
-    raw_full_data: pd.DataFrame,
-    noisy_features: List[str],
-    log_features: List[str],
-    d_values_dict: Dict[str, float],
-    fitted_scaler: RobustScaler,
-    scale_features: List[str],
-    final_features: List[str],
-    buffer_days: int = 600,
-) -> pd.DataFrame:
+def preprocess_evaluation_set(df_target: pd.DataFrame, raw_full_data: pd.DataFrame, noisy_features: List[str],
+                              log_features: List[str], d_values_dict: Dict[str, float], fitted_scaler: RobustScaler,
+                              scale_features: List[str], final_features: List[str], buffer_days: int = 600) -> pd.DataFrame:
     """Apply the full preprocessing pipeline to a validation or test set.
 
     Uses a historical buffer so that rolling-window warm-up rows are
