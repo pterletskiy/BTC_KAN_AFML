@@ -1,12 +1,5 @@
-"""
-data_loader.py — Modular data fetching for the MFW Asset Direction Predictor.
-
-Follows the rules defined in skills/financial_data.md:
-  §1  Modular Fetching Architecture
-  §2  Log Returns & Target Calculation
-  §3  Asynchronous Frequencies & Calendar Merging
-  §4  Idempotent Caching
-"""
+# data_loader.py — Modular data fetching for the MFW Asset Direction Predictor
+# Follows the rules defined in financial_data.md
 
 import logging
 import os
@@ -20,17 +13,15 @@ import requests
 import yfinance as yf
 from coinmetrics.api_client import CoinMetricsClient
 
-logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
 # Constants & paths
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CACHE_DIR = _PROJECT_ROOT / "data" / "raw"
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §4 — Idempotent Caching Helpers
+# 4) Idempotent Caching Helpers
 # ═══════════════════════════════════════════════════════════════════════════
 def _cache_path(source: str, key: str, start: str, end: str) -> Path:
     """Return a deterministic Parquet cache file path under ``data/raw/``."""
@@ -52,9 +43,8 @@ def _write_cache(df: pd.DataFrame, path: Path) -> None:
     df.to_parquet(path, engine="pyarrow")
     logger.info("Cached → %s", path.name)
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §3 — Timezone Alignment Helper
+# 3) Timezone Alignment Helper
 # ═══════════════════════════════════════════════════════════════════════════
 def _to_utc_midnight(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     """Normalize any DatetimeIndex to UTC, midnight-aligned."""
@@ -62,14 +52,13 @@ def _to_utc_midnight(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
         return index.tz_localize("UTC").normalize()
     return index.tz_convert("UTC").normalize()
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §1 — Primary Asset (OHLCV via yfinance)
+# 1) Primary Asset (OHLCV via yfinance)
 # ═══════════════════════════════════════════════════════════════════════════
 def fetch_primary_asset(
     ticker: str,
     start: str = "2014-09-17",
-    end: str = "2026-02-07",
+    end: str = "2026-03-07",
     interval: str = "1d") -> pd.DataFrame:
     """Download OHLCV data for a single primary asset via yfinance.
 
@@ -107,15 +96,14 @@ def fetch_primary_asset(
     _write_cache(df, cache)
     return df
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §1 — Secondary Features: CoinMetrics On-Chain
+# 1) Secondary Features: CoinMetrics On-Chain
 # ═══════════════════════════════════════════════════════════════════════════
 def fetch_coinmetrics(
     asset: str = "btc",
     metrics: Optional[List[str]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-02-07") -> pd.DataFrame:
+    end: str = "2026-03-07") -> pd.DataFrame:
     """Fetch on-chain metrics from the CoinMetrics community API.
 
     If *metrics* is ``None``, **all** available daily metrics for the
@@ -184,7 +172,7 @@ def fetch_coinmetrics(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# §1 — Secondary Features: Blockchain.com On-Chain
+# 1) Secondary Features: Blockchain.com On-Chain
 # ═══════════════════════════════════════════════════════════════════════════
 
 #: Default Blockchain.com API chart names → DataFrame column names.
@@ -197,14 +185,12 @@ BLOCKCHAIN_COM_METRICS: Dict[str, str] = {
     "transaction-fees":   "bc_transaction_fees",
     "market-price":       "bc_market_price",
     "total-bitcoins":     "bc_total_bitcoins",
-    "mempool-size":       "bc_mempool_size",
-}
-
+    "mempool-size":       "bc_mempool_size",}
 
 def fetch_blockchain_com(
     metrics: Optional[Dict[str, str]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-02-07") -> pd.DataFrame:
+    end: str = "2026-03-07") -> pd.DataFrame:
     """Fetch on-chain data from the Blockchain.com public charts API.
 
     Parameters
@@ -285,9 +271,8 @@ def fetch_blockchain_com(
     _write_cache(merged, cache)
     return merged
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §1 — On-Chain Routing: coinmetrics | blockchain_com | both
+# 1) On-Chain Routing: coinmetrics | blockchain_com | both
 # ═══════════════════════════════════════════════════════════════════════════
 def fetch_onchain_features(
     provider: str = "coinmetrics",
@@ -295,7 +280,7 @@ def fetch_onchain_features(
     coinmetrics_metrics: Optional[List[str]] = None,
     blockchain_com_metrics: Optional[Dict[str, str]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-02-07",
+    end: str = "2026-03-07",
 ) -> pd.DataFrame:
     """Unified on-chain data router.
 
@@ -332,18 +317,12 @@ def fetch_onchain_features(
 
     raise ValueError(
         f"Unknown on-chain provider '{provider}'. "
-        "Choose 'coinmetrics', 'blockchain_com', or 'both'."
-    )
-
+        "Choose 'coinmetrics', 'blockchain_com', or 'both'.")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# §1 — Secondary Features: Macro Indicator via yfinance
+# 1) Secondary Features: Macro Indicator via yfinance
 # ═══════════════════════════════════════════════════════════════════════════
-def fetch_macro_feature(
-    ticker: str,
-    start: str = "2014-09-17",
-    end: str = "2026-02-07",
-) -> pd.DataFrame:
+def fetch_macro_feature(ticker: str, start: str = "2014-09-17", end: str = "2026-03-07") -> pd.DataFrame:
     """Fetch a single macro/market indicator via yfinance.
 
     Useful for indices such as DXY (``DX-Y.NYB``), VIX (``^VIX``),
@@ -372,15 +351,11 @@ def fetch_macro_feature(
     _write_cache(df, cache)
     return df
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §1 — General Secondary Features Router
+# 1) General Secondary Features Router
 # ═══════════════════════════════════════════════════════════════════════════
-def fetch_secondary_features(
-    feature_list: List[Dict[str, Any]],
-    start: str = "2014-09-17",
-    end: str = "2026-02-07",
-) -> List[pd.DataFrame]:
+def fetch_secondary_features(feature_list: List[Dict[str, Any]],
+                             start: str = "2014-09-17", end: str = "2026-03-07") -> List[pd.DataFrame]:
     """Dispatch each feature request to the appropriate fetcher.
 
     Parameters
@@ -435,9 +410,8 @@ def fetch_secondary_features(
 
     return results
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §2 — Log Returns & Target Calculation
+# 2) Log Returns & Target Calculation
 # ═══════════════════════════════════════════════════════════════════════════
 def compute_log_return_target(df: pd.DataFrame) -> pd.DataFrame:
     """Compute log returns and binary direction target.
@@ -476,14 +450,10 @@ def compute_log_return_target(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# §3 — Calendar Merging
+# 3)Calendar Merging
 # ═══════════════════════════════════════════════════════════════════════════
-def merge_datasets(
-    primary_df: pd.DataFrame,
-    *secondary_dfs: pd.DataFrame,
-) -> pd.DataFrame:
+def merge_datasets(primary_df: pd.DataFrame, *secondary_dfs: pd.DataFrame) -> pd.DataFrame:
     """Left-join secondary DataFrames onto the primary asset's date index.
 
     Lower-frequency features (e.g. monthly macro) are **forward-filled**
@@ -521,16 +491,11 @@ def merge_datasets(
 
     return merged
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Orchestrator
 # ═══════════════════════════════════════════════════════════════════════════
-def load_dataset(
-    ticker: str,
-    feature_list: Optional[List[Dict[str, Any]]] = None,
-    start: str = "2014-09-17",
-    end: str = "2026-02-07",
-) -> pd.DataFrame:
+def load_dataset(ticker: str, feature_list: Optional[List[Dict[str, Any]]] = None,
+                 start: str = "2014-09-17", end: str = "2026-03-07") -> pd.DataFrame:
     """End-to-end dataset loader: fetch → target → merge.
 
     Parameters
@@ -580,12 +545,8 @@ def load_from_config(config: Dict[str, Any]) -> pd.DataFrame:
     -------
     pd.DataFrame
     """
-    return load_dataset(
-        ticker=config["ticker"],
-        feature_list=config.get("feature_list"),
-        start=config.get("start", "2014-09-17"),
-        end=config.get("end", "2026-02-07"),
-    )
+    return load_dataset(ticker=config["ticker"], feature_list=config.get("feature_list"),
+                        start=config.get("start", "2014-09-17"), end=config.get("end", "2026-03-07"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -682,10 +643,7 @@ ASSET_CATALOG: Dict[str, Dict[str, Any]] = {
 }
 
 
-def prompt_date_range(
-    default_start: str = "2014-09-17",
-    default_end: str = "2026-02-07",
-) -> Tuple[str, str]:
+def prompt_date_range(default_start: str = "2014-09-17", default_end: str = "2026-03-07") -> Tuple[str, str]:
     """Prompt the user for a date range and return consistent dates.
 
     This is the **single point of date input**.  Both returned strings
@@ -710,7 +668,6 @@ def prompt_date_range(
     end = end if end else default_end
     print(f"  → Period: {start} to {end}")
     return start, end
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Interactive Notebook Config Builder
@@ -889,7 +846,7 @@ def interactive_config() -> Dict[str, Any]:
 DEFAULT_BTC_CONFIG: Dict[str, Any] = {
     "ticker": "BTC-USD",
     "start": "2014-09-17",
-    "end": "2026-02-07",
+    "end": "2026-03-07",
     "feature_list": [
         {"source": "onchain", "provider": "coinmetrics", "asset": "btc"},
     ],
@@ -899,7 +856,7 @@ DEFAULT_BTC_CONFIG: Dict[str, Any] = {
 DEFAULT_BTC_FULL_CONFIG: Dict[str, Any] = {
     "ticker": "BTC-USD",
     "start": "2014-09-17",
-    "end": "2026-02-07",
+    "end": "2026-03-07",
     "feature_list": [
         {"source": "onchain", "provider": "both", "asset": "btc"},
         {"source": "yfinance", "ticker": "DX-Y.NYB"},
@@ -912,7 +869,7 @@ DEFAULT_BTC_FULL_CONFIG: Dict[str, Any] = {
 DEFAULT_ETH_CONFIG: Dict[str, Any] = {
     "ticker": "ETH-USD",
     "start": "2017-01-01",
-    "end": "2026-02-07",
+    "end": "2026-03-07",
     "feature_list": [
         {"source": "onchain", "provider": "coinmetrics", "asset": "eth"},
         {"source": "yfinance", "ticker": "DX-Y.NYB"},
@@ -924,7 +881,7 @@ DEFAULT_ETH_CONFIG: Dict[str, Any] = {
 DEFAULT_GLD_CONFIG: Dict[str, Any] = {
     "ticker": "GLD",
     "start": "2010-01-01",
-    "end": "2026-02-07",
+    "end": "2026-03-07",
     "feature_list": [
         {"source": "yfinance", "ticker": "DX-Y.NYB"},
         {"source": "yfinance", "ticker": "^VIX"},
@@ -936,11 +893,32 @@ DEFAULT_GLD_CONFIG: Dict[str, Any] = {
 DEFAULT_SPY_CONFIG: Dict[str, Any] = {
     "ticker": "SPY",
     "start": "2010-01-01",
-    "end": "2026-02-07",
+    "end": "2026-03-07",
     "feature_list": [
         {"source": "yfinance", "ticker": "DX-Y.NYB"},
         {"source": "yfinance", "ticker": "^VIX"},
         {"source": "yfinance", "ticker": "^TNX"},
         {"source": "yfinance", "ticker": "CL=F"},
     ],
+}
+
+#: BTC config — OHLCV only, no secondary features.
+DEFAULT_BTC_OHLCV_CONFIG: Dict[str, Any] = {
+    "ticker": "BTC-USD",
+    "start": "2014-09-17",
+    "end": "2026-02-07",
+}
+
+#: GLD config — OHLCV only, no secondary features.
+DEFAULT_GLD_OHLCV_CONFIG: Dict[str, Any] = {
+    "ticker": "GLD",
+    "start": "2010-01-01",
+    "end": "2026-02-07",
+}
+
+#: QQQ config — OHLCV only, no secondary features.
+DEFAULT_QQQ_OHLCV_CONFIG: Dict[str, Any] = {
+    "ticker": "QQQ",
+    "start": "2010-01-01",
+    "end": "2026-02-07",
 }
