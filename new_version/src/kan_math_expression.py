@@ -6,45 +6,43 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+import pandas as pd
 import torch
 from kan import KAN
+from sklearn.metrics import accuracy_score, roc_auc_score
 
 logger = logging.getLogger(__name__)
 
+def evaluate_symbolic_fidelity(pruned_model: KAN, X_val: pd.DataFrame, y_val: pd.Series) -> Dict[str, float]:
+    """Evaluate predicting power in pure symbolic mode to prove formula fidelity."""
+    # Force symbolic mode
+    pruned_model.use_symbolic(True)
+    
+    with torch.no_grad():
+        test_input = torch.tensor(X_val.values, dtype=torch.float32)
+        raw_out = pruned_model(test_input)
+        proba = torch.softmax(raw_out, dim=1)[:, 1].numpy()
+        pred = torch.argmax(raw_out, dim=1).numpy()
+        
+    acc = accuracy_score(y_val.values, pred)
+    try:
+        auc = roc_auc_score(y_val.values, proba)
+    except ValueError:
+        auc = float('nan')
+        
+    logger.info("Symbolic Fidelity: Accuracy = %.4f, ROC-AUC = %.4f", acc, auc)
+    return {"accuracy": acc, "roc_auc": auc}
+
+
 def extract_symbolic_expression(kan_model: KAN, feature_names: List[str], lib: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Prune a KAN and extract symbolic mathematical expressions.
-
-    Steps:
-      1. Prune the network (remove near-zero activation edges).
-      2. Fit symbolic functions from ``lib`` to the remaining edges.
-      3. Parse the first hidden layer to build human-readable equations
-         for each hidden node.
-
-    Parameters
-    ----------
-    kan_model : KAN
-        A **trained** PyKAN model.
-    feature_names : list of str
-        Names of the input features (in order).
-    lib : list of str, optional
-        Allowed symbolic function library.
-        Default: ``['x', 'x^2', 'x^3', 'sin', 'exp']``.
-
-    Returns
-    -------
-    dict
-        Keys:
-
-        - ``pruned_model`` — the pruned KAN.
-        - ``hidden_node_equations`` — dict mapping ``"H_0"``, ``"H_1"``, …
-          to their formula strings.
-        - ``final_equation`` — the output-layer formula string.
-        - ``feature_map`` — mapping of node index → feature name.
-        - ``raw_funs_name`` — raw function names from the symbolic layer
-          (for advanced inspection).
+    """Prune a KAN and extract exact symbolic mathematical equations.
+    
+    Extracts the analytical affine parameters (a, b, c, d) representing:
+    c * f(a*x + b) + d
     """
     if lib is None:
-        lib = ["x", "x^2", "x^3", "sin", "exp"]
+        lib = ["x", "x^2", "x^3", "log", "exp", "tanh", "abs", "sqrt"]
 
     # 1. Prune
     logger.info("Pruning KAN model …")
@@ -54,83 +52,92 @@ def extract_symbolic_expression(kan_model: KAN, feature_names: List[str], lib: O
     logger.info("Fitting symbolic functions from lib=%s …", lib)
     pruned.auto_symbolic(lib=lib)
 
-    # 3. Parse hidden-layer equations
-    layer = pruned.symbolic_fun[0]
-    n_inputs = len(feature_names)
-
-    # Determine number of hidden nodes from funs_name (rows = hidden nodes)
-    n_hidden = len(layer.funs_name)
-
-    hidden_eqs: Dict[str, str] = {}
-    weight_idx = 1
-
-    for h in range(n_hidden):
-        terms: List[str] = []
-        for i in range(n_inputs):
-            fn = layer.funs_name[h][i]
-            feat = feature_names[i]
-
-            if fn in ("0", "0.0"):
-                continue
-
-            if fn == "x":
-                terms.append(f"w_{weight_idx} * [{feat}]")
-            elif fn == "x^2":
-                terms.append(f"w_{weight_idx} * ([{feat}])^2")
-            elif fn == "x^3":
-                terms.append(f"w_{weight_idx} * ([{feat}])^3")
+    expressions: Dict[str, Dict[str, str]] = {}
+    
+    num_layers = len(pruned.symbolic_fun)
+    prev_layer_nodes = feature_names.copy()
+    
+    for layer_idx in range(num_layers):
+        layer = pruned.symbolic_fun[layer_idx]
+        n_out = len(layer.funs_name)
+        n_in = len(layer.funs_name[0])
+        
+        current_layer_nodes = []
+        layer_eqs = {}
+        
+        for out_node in range(n_out):
+            terms = []
+            for in_node in range(n_in):
+                fn = layer.funs_name[out_node][in_node]
+                
+                if fn in ("0", "0.0"):
+                    continue
+                    
+                # R2 Quality Check
+                r2 = layer.r2[out_node, in_node].item()
+                if r2 < 0.90:
+                    logger.warning(
+                        "Poor symbolic fit at layer %d, edge (%d -> %d): '%s' with R^2 = %.4f", 
+                        layer_idx, in_node, out_node, fn, r2
+                    )
+                    
+                # Extract analytical mathematically real affine coefficients
+                # c * f(a*x + b) + d
+                a, b, c, d = layer.affine[out_node, in_node].tolist()
+                
+                inner_var = prev_layer_nodes[in_node]
+                inner_term = f"({a:.4f} * [{inner_var}] + {b:.4f})"
+                
+                if fn == "x":
+                    f_val = inner_term
+                elif fn == "x^2":
+                    f_val = f"({inner_term})^2"
+                elif fn == "x^3":
+                    f_val = f"({inner_term})^3"
+                else:
+                    f_val = f"{fn}{inner_term}"
+                    
+                term_str = f"({c:.4f} * {f_val} + {d:.4f})"
+                terms.append(term_str)
+                
+            node_name = f"z_{out_node}" if layer_idx == num_layers - 1 else f"H_{layer_idx}_{out_node}"
+            current_layer_nodes.append(node_name)
+            
+            if terms:
+                layer_eqs[node_name] = " + \n      ".join(terms)
             else:
-                terms.append(f"{fn}(w_{weight_idx} * [{feat}])")
-            weight_idx += 1
+                layer_eqs[node_name] = "0.0000"
+                
+        expressions[f"layer_{layer_idx}"] = layer_eqs
+        prev_layer_nodes = current_layer_nodes
+        
+    final_eq = "P(Up) = exp(z_1) / (exp(z_0) + exp(z_1))"
 
-        if terms:
-            eq = " + \n      ".join(terms) + f" + b_{h}"
-        else:
-            eq = "0"
-
-        hidden_eqs[f"H_{h}"] = eq
-
-    # 4. Output layer equation
-    out_terms = " + ".join(
-        f"W_out{h} * H_{h}" for h in range(n_hidden)
-    )
-    final_eq = f"P(Up) = Sigmoid( {out_terms} + B_out )"
-
-    # 5. Feature map
     feat_map = {i: f for i, f in enumerate(feature_names)}
 
     result = {
         "pruned_model": pruned,
-        "hidden_node_equations": hidden_eqs,
+        "expressions": expressions,
         "final_equation": final_eq,
         "feature_map": feat_map,
-        "raw_funs_name": {
-            h: list(layer.funs_name[h]) for h in range(n_hidden)
-        },
     }
 
-    logger.info("Symbolic extraction complete (%d hidden nodes)", n_hidden)
+    logger.info("Symbolic extraction complete (%d layers parsed)", num_layers)
     return result
 
 
 def print_trading_equations(expr: Dict[str, Any]) -> None:
-    """Pretty-print the extracted KAN trading equations.
-
-    Parameters
-    ----------
-    expr : dict
-        Output of :func:`extract_symbolic_expression`.
-    """
+    """Pretty-print the rigorously extracted mathematical KAN equations."""
     print("\n" + "=" * 80)
     print(" EXTRACTED MATHEMATICAL TRADING EQUATIONS")
     print("=" * 80)
 
-    for node_name, equation in expr["hidden_node_equations"].items():
-        step = int(node_name.split("_")[1]) + 1
-        print(f"\n--- STEP {step}: Calculate {node_name} ---")
-        print(f"{node_name} = {equation}")
+    for layer_name, layer_eqs in expr["expressions"].items():
+        print(f"\n--- {layer_name.upper()} ---")
+        for node_name, equation in layer_eqs.items():
+            print(f"{node_name} = {equation}\n")
 
-    print(f"\n--- FINAL PREDICTION ---")
+    print(f"\n--- FINAL PREDICTION (Softmax) ---")
     print(expr["final_equation"])
 
     print("\n" + "-" * 40)

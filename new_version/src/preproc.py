@@ -219,6 +219,35 @@ def apply_log_transform(df: pd.DataFrame, features: List[str]) -> pd.DataFrame:
         )
     return df
 
+def apply_trend_correction(df: pd.DataFrame, trend_features: List[str], window: int = 365, min_periods: int = 100) -> pd.DataFrame:
+    """Remove deterministic rolling trends from selected features.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Dataset containing the features to correct.
+    trend_features : list of str
+        Column names to apply trend correction to.
+    window : int
+        Rolling window size for the mean (default 365).
+    min_periods : int
+        Minimum number of observations in window required to have a value.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with trend-corrected features.
+    """
+    df_out = df.copy()
+    cols = [c for c in trend_features if c in df_out.columns]
+    
+    if cols:
+        logger.info("Applying %d-day trend correction to %d features", window, len(cols))
+        for feat in cols:
+            df_out[feat] = df_out[feat] - df_out[feat].rolling(window=window, min_periods=min_periods, center=False).mean()
+            
+    return df_out
+
 def apply_fractional_differencing(df: pd.DataFrame, features: List[str],
                                   thres: float = 1e-4) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Find optimal *d* and apply FFD to non-stationary features.
@@ -251,7 +280,7 @@ def apply_fractional_differencing(df: pd.DataFrame, features: List[str],
         d = find_optimal_d(series, thres=thres)
         optimal_d[col] = d
         df[col] = frac_diff_ffd(df[col], d, thres)
-        logger.info("  %s → d = %.1f", col, d)
+        logger.info("  %s → d = %.2f", col, d)
 
     return df, optimal_d
 
@@ -287,7 +316,8 @@ def fit_robust_scaler(df: pd.DataFrame, features: List[str]) -> Tuple[pd.DataFra
 # 3. Feature Selection
 # ═══════════════════════════════════════════════════════════════════════════
 def remove_highly_correlated_features(X: pd.DataFrame, features: List[str], 
-                                      threshold: float = 0.85) -> Tuple[pd.DataFrame, List[str]]:
+                                      threshold: float = 0.85,
+                                      protected_features: Optional[List[str]] = None) -> Tuple[pd.DataFrame, List[str]]:
     """Drop one of each pair of highly Spearman-correlated features.
 
     For every pair above *threshold*, the feature with the **higher**
@@ -304,6 +334,8 @@ def remove_highly_correlated_features(X: pd.DataFrame, features: List[str],
         Columns to evaluate.
     threshold : float
         Correlation threshold.
+    protected_features : list of str, optional
+        Features to completely exclude from being dropped.
 
     Returns
     -------
@@ -311,6 +343,9 @@ def remove_highly_correlated_features(X: pd.DataFrame, features: List[str],
         - Reduced DataFrame.
         - Sorted list of removed column names.
     """
+    if protected_features is None:
+        protected_features = []
+
     X = X.copy()
     corr = X[features].corr(method="spearman").abs()
     to_remove: set = set()
@@ -319,6 +354,16 @@ def remove_highly_correlated_features(X: pd.DataFrame, features: List[str],
         for j in range(i + 1, len(corr.columns)):
             if corr.iloc[i, j] > threshold:
                 f1, f2 = corr.columns[i], corr.columns[j]
+                
+                if f1 in protected_features and f2 not in protected_features:
+                    to_remove.add(f2)
+                    continue
+                elif f2 in protected_features and f1 not in protected_features:
+                    to_remove.add(f1)
+                    continue
+                elif f1 in protected_features and f2 in protected_features:
+                    continue
+
                 avg1 = corr[f1].drop([f1, f2]).mean()
                 avg2 = corr[f2].drop([f1, f2]).mean()
                 to_remove.add(f1 if avg1 > avg2 else f2)
@@ -372,12 +417,9 @@ def rank_feature_importance(X_train: pd.DataFrame, y_train: pd.Series, top_n: in
         "Random Forest Importance": rf_series,
     }).fillna(0)
 
-    mi_max = imp_df["Mutual Information"].max()
-    rf_max = imp_df["Random Forest Importance"].max()
-
-    imp_df["MI_Scaled"] = imp_df["Mutual Information"] / mi_max if mi_max else 0
-    imp_df["RF_Scaled"] = imp_df["Random Forest Importance"] / rf_max if rf_max else 0
-    imp_df["Combined_Score"] = (imp_df["MI_Scaled"] + imp_df["RF_Scaled"]) / 2
+    imp_df["MI_Rank"] = imp_df["Mutual Information"].rank(ascending=True)
+    imp_df["RF_Rank"] = imp_df["Random Forest Importance"].rank(ascending=True)
+    imp_df["Combined_Score"] = (imp_df["MI_Rank"] + imp_df["RF_Rank"]) / 2
     imp_df = imp_df.sort_values("Combined_Score", ascending=False)
 
     best = imp_df.head(top_n).index.tolist()
@@ -390,7 +432,7 @@ def rank_feature_importance(X_train: pd.DataFrame, y_train: pd.Series, top_n: in
 # 4. Master Evaluation Pipeline (Val / Test)
 # ═══════════════════════════════════════════════════════════════════════════
 def preprocess_evaluation_set(df_target: pd.DataFrame, raw_full_data: pd.DataFrame, noisy_features: List[str],
-                              log_features: List[str], d_values_dict: Dict[str, float], fitted_scaler: RobustScaler,
+                              log_features: List[str], trend_candidates: List[str], d_values_dict: Dict[str, float], fitted_scaler: RobustScaler,
                               scale_features: List[str], final_features: List[str], buffer_days: int = 600) -> pd.DataFrame:
     """Apply the full preprocessing pipeline to a validation or test set.
 
@@ -413,6 +455,8 @@ def preprocess_evaluation_set(df_target: pd.DataFrame, raw_full_data: pd.DataFra
         Columns to drop (from ``identify_noisy_features``).
     log_features : list of str
         Columns to log-transform (from ``run_distribution_profile``).
+    trend_candidates : list of str
+        Columns to undergo deterministic trend correction.
     d_values_dict : dict
         ``{feature: optimal_d}`` from ``apply_fractional_differencing``.
     fitted_scaler : RobustScaler
@@ -422,7 +466,7 @@ def preprocess_evaluation_set(df_target: pd.DataFrame, raw_full_data: pd.DataFra
     final_features : list of str
         Final column selection (features + target).
     buffer_days : int
-        Number of calendar days to prepend as a warm-up buffer.
+        Number of calendar days, not trading days, to prepend as a warm-up buffer.
 
     Returns
     -------
@@ -445,26 +489,31 @@ def preprocess_evaluation_set(df_target: pd.DataFrame, raw_full_data: pd.DataFra
     df_work = df_work.drop(columns=cols_to_drop, errors="ignore")
 
     # 3. Feature engineering (rolling windows consume the buffer)
-    df_work, _ = create_ta_features(df_work)
-    df_work, _ = create_onchain_features(df_work)
+    df_work, ta_feats = create_ta_features(df_work)
+    df_work, oc_feats = create_onchain_features(df_work)
+    all_feature_cols = ta_feats + oc_feats
 
-    # 4. Log transformation
+    # Pipeline Step 1: Log transformation
     cols_to_log = [c for c in log_features if c in df_work.columns]
     if cols_to_log:
         df_work[cols_to_log] = np.log1p(df_work[cols_to_log])
 
-    # 5. Fractional differencing (using optimal d from training)
+    # Pipeline Step 2: Deterministic Trend Correction
+    df_work = apply_trend_correction(df_work, trend_candidates)
+
+    # Pipeline Step 3: Fractional differencing (using optimal d from training)
     for col, d_val in d_values_dict.items():
         if col in df_work.columns:
             df_work[col] = frac_diff_ffd(df_work[col], d_val)
 
-    # Drop NaNs from lookback (only buffer rows should be affected)
-    df_work = df_work.dropna()
+    # Pipeline Step 4: Drop NaNs selectively from lookback (only buffer rows should be affected, target is safe)
+    feature_cols_present = [c for c in all_feature_cols if c in df_work.columns]
+    df_work = df_work.dropna(subset=feature_cols_present)
 
-    # 6. SLICE — isolate the exact target dates (drop buffer)
+    # SLICE — isolate the exact target dates (drop buffer)
     df_clean = df_work.loc[df_target.index].copy()
 
-    # 7. Robust scaling (transform ONLY — never fit)
+    # Pipeline Step 5: Robust scaling (transform ONLY — never fit)
     cols_to_scale = [c for c in scale_features if c in df_clean.columns]
     if cols_to_scale:
         df_clean[cols_to_scale] = fitted_scaler.transform(df_clean[cols_to_scale])
@@ -475,3 +524,20 @@ def preprocess_evaluation_set(df_target: pd.DataFrame, raw_full_data: pd.DataFra
 
     logger.info("Evaluation set ready: %d rows × %d cols", *df_clean.shape)
     return df_clean
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. Temporal Embargo
+# ═══════════════════════════════════════════════════════════════════════════
+def apply_temporal_embargo(X_val: pd.DataFrame, y_val: pd.Series, embargo_days: int = 20) -> Tuple[pd.DataFrame, pd.Series]:
+    """Drop the first embargo_days rows from the validation/test set.
+    
+    Because features like EMA, MACD, and FFD use rolling windows, the first 
+    embargo_days of the validation set contain overlapping data from the training set.
+    This creates a clean gap (Purged Validation).
+    """
+    if len(X_val) <= embargo_days:
+        logger.warning("apply_temporal_embargo: validation set smaller than embargo window!")
+        return X_val.iloc[0:0], y_val.iloc[0:0]
+
+    logger.info("Applying temporal embargo: dropping %d rows from validation set", embargo_days)
+    return X_val.iloc[embargo_days:], y_val.iloc[embargo_days:]

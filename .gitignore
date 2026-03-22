@@ -1,6 +1,9 @@
 # Pastas de resultados e modelos (adicionado agora)
 figures/
 model/
+new_version/models/
+backup_old_version/PREPROCESSING_COMPARISON.md
+written_report/
 
 # Ignorar arquivos de cache
 __pycache__/

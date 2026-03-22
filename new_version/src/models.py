@@ -4,6 +4,8 @@ import itertools
 import logging
 import os
 import random
+import json
+import joblib
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -16,6 +18,8 @@ import torch.nn as nn
 from kan import KAN
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -40,8 +44,26 @@ from tensorflow.keras.layers import (
 from tensorflow.keras.models import Sequential
 
 import xgboost as xgb
+from packaging.version import Version
 
 logger = logging.getLogger(__name__)
+
+def _make_calibrated(fitted_model: Any, method: str = "sigmoid") -> CalibratedClassifierCV:
+    """Version-safe wrapper for CalibratedClassifierCV post-fit calibration."""
+    import sklearn
+    from sklearn.calibration import CalibratedClassifierCV
+    if Version(sklearn.__version__) >= Version("1.6.0"):
+        from sklearn.frozen import FrozenEstimator
+        return CalibratedClassifierCV(
+            estimator=FrozenEstimator(fitted_model),
+            method=method
+        )
+    else:
+        return CalibratedClassifierCV(
+            estimator=fitted_model,
+            cv="prefit",
+            method=method
+        )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Absolute Reproducibility (The Seed Rule)
@@ -147,7 +169,7 @@ def print_evaluation(metrics: Dict[str, Any], model_name: str = "Model",
     if "roc_auc" in metrics:
         print(f"  ROC-AUC       : {metrics['roc_auc']:.4f}")
 
-    print(f"\n{metrics['classification_report_text']}")
+    print(f"\n{metrics['classification_report_text']}".replace("\\n", "\n"))
 
 
 def plot_evaluation(metrics: Dict[str, Any], model_name: str = "Model",
@@ -295,7 +317,8 @@ def create_sequences(X: Union[pd.DataFrame, np.ndarray], y: Union[pd.Series, np.
 # ═══════════════════════════════════════════════════════════════════════════
 def fine_tune_ar_logistic(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
                           random_seed: int = 42, cv_splits: int = 5,
-                          param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
+                          param_grid: Optional[Dict[str, list]] = None,
+                          sample_weight: Optional[pd.Series] = None) -> Dict[str, Any]:
     """Tune an Autoregressive Logistic Regression via ``TimeSeriesSplit``.
 
     This is the **ultimate baseline**: ``Y = logistic(X_t, X_{t-1}, …)``.
@@ -334,14 +357,20 @@ def fine_tune_ar_logistic(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.D
         estimator=lr, param_grid=param_grid,
         scoring="roc_auc", cv=tscv, verbose=1, n_jobs=-1,
     )
-    gs.fit(X_train, y_train)
+    fit_params = {"sample_weight": sample_weight} if sample_weight is not None else {}
+    gs.fit(X_train, y_train, **fit_params)
 
     best_model = gs.best_estimator_
-    y_pred = best_model.predict(X_val)
-    y_proba = best_model.predict_proba(X_val)[:, 1]
+    
+    # 1. Calibrate probabilities on validation set to prevent leakage
+    calibrated_model = _make_calibrated(best_model, method="sigmoid")
+    calibrated_model.fit(X_val, y_val)
+
+    y_pred = calibrated_model.predict(X_val)
+    y_proba = calibrated_model.predict_proba(X_val)[:, 1]
 
     val_metrics = evaluate_model(y_val, y_pred, y_proba)
-    print_evaluation(val_metrics, "AR Logistic Regression (Validation)")
+    print_evaluation(val_metrics, "AR Logistic Regression (Validation)", best_params=gs.best_params_)
 
     # Feature importance — coefficients
     importances = pd.Series(
@@ -350,6 +379,7 @@ def fine_tune_ar_logistic(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.D
 
     return {
         "model": best_model,
+        "calibrated_model": calibrated_model,
         "best_params": gs.best_params_,
         "val_metrics": val_metrics,
         "feature_importances": importances,
@@ -360,7 +390,8 @@ def fine_tune_ar_logistic(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.D
 # ═══════════════════════════════════════════════════════════════════════════
 def fine_tune_logistic_regression(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
                                   random_seed: int = 42, cv_splits: int = 5,
-                                  param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
+                                  param_grid: Optional[Dict[str, list]] = None,
+                                  sample_weight: Optional[pd.Series] = None) -> Dict[str, Any]:
     """Tune Logistic Regression via ``TimeSeriesSplit`` grid search.
 
     Parameters
@@ -398,11 +429,16 @@ def fine_tune_logistic_regression(X_train: pd.DataFrame, y_train: pd.Series, X_v
     gs.fit(X_train, y_train)
 
     best_model = gs.best_estimator_
-    y_pred = best_model.predict(X_val)
-    y_proba = best_model.predict_proba(X_val)[:, 1]
+    
+    # Calibrate probabilities on validation set to prevent leakage
+    calibrated_model = _make_calibrated(best_model, method="sigmoid")
+    calibrated_model.fit(X_val, y_val)
+
+    y_pred = calibrated_model.predict(X_val)
+    y_proba = calibrated_model.predict_proba(X_val)[:, 1]
 
     val_metrics = evaluate_model(y_val, y_pred, y_proba)
-    print_evaluation(val_metrics, "Logistic Regression (Validation)")
+    print_evaluation(val_metrics, "Logistic Regression (Validation)", best_params=gs.best_params_)
 
     # Feature importance — coefficients
     importances = pd.Series(
@@ -411,6 +447,7 @@ def fine_tune_logistic_regression(X_train: pd.DataFrame, y_train: pd.Series, X_v
 
     return {
         "model": best_model,
+        "calibrated_model": calibrated_model,
         "best_params": gs.best_params_,
         "val_metrics": val_metrics,
         "feature_importances": importances,
@@ -421,7 +458,8 @@ def fine_tune_logistic_regression(X_train: pd.DataFrame, y_train: pd.Series, X_v
 # ═══════════════════════════════════════════════════════════════════════════
 def fine_tune_xgboost(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
                       random_seed: int = 42, cv_splits: int = 5,
-                      param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
+                      param_grid: Optional[Dict[str, list]] = None,
+                      sample_weight: Optional[pd.Series] = None) -> Dict[str, Any]:
     """Tune XGBoost via ``TimeSeriesSplit`` grid search.
 
     Returns
@@ -433,7 +471,7 @@ def fine_tune_xgboost(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataF
 
     if param_grid is None:
         param_grid = {
-            "n_estimators": [50, 100, 200],
+            "n_estimators": [500],
             "max_depth": [3, 5, 7],
             "learning_rate": [0.01, 0.05, 0.1],
             "subsample": [0.8, 1.0],
@@ -445,27 +483,74 @@ def fine_tune_xgboost(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataF
         random_state=random_seed, eval_metric="logloss", use_label_encoder=False,
     )
 
-    print("--- Starting XGBoost Time-Series Grid Search ---")
-    gs = GridSearchCV(
-        estimator=clf, param_grid=param_grid,
-        scoring="roc_auc", cv=tscv, verbose=1, n_jobs=-1,
-    )
-    gs.fit(X_train, y_train)
+    print("--- Starting XGBoost Time-Series Manual Search with Early Stopping ---")
+    keys, values = zip(*param_grid.items())
+    combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-    best_model = gs.best_estimator_
-    y_pred = best_model.predict(X_val)
-    y_proba = best_model.predict_proba(X_val)[:, 1]
+    tscv = TimeSeriesSplit(n_splits=cv_splits)
+    best_auc = 0.0
+    best_params: Dict[str, Any] = {}
+
+    for params in combinations:
+        fold_aucs: List[float] = []
+        for train_idx, test_idx in tscv.split(X_train):
+            X_fold_tr, X_fold_te = X_train.iloc[train_idx], X_train.iloc[test_idx]
+            y_fold_tr, y_fold_te = y_train.iloc[train_idx], y_train.iloc[test_idx]
+            
+            if sample_weight is not None:
+                fold_sample_weight = sample_weight.iloc[train_idx]
+            else:
+                fold_sample_weight = None
+            
+            clf = xgb.XGBClassifier(
+                random_state=random_seed, eval_metric="logloss", early_stopping_rounds=20, **params
+            )
+            clf.fit(
+                X_fold_tr, y_fold_tr,
+                sample_weight=fold_sample_weight,
+                eval_set=[(X_fold_te, y_fold_te)],
+                verbose=False
+            )
+            
+            proba = clf.predict_proba(X_fold_te)[:, 1]
+            fold_aucs.append(roc_auc_score(y_fold_te, proba))
+            
+        mean_auc = np.mean(fold_aucs)
+        if mean_auc > best_auc:
+            best_auc = mean_auc
+            best_params = params
+
+    print(f"Best Hyperparameters: {best_params} (Mean CV AUC: {best_auc:.4f})")
+    
+    # Retrain on full training set using final validation set for early stopping
+    final_clf = xgb.XGBClassifier(
+        random_state=random_seed, eval_metric="logloss", early_stopping_rounds=20, **best_params
+    )
+    final_clf.fit(
+        X_train, y_train,
+        sample_weight=sample_weight,
+        eval_set=[(X_val, y_val)],
+        verbose=False
+    )
+    
+    # Calibrate probabilities on validation set to prevent leakage
+    calibrated_model = _make_calibrated(final_clf, method="sigmoid")
+    calibrated_model.fit(X_val, y_val)
+
+    y_pred = calibrated_model.predict(X_val)
+    y_proba = calibrated_model.predict_proba(X_val)[:, 1]
 
     val_metrics = evaluate_model(y_val, y_pred, y_proba)
-    print_evaluation(val_metrics, "XGBoost (Validation)")
+    print_evaluation(val_metrics, "XGBoost (Validation)", best_params=best_params)
 
     importances = pd.Series(
-        best_model.feature_importances_, index=X_train.columns, name="importance",
+        final_clf.feature_importances_, index=X_train.columns, name="importance",
     )
 
     return {
-        "model": best_model,
-        "best_params": gs.best_params_,
+        "model": final_clf,
+        "calibrated_model": calibrated_model,
+        "best_params": best_params,
         "val_metrics": val_metrics,
         "feature_importances": importances,
     }
@@ -475,7 +560,8 @@ def fine_tune_xgboost(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataF
 # ═══════════════════════════════════════════════════════════════════════════
 def fine_tune_random_forest(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
                             random_seed: int = 42, cv_splits: int = 5,
-                            param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
+                            param_grid: Optional[Dict[str, list]] = None,
+                            sample_weight: Optional[pd.Series] = None) -> Dict[str, Any]:
     """Tune Random Forest via ``TimeSeriesSplit`` grid search.
 
     Returns
@@ -503,14 +589,20 @@ def fine_tune_random_forest(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd
         estimator=clf, param_grid=param_grid,
         scoring="roc_auc", cv=tscv, verbose=1, n_jobs=-1,
     )
-    gs.fit(X_train, y_train)
+    fit_params = {"sample_weight": sample_weight} if sample_weight is not None else {}
+    gs.fit(X_train, y_train, **fit_params)
 
     best_model = gs.best_estimator_
-    y_pred = best_model.predict(X_val)
-    y_proba = best_model.predict_proba(X_val)[:, 1]
+    
+    # Calibrate probabilities on validation set to prevent leakage
+    calibrated_model = _make_calibrated(best_model, method="sigmoid")
+    calibrated_model.fit(X_val, y_val)
+
+    y_pred = calibrated_model.predict(X_val)
+    y_proba = calibrated_model.predict_proba(X_val)[:, 1]
 
     val_metrics = evaluate_model(y_val, y_pred, y_proba)
-    print_evaluation(val_metrics, "Random Forest (Validation)")
+    print_evaluation(val_metrics, "Random Forest (Validation)", best_params=gs.best_params_)
 
     importances = pd.Series(
         best_model.feature_importances_, index=X_train.columns, name="importance",
@@ -518,6 +610,7 @@ def fine_tune_random_forest(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd
 
     return {
         "model": best_model,
+        "calibrated_model": calibrated_model,
         "best_params": gs.best_params_,
         "val_metrics": val_metrics,
         "feature_importances": importances,
@@ -594,14 +687,24 @@ def fine_tune_lstm(X_train_3d: np.ndarray, y_train: np.ndarray, X_val_3d: np.nda
         callbacks=callbacks, verbose=1,
     )
 
-    # Evaluate
-    y_proba = model.predict(X_val_3d).squeeze()
+    # Evaluate and Post-hoc Calibration
+    raw_val_proba = model.predict(X_val_3d).squeeze()
+    
+    calibrator = IsotonicRegression(out_of_bounds="clip")
+    calibrator.fit(raw_val_proba, y_val)
+    y_proba = calibrator.transform(raw_val_proba)
+    
     y_pred = np.where(y_proba > 0.5, 1, 0)
     val_metrics = evaluate_model(y_val, y_pred, y_proba)
-    print_evaluation(val_metrics, "LSTM (Validation)")
+    print_evaluation(val_metrics, "LSTM (Validation)", best_params={
+        "epochs_trained": len(history.history["loss"]),
+        "learning_rate": learning_rate,
+        "batch_size": batch_size,
+    })
 
     return {
         "model": model,
+        "calibrator": calibrator,
         "best_params": {
             "epochs_trained": len(history.history["loss"]),
             "learning_rate": learning_rate,
@@ -678,13 +781,24 @@ def fine_tune_cnn(X_train_3d: np.ndarray, y_train: np.ndarray, X_val_3d: np.ndar
         callbacks=callbacks, verbose=1,
     )
 
-    y_proba = model.predict(X_val_3d).squeeze()
+    # Evaluate and Post-hoc Calibration
+    raw_val_proba = model.predict(X_val_3d).squeeze()
+    
+    calibrator = IsotonicRegression(out_of_bounds="clip")
+    calibrator.fit(raw_val_proba, y_val)
+    y_proba = calibrator.transform(raw_val_proba)
+    
     y_pred = np.where(y_proba > 0.5, 1, 0)
     val_metrics = evaluate_model(y_val, y_pred, y_proba)
-    print_evaluation(val_metrics, "1D-CNN (Validation)")
+    print_evaluation(val_metrics, "1D-CNN (Validation)", best_params={
+        "epochs_trained": len(history.history["loss"]),
+        "learning_rate": learning_rate,
+        "batch_size": batch_size,
+    })
 
     return {
         "model": model,
+        "calibrator": calibrator,
         "best_params": {
             "epochs_trained": len(history.history["loss"]),
             "learning_rate": learning_rate,
@@ -699,8 +813,11 @@ def fine_tune_cnn(X_train_3d: np.ndarray, y_train: np.ndarray, X_val_3d: np.ndar
 # ═══════════════════════════════════════════════════════════════════════════
 # PyKAN (Kolmogorov-Arnold Network)
 # ═══════════════════════════════════════════════════════════════════════════
+def _make_kan_width(architecture: list) -> list:
+    return [(layer, 0) for layer in architecture]
+
 def fine_tune_kan(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series,
-                  random_seed: int = 42, cv_splits: int = 3, cv_steps: int = 50, final_steps: int = 200,
+                  random_seed: int = 42, cv_splits: int = 3, cv_steps: int = 80, final_steps: int = 300,
                   param_grid: Optional[Dict[str, list]] = None) -> Dict[str, Any]:
     """Tune and train a PyKAN model via ``TimeSeriesSplit`` cross-validation.
 
@@ -724,10 +841,15 @@ def fine_tune_kan(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame
     """
     set_seed(random_seed)
 
+    n_features = X_train.shape[1]
     if param_grid is None:
         param_grid = {
-            "hidden_nodes": [5, 6, 7],
-            "grid_size": [2, 3, 4],
+            "architecture": [
+                [n_features, 8, 2],
+                [n_features, 16, 2],
+                [n_features, 8, 4, 2]
+                ],
+            "grid_size": [3, 5],
             "lr": [0.01, 0.025, 0.05],
         }
 
@@ -766,7 +888,7 @@ def fine_tune_kan(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame
             }
 
             fold_model = KAN(
-                width=[n_features, params["hidden_nodes"], 2],
+                width=_make_kan_width(params["architecture"]),
                 grid=params["grid_size"], k=3, seed=random_seed,
             )
             fold_model.fit(
@@ -806,7 +928,7 @@ def fine_tune_kan(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame
     }
 
     best_kan = KAN(
-        width=[n_features, best_params["hidden_nodes"], 2],
+        width=_make_kan_width(best_params["architecture"]),
         grid=best_params["grid_size"], k=3, seed=random_seed,
     )
     best_kan.fit(
@@ -815,17 +937,83 @@ def fine_tune_kan(X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame
     )
 
     # Evaluate on validation
+    # Evaluate on validation and post-hoc calibrate probabilities
     with torch.no_grad():
         val_raw = best_kan(final_data["test_input"])
-        y_proba = torch.softmax(val_raw, dim=1)[:, 1].numpy()
-        y_pred = torch.argmax(val_raw, dim=1).numpy()
+        raw_val_proba = torch.softmax(val_raw, dim=1)[:, 1].numpy()
+        
+    calibrator = IsotonicRegression(out_of_bounds="clip")
+    calibrator.fit(raw_val_proba, y_val.values)
+    y_proba = calibrator.transform(raw_val_proba)
+        
+    y_pred = np.where(y_proba > 0.5, 1, 0)
 
     val_metrics = evaluate_model(y_val.values, y_pred, y_proba)
-    print_evaluation(val_metrics, "PyKAN (Validation)")
+    print_evaluation(val_metrics, "PyKAN (Validation)", best_params=best_params)
 
     return {
         "model": best_kan,
+        "calibrator": calibrator,
         "best_params": best_params,
         "val_metrics": val_metrics,
         "feature_importances": None,
     }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Model Persistence Utilities
+# ═══════════════════════════════════════════════════════════════════════════
+def save_model(model_result_dict: dict, filename_prefix: str, save_dir: str = "models/") -> None:
+    """Save the fully trained model and its evaluation metrics.
+
+    Uses ``joblib.dump`` for sklearn and XGBoost models. Uses ``torch.save``
+    for PyKAN state_dicts, and Keras ``save()`` for Deep Learning models.
+    Also saves an Isotonic calibrator if present.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # 1. Save Metrics as JSON
+    metrics_path = os.path.join(save_dir, f"{filename_prefix}_metrics.json")
+    clean_metrics: Dict[str, Any] = {}
+    for k, v in model_result_dict.get("val_metrics", {}).items():
+        if isinstance(v, (np.floating, float)):
+            clean_metrics[k] = float(v)  # type: ignore
+        elif isinstance(v, (np.integer, int)):
+            clean_metrics[k] = int(v)  # type: ignore
+        elif isinstance(v, np.ndarray):
+            clean_metrics[k] = v.tolist()  # type: ignore
+        elif isinstance(v, dict):
+            # E.g. classification_report_dict
+            clean_dict: Dict[str, Any] = {}
+            for sub_k, sub_v in v.items():
+                if isinstance(sub_v, dict):
+                    clean_dict[sub_k] = {sk: float(sv) if isinstance(sv, (np.floating, float)) else sv for sk, sv in sub_v.items()}  # type: ignore
+                else:
+                    clean_dict[sub_k] = float(sub_v) if isinstance(sub_v, (np.floating, float)) else sub_v  # type: ignore
+            clean_metrics[k] = clean_dict
+        elif isinstance(v, str):
+            clean_metrics[k] = v
+            
+    with open(metrics_path, "w") as f:
+        json.dump(clean_metrics, f, indent=4)
+
+    # 2. Save Model Object
+    # Prefer calibrated_model if available for sklearn/xgboost
+    model = model_result_dict.get("calibrated_model", model_result_dict.get("model"))
+    assert model is not None, "No model found in model_result_dict"
+    
+    if isinstance(model, KAN):
+        model_path = os.path.join(save_dir, f"{filename_prefix}_model.pt")
+        torch.save(model.state_dict(), model_path)
+    elif isinstance(model, (Sequential, tf.keras.Model)):
+        model_path = os.path.join(save_dir, f"{filename_prefix}_model.h5")
+        model.save(model_path)
+    else:
+        model_path = os.path.join(save_dir, f"{filename_prefix}_model.pkl")
+        joblib.dump(model, model_path)
+        
+    # 3. Save DL/KAN Calibrator 
+    if "calibrator" in model_result_dict:
+        cal_path = os.path.join(save_dir, f"{filename_prefix}_calibrator.pkl")
+        joblib.dump(model_result_dict["calibrator"], cal_path)
+        
+    logger.info("Saved %s correctly to %s", filename_prefix, save_dir)

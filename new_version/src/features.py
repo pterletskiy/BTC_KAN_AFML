@@ -51,11 +51,12 @@ def create_ta_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         high=df["High"], low=df["Low"], close=df["Close"], lbp=14,
     ).williams_r()
 
-    df["ROC"] = ta.momentum.ROCIndicator(
-        close=df["Close"], window=12,
-    ).roc()
+    df["ROC_7d"] = (df["Close"] / df["Close"].shift(7) - 1) * 100
+    df["ROC_14d"] = (df["Close"] / df["Close"].shift(14) - 1) * 100
 
-    df["Momentum"] = df["Close"] - df["Close"].shift(4)
+    df["ADX"] = ta.trend.ADXIndicator(
+        high=df["High"], low=df["Low"], close=df["Close"], window=14
+    ).adx()
 
     # ------------------------------------------------------------------
     # 2. Moving Averages & Trend
@@ -77,8 +78,23 @@ def create_ta_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     macd = ta.trend.MACD(close=df["Close"])
     df["MACD"] = macd.macd()
     df["Signal_Line"] = macd.macd_signal()
+    df["MACD_Hist"] = macd.macd_diff()
 
     df["OSCP"] = df["Close"].rolling(5).mean() - df["Close"].rolling(10).mean()
+
+    sma50 = df["Close"].rolling(50).mean()
+    sma200 = df["Close"].rolling(200).mean()
+    ema50 = df["Close"].ewm(span=50, adjust=False).mean()
+    ema100 = df["Close"].ewm(span=100, adjust=False).mean()
+    ema200 = df["Close"].ewm(span=200, adjust=False).mean()
+
+    df["Price_to_SMA50"] = df["Close"] / sma50
+    df["Price_to_SMA200"] = df["Close"] / sma200
+    df["Price_to_EMA50"] = df["Close"] / ema50
+    df["Price_to_EMA200"] = df["Close"] / ema200
+
+    df["SMA50_SMA200_ratio"] = sma50 / sma200
+    df["EMA50_EMA200_ratio"] = ema50 / ema200
 
     # ------------------------------------------------------------------
     # 3. Volatility & Volume
@@ -95,9 +111,13 @@ def create_ta_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         high=df["High"], low=df["Low"], close=df["Close"], window=14,
     ).average_true_range()
 
-    df["OBV"] = ta.volume.OnBalanceVolumeIndicator(
+    df["OBV_pct"] = ta.volume.OnBalanceVolumeIndicator(
         close=df["Close"], volume=df["Volume"],
-    ).on_balance_volume()
+    ).on_balance_volume().pct_change()
+
+    if "Log_Return" in df.columns:
+        df["Realized_Vol_14d"] = df["Log_Return"].rolling(14).std()
+        df["Realized_Vol_30d"] = df["Log_Return"].rolling(30).std()
 
     df["MFI"] = ta.volume.MFIIndicator(
         high=df["High"], low=df["Low"], close=df["Close"],
@@ -116,23 +136,50 @@ def create_ta_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     bbands = ta.volatility.BollingerBands(
         close=df["Close"], window=20, window_dev=2,
     )
-    df["Upper_Band"] = bbands.bollinger_hband()
-    df["Lower_Band"] = bbands.bollinger_lband()
+    upper_band = bbands.bollinger_hband()
+    lower_band = bbands.bollinger_lband()
+    moving_average = bbands.bollinger_mavg()
+    df["BB_Width"] = (upper_band - lower_band) / moving_average
+    df["BB_Position"] = (df["Close"] - lower_band) / (upper_band - lower_band)
 
     # ------------------------------------------------------------------
     # 4. Pivot Points (Support & Resistance)
     # ------------------------------------------------------------------
-    df["PP"] = (df["High"] + df["Low"] + df["Close"]) / 3
-    df["S1"] = (df["PP"] * 2) - df["High"]
-    df["S2"] = df["PP"] - (df["High"] - df["Low"])
-    df["R1"] = (df["PP"] * 2) - df["Low"]
-    df["R2"] = df["PP"] + (df["High"] - df["Low"])
+    df["PP"] = ((df["High"] + df["Low"] + df["Close"]) / 3).shift(1)
+    df["S1"] = (df["PP"] * 2) - df["High"].shift(1)
+    df["S2"] = df["PP"] - (df["High"].shift(1) - df["Low"].shift(1))
+    df["R1"] = (df["PP"] * 2) - df["Low"].shift(1)
+    df["R2"] = df["PP"] + (df["High"].shift(1) - df["Low"].shift(1))
 
     # ------------------------------------------------------------------
-    # 5. Calendar Anomalies
+    # 5. Calendar Anomalies & Halving Cycles
     # ------------------------------------------------------------------
-    df["Day_of_Week"] = df.index.dayofweek
-    df["Week_of_Month"] = (df.index.day - 1) // 7 + 1
+    df["DoW_sin"] = np.sin(2 * np.pi * df.index.dayofweek / 7)
+    df["DoW_cos"] = np.cos(2 * np.pi * df.index.dayofweek / 7)
+    df["Month_sin"] = np.sin(2 * np.pi * df.index.month / 12)
+    df["Month_cos"] = np.cos(2 * np.pi * df.index.month / 12)
+
+    HALVING_DATES = pd.to_datetime(["2012-11-28", "2016-07-09", "2020-05-11", "2024-04-20"])
+    
+    def days_since_halving(index):
+        if getattr(index, 'tz', None) is not None:
+            halvings = HALVING_DATES.tz_localize(index.tz)
+        else:
+            halvings = HALVING_DATES
+            
+        days = np.empty(len(index))
+        days[:] = np.nan
+        for dt in halvings:
+            mask = index >= dt
+            days[mask] = (index[mask] - dt).days
+            
+        mask_before = index < halvings[0]
+        if mask_before.any():
+            days[mask_before] = (index[mask_before] - halvings[0]).days
+            
+        return days
+
+    df["Days_Since_Halving"] = days_since_halving(df.index)
 
     # ------------------------------------------------------------------
     # Track newly added columns
@@ -205,7 +252,17 @@ def create_onchain_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     # Track newly added columns
     # ------------------------------------------------------------------
     onchain_features = [c for c in df.columns if c not in initial_columns]
-    logger.info("On-chain features created: %d", len(onchain_features))
+    
+    expected = [
+        "Net_Exchange_Flow", "Flow_Ratio", "AdrAct_ROC_7d",
+        "TxTfr_per_Active_Adr", "Miner_Sell_Pressure", "MVRV_Momentum",
+    ]
+    skipped = [c for c in expected if c not in onchain_features]
+    
+    logger.info(
+        "On-chain features created: %d %s | Skipped: %d %s",
+        len(onchain_features), onchain_features, len(skipped), skipped
+    )
 
     return df, onchain_features
 

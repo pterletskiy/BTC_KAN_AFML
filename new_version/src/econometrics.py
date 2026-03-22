@@ -32,6 +32,7 @@ def get_weights_ffd(d: float, thres: float = 1e-4) -> np.ndarray:
     np.ndarray
         Weight vector of shape ``(n, 1)``, oldest-first.
     """
+    assert 0 < d <= 1.0, "d must be in (0, 1]"
     w: List[float] = [1.0]
     k = 1
     while True:
@@ -109,21 +110,23 @@ def find_optimal_d(series: pd.Series, d_range: Optional[np.ndarray] = None,
         Optimal differencing order.
     """
     if d_range is None:
-        d_range = np.arange(0.1, 1.0, 0.1)
+        d_range = np.arange(0.05, 1.0, 0.05)
 
     for d in d_range:
         diff = frac_diff_ffd(series, d, thres).dropna()
         if len(diff) > 10:
-            pval = adfuller(diff)[1]
-            if pval < alpha:
-                return round(d, 1)
+            adf_pval  = adfuller(diff)[1]
+            kpss_pval = kpss(diff, regression="c", nlags="auto")[1]
+            if adf_pval < alpha and kpss_pval >= alpha:
+                return round(d, 2)
 
     return 1.0  # fallback
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Stationarity Testing (ADF + KPSS)
 # ═══════════════════════════════════════════════════════════════════════════
-def run_stationarity_tests(df: pd.DataFrame, features: List[str], alpha: float = 0.05) -> Tuple[pd.DataFrame, List[str]]:
+def run_stationarity_tests(df: pd.DataFrame, features: List[str], alpha: float = 0.05,
+                           kpss_regression: str = "c") -> Tuple[pd.DataFrame, List[str], List[str]]:
     """Batch ADF + KPSS stationarity tests on selected features.
 
     **Strict logic:** if *either* test flags the series as non-stationary,
@@ -140,14 +143,16 @@ def run_stationarity_tests(df: pd.DataFrame, features: List[str], alpha: float =
 
     Returns
     -------
-    tuple[pd.DataFrame, list[str]]
+    tuple[pd.DataFrame, list[str], list[str]]
         - Results DataFrame with columns: ``Feature``, ``ADF p-value``,
           ``ADF Result``, ``KPSS p-value``, ``KPSS Result``,
           ``Needs Differencing?``.
-        - List of feature names that require differencing.
+        - List of trend_candidates (Trend-Stationary).
+        - List of frac_diff_candidates (Difference-Stationary or Fails both).
     """
     results: List[list] = []
-    features_to_difference: List[str] = []
+    trend_candidates: List[str] = []
+    frac_diff_candidates: List[str] = []
 
     for col in features:
         series = df[col].dropna()
@@ -159,16 +164,20 @@ def run_stationarity_tests(df: pd.DataFrame, features: List[str], alpha: float =
         adf_result = "Stationary" if adf_pval < alpha else "Non-Stationary"
 
         # KPSS: H0 = Stationary → reject (p < α) means non-stationary
-        kpss_pval = kpss(series, regression="c", nlags="auto")[1]
+        kpss_pval = kpss(series, regression=kpss_regression, nlags="auto")[1]
         kpss_result = "Stationary" if kpss_pval >= alpha else "Non-Stationary"
 
-        needs_diff = (
-            "Yes"
-            if adf_result == "Non-Stationary" or kpss_result == "Non-Stationary"
-            else "No"
-        )
-        if needs_diff == "Yes":
-            features_to_difference.append(col)
+        if adf_result == "Stationary" and kpss_result == "Stationary":
+            needs_diff = "No"
+        elif adf_result == "Non-Stationary" and kpss_result == "Non-Stationary":
+            needs_diff = "Yes"
+            frac_diff_candidates.append(col)
+        else:
+            if adf_result == "Stationary" and kpss_result == "Non-Stationary":
+                needs_diff = "Trend Correction"
+                trend_candidates.append(col)
+            elif adf_result == "Non-Stationary" and kpss_result == "Stationary":
+                needs_diff = "Ambiguous"
 
         results.append(
             [col, adf_pval, adf_result, kpss_pval, kpss_result, needs_diff]
@@ -186,12 +195,27 @@ def run_stationarity_tests(df: pd.DataFrame, features: List[str], alpha: float =
         ],
     )
 
+    # Logical Sorting
+    sort_map = {
+        "No": 1,               # Passes both (ADF: Stat, KPSS: Stat)
+        "Trend Correction": 2, # ADF: Stat, KPSS: Non-Stat
+        "Yes": 4,              # Fails both (ADF: Non-Stat, KPSS: Non-Stat)
+        "Ambiguous": 3         # Default fallback for ambiguous
+    }
+    
+    # Differentiate Trend-Stationary vs Difference-Stationary
+    def get_sort_key(row):
+        return sort_map.get(row["Needs Differencing?"], 3)
+        
+    stat_df["_sort_key"] = stat_df.apply(get_sort_key, axis=1)
+    stat_df = stat_df.sort_values("_sort_key").drop(columns=["_sort_key"]).reset_index(drop=True)
+
     logger.info(
-        "Stationarity tests: %d/%d features need differencing",
-        len(features_to_difference),
-        len(features),
+        "Stationarity tests: %d trend-stationary, %d difference-stationary needed differencing",
+        len(trend_candidates),
+        len(frac_diff_candidates),
     )
-    return stat_df, features_to_difference
+    return stat_df, trend_candidates, frac_diff_candidates
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Distribution Profiling (Skewness, Kurtosis, Jarque-Bera)
@@ -229,6 +253,7 @@ def run_distribution_profile(df: pd.DataFrame, features: List[str],
         skew_val = series.skew()
         kurt_val = series.kurtosis()
         has_negatives = bool((series < 0).any())
+        has_zeros = bool((series == 0).any())
 
         jb_stat, jb_pval = jarque_bera(series)
         is_normal = "Yes" if jb_pval >= 0.05 else "No"
@@ -247,6 +272,8 @@ def run_distribution_profile(df: pd.DataFrame, features: List[str],
         if abs(skew_val) > skew_threshold:
             if has_negatives:
                 recommend_log = "Cannot (Has Negatives)"
+            elif has_zeros:
+                recommend_log = "Cannot (Has Zeros)"
             else:
                 recommend_log = "Yes"
                 features_to_log.append(col)
@@ -278,9 +305,20 @@ def run_distribution_profile(df: pd.DataFrame, features: List[str],
             "JB p-value",
             "Normally Distributed?",
             "Contains Negative Values?",
-            "Log Transform Recommended",
+            "Log Transform Needed",
         ],
     )
+
+    # Logical Sorting
+    sort_map = {
+        "No": 1,
+        "Cannot (Has Zeros)": 2,
+        "Cannot (Has Negatives)": 2,
+        "Yes": 3
+    }
+    
+    dist_df["_sort_key"] = dist_df["Log Transform Needed"].map(sort_map)
+    dist_df = dist_df.sort_values("_sort_key").drop(columns=["_sort_key"]).reset_index(drop=True)
 
     logger.info(
         "Distribution profile: %d features recommended for log transform",
@@ -291,9 +329,9 @@ def run_distribution_profile(df: pd.DataFrame, features: List[str],
 # ═══════════════════════════════════════════════════════════════════════════
 # Pandas Styler Helpers (for Notebook display)
 # ═══════════════════════════════════════════════════════════════════════════
-_GREEN = "background-color: #1e7e46"
-_RED = "background-color: #a0382c"
-_AMBER = "background-color: #b67c00"
+_GREEN = "background-color: #0b6623"
+_RED = "background-color: #800000"
+_AMBER = "background-color: #cc5500"
 
 
 def highlight_stat(val: str) -> str:
@@ -302,6 +340,8 @@ def highlight_stat(val: str) -> str:
         return _GREEN
     if val in ("Non-Stationary", "Yes"):
         return _RED
+    if val in ("Ambiguous", "Trend Correction"):
+        return _AMBER
     return ""
 
 

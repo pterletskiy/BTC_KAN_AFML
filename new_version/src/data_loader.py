@@ -3,6 +3,7 @@
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +21,12 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CACHE_DIR = _PROJECT_ROOT / "data" / "raw"
 
+DEFAULT_COINMETRICS_METRICS = [
+    "AdrActCnt", "TxCnt", "TxTfrValAdjUSD", "FeeMeanUSD", "HashRate", 
+    "DiffMean", "NVTAdj", "CapMrktCurUSD", "CapRealUSD", "CapMVRVCur", 
+    "SplyAct1yr", "FlowInExUSD", "FlowOutExUSD"
+]
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 4) Idempotent Caching Helpers
 # ═══════════════════════════════════════════════════════════════════════════
@@ -32,6 +39,10 @@ def _cache_path(source: str, key: str, start: str, end: str) -> Path:
 def _read_cache(path: Path) -> Optional[pd.DataFrame]:
     """Read a cached DataFrame if the file exists, else return None."""
     if path.exists():
+        age_hours = (time.time() - path.stat().st_mtime) / 3600
+        if age_hours > 24:
+            logger.warning("Cache may be stale (%s): %.0f hours old", path.name, age_hours)
+            
         logger.info("Cache hit: %s", path.name)
         return pd.read_parquet(path)
     return None
@@ -42,6 +53,18 @@ def _write_cache(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, engine="pyarrow")
     logger.info("Cached → %s", path.name)
+
+def _validate_df(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    if df.empty:
+        raise ValueError(f"{name}: empty DataFrame returned.")
+    if df.index.duplicated().any():
+        n_dupes = df.index.duplicated().sum()
+        logger.warning("%s: %d duplicate dates found — keeping last.", name, n_dupes)
+        df = df[~df.index.duplicated(keep="last")]
+    if not df.index.is_monotonic_increasing:
+        logger.warning("%s: index not sorted — sorting now.", name)
+        df.sort_index(inplace=True)
+    return df
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 3) Timezone Alignment Helper
@@ -93,6 +116,13 @@ def fetch_primary_asset(
     df.index = _to_utc_midnight(df.index)
     df.index.name = "Date"
 
+    if (df["Close"] <= 0).any():
+        n_before = len(df)
+        df = df[df["Close"] > 0]
+        logger.warning("yfinance_ohlcv:%s: Dropped %d rows with non-positive Close prices", ticker, n_before - len(df))
+    
+    df = _validate_df(df, f"yfinance_ohlcv:{ticker}")
+
     _write_cache(df, cache)
     return df
 
@@ -137,9 +167,8 @@ def fetch_coinmetrics(
 
     # Resolve metric list if not provided
     if metrics is None:
-        catalog = client.catalog_asset_metrics_v2(assets=asset).to_dataframe()
-        metrics = catalog[catalog["frequency"] == "1d"]["metric"].tolist()
-        logger.info("Resolved %d daily metrics for %s", len(metrics), asset)
+        metrics = DEFAULT_COINMETRICS_METRICS
+        logger.info("Using default %d CoinMetrics metrics for %s", len(metrics), asset)
 
     raw = client.get_asset_metrics(
         assets=asset,
@@ -159,9 +188,11 @@ def fetch_coinmetrics(
     df = df.set_index("time")
     df.index = _to_utc_midnight(df.index)
     df.index.name = "Date"
+    
+    df = _validate_df(df, f"coinmetrics:{asset}")
 
-    # Shift by 1 day to prevent look-ahead (matches notebook)
-    df = df.shift(1)
+    # Shift by 1 day to prevent look-ahead and drop resulting NaN
+    df = df.shift(1).dropna()
 
     # Coerce all columns to numeric
     for col in df.columns:
@@ -186,6 +217,21 @@ BLOCKCHAIN_COM_METRICS: Dict[str, str] = {
     "market-price":       "bc_market_price",
     "total-bitcoins":     "bc_total_bitcoins",
     "mempool-size":       "bc_mempool_size",}
+
+def _fetch_with_retry(url: str, params: Optional[Dict[str, Any]] = None, retries: int = 3, timeout: int = 30) -> requests.Response:
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except Exception as exc:
+            if attempt < retries - 1:
+                wait = 2 ** attempt
+                logger.warning("Retry %d/%d for %s (%.1fs)", attempt+1, retries, url, wait)
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError("Unreachable")
 
 def fetch_blockchain_com(
     metrics: Optional[Dict[str, str]] = None,
@@ -228,7 +274,7 @@ def fetch_blockchain_com(
     logger.info("Fetching Blockchain.com data (%d metrics) …", len(metrics))
     for api_key, col_name in metrics.items():
         try:
-            resp = requests.get(
+            resp = _fetch_with_retry(
                 f"{base_url}{api_key}",
                 params={
                     "timespan": f"{timespan_days}days",
@@ -237,7 +283,6 @@ def fetch_blockchain_com(
                 },
                 timeout=30,
             )
-            resp.raise_for_status()
             values = resp.json().get("values", [])
             tmp = pd.DataFrame(values)
             tmp["date"] = pd.to_datetime(tmp["x"], unit="s")
@@ -255,7 +300,10 @@ def fetch_blockchain_com(
     # Merge all single-column frames on the date column
     merged: Optional[pd.DataFrame] = None
     for _, tmp in frames.items():
-        merged = tmp if merged is None else pd.merge(merged, tmp, on="date", how="outer")
+        if merged is None:
+            merged = tmp
+        else:
+            merged = pd.merge(merged, tmp, on="date", how="left")
 
     merged = merged.sort_values("date").set_index("date")
 
@@ -264,9 +312,11 @@ def fetch_blockchain_com(
 
     merged.index = _to_utc_midnight(merged.index)
     merged.index.name = "Date"
+    
+    merged = _validate_df(merged, "blockchain_com")
 
-    # 1-day shift to prevent look-ahead (same rationale as CoinMetrics)
-    merged = merged.shift(1)
+    # 1-day shift to prevent look-ahead and drop resulting NaN
+    merged = merged.shift(1).dropna()
 
     _write_cache(merged, cache)
     return merged
@@ -347,6 +397,9 @@ def fetch_macro_feature(ticker: str, start: str = "2014-09-17", end: str = "2026
 
     df.index = _to_utc_midnight(df.index)
     df.index.name = "Date"
+
+    df = _validate_df(df, f"yfinance_macro:{ticker}")
+    df = df.shift(1).dropna()
 
     _write_cache(df, cache)
     return df
@@ -446,7 +499,10 @@ def compute_log_return_target(df: pd.DataFrame) -> pd.DataFrame:
     df["Price_Direction"] = (future_return > 0).astype(int)
 
     # Drop rows with NaN target (last row) and NaN log return (first row)
+    n_before = len(df)
+    last_dropped_date = df.index[-1].strftime('%Y-%m-%d')
     df = df.dropna(subset=["Price_Direction", "Log_Return"])
+    logger.info("compute_log_return_target: Dropped %d rows due to NaN target or returns (last dropped: %s)", n_before - len(df), last_dropped_date)
 
     return df
 
@@ -487,7 +543,12 @@ def merge_datasets(primary_df: pd.DataFrame, *secondary_dfs: pd.DataFrame) -> pd
     # Forward-fill ONLY secondary columns (§3: never bfill)
     secondary_cols = [c for c in merged.columns if c not in primary_cols]
     if secondary_cols:
-        merged[secondary_cols] = merged[secondary_cols].ffill()
+        for col in secondary_cols:
+            nans = merged[col].isnull()
+            max_gap = nans.groupby((~nans).cumsum()).sum().max()
+            if max_gap > 5:
+                logger.warning("merge_datasets: secondary column '%s' has a gap of %d consecutive NaNs (> 5 limit).", col, max_gap)
+        merged[secondary_cols] = merged[secondary_cols].ffill(limit=5)
 
     return merged
 
@@ -662,10 +723,18 @@ def prompt_date_range(default_start: str = "2014-09-17", default_end: str = "202
     """
     print("\n📅 Date Range")
     print(f"  All data sources will use the same period.")
-    start = input(f"  Start date [YYYY-MM-DD] (default {default_start}): ").strip()
-    start = start if start else default_start
-    end = input(f"  End date   [YYYY-MM-DD] (default {default_end}): ").strip()
-    end = end if end else default_end
+    try:
+        start = input(f"  Start date [YYYY-MM-DD] (default {default_start}): ").strip()
+        start = start if start else default_start
+        end = input(f"  End date   [YYYY-MM-DD] (default {default_end}): ").strip()
+        end = end if end else default_end
+        
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", start) or not re.match(r"^\d{4}-\d{2}-\d{2}$", end):
+            raise ValueError("Dates must be in YYYY-MM-DD format.")
+    except EOFError:
+        logger.warning("Non-interactive environment detected (EOFError). Using default dates.")
+        start, end = default_start, default_end
+        
     print(f"  → Period: {start} to {end}")
     return start, end
 
@@ -727,7 +796,7 @@ def interactive_config() -> Dict[str, Any]:
                 catalog_entry["onchain_providers"] = ["coinmetrics"]
     except ValueError:
         ticker = choice
-        catalog_entry: Dict[str, Any] = {
+        catalog_entry = {
             "name": ticker, "category": "traditional",
             "macro_options": {"DX-Y.NYB": "DXY", "^VIX": "VIX", "^TNX": "10Y Yield"},
         }
@@ -903,22 +972,23 @@ DEFAULT_SPY_CONFIG: Dict[str, Any] = {
 }
 
 #: BTC config — OHLCV only, no secondary features.
+#: The absence of the "feature_list" key is intentional and handled downstream.
 DEFAULT_BTC_OHLCV_CONFIG: Dict[str, Any] = {
     "ticker": "BTC-USD",
     "start": "2014-09-17",
-    "end": "2026-02-07",
+    "end": "2026-03-07",
 }
 
 #: GLD config — OHLCV only, no secondary features.
 DEFAULT_GLD_OHLCV_CONFIG: Dict[str, Any] = {
     "ticker": "GLD",
     "start": "2010-01-01",
-    "end": "2026-02-07",
+    "end": "2026-03-07",
 }
 
 #: QQQ config — OHLCV only, no secondary features.
 DEFAULT_QQQ_OHLCV_CONFIG: Dict[str, Any] = {
     "ticker": "QQQ",
     "start": "2010-01-01",
-    "end": "2026-02-07",
+    "end": "2026-03-07",
 }
