@@ -1,20 +1,21 @@
-# Pastas de resultados e modelos (adicionado agora)
+# Models and Results Folders
 figures/
-model/
 new_version/models/
+backup_old_version/model/
 backup_old_version/PREPROCESSING_COMPARISON.md
 written_report/
 
-# Ignorar arquivos de cache
+# Cache Files
 __pycache__/
 *.pyc
 
-# Ignorar ambientes virtuais
-env_ML/
+# Virtual Environments
 .conda/
 venv/
+env_ML/
 
-# Ignorar dados e ficheiros temporários do Jupyter
-.ipynb_checkpoints/
+# Data and Jupyter Temporary Files
 data/
+.ipynb_checkpoints/
 *.csv
+*.parquet
