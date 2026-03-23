@@ -1,261 +1,475 @@
+---
+name: skill_kan_modeling
+description: >
+  Governs KAN (Kolmogorov-Arnold Network) architecture, training, pruning,
+  probability calibration, symbolic extraction, and baseline comparison for
+  binary Bitcoin direction classification on daily time-bar data.
+  Use this skill whenever working on: KAN architecture selection, spline grid
+  refinement, pykan/efficient-kan training loops, pruning protocols, symbolic
+  math extraction (suggest_symbolic / auto_symbolic), KAN vs baseline comparison,
+  meta-labeling with KAN as primary or secondary model, or feeding KAN
+  calibrated probabilities into the AFML bet sizing formula.
+  Always read skill_MLdP_pipeline.md first — this skill depends on it.
+---
+
 # KAN Time-Series Modeling Skill
-## Binary Direction Classification for Financial Data
+## Binary Direction Classification for Daily BTC Data
 
-## 0. Scope
-This skill governs **modeling only** for binary market-direction prediction on preprocessed financial time series.
-It assumes the upstream preprocessing skill has already produced:
-* leak-free features,
-* leakage-safe binary labels,
-* training/validation/test splits,
-* optional sample weights,
-* and any required stationarity transforms.
+## 0. Scope and Dependencies
 
-This skill does **not** handle raw feature engineering, labeling, fractional differentiation, purging/embargo logic, or data leakage prevention at the preprocessing stage. Those belong to the preprocessing skill file.
+This skill governs **modeling only**. It assumes `skill_MLdP_pipeline.md`
+has already produced:
+- Leak-free feature matrix with FFD-transformed continuous series.
+- TBM labels with `t0`, `t1`, and uniqueness-based sample weights.
+- Purged/embargoed fold indices (Purged K-Fold or CPCV).
+- Feature importance rankings (MDI, MDA, SFI) — required before training.
+- `models/trial_registry.json` — must be updated after every configuration tested.
+
+**Library:** default to `pykan` (`pip install pykan`). If training speed
+becomes prohibitive, switch to `efficient-kan` and document the change.
+All API references in this skill assume `pykan` conventions.
 
 ---
 
 ## 1. Modeling Objective
-* The task is **binary classification**.
-* Predict the probability that the target direction is **up** rather than down.
-* The model output must be interpreted as a **class probability, not as a regression value**.
-* The main objective is to optimize **out-of-sample discrimination and calibration, not raw regression error**.
-* The final decision threshold must be tuned on validation data only, never on the test set.
+
+- Task: **binary classification** — predict `P(label = +1)`.
+- Output: calibrated probability, not a raw score.
+- Primary objective: out-of-sample discrimination and calibration.
+- The symbolic formula extracted at the end is the thesis contribution;
+  classification performance is its prerequisite.
 
 ---
 
-## 2. KAN Architecture for Sequential Financial Data
+## 2. Architecture Selection
 
 ### 2.1 Compact First Principle
-* Use **small and parsimonious KAN architectures** by default.
-* Financial time series are noisy and low signal-to-noise, so the first candidate architecture must be shallow and narrow.
-* Start from a small grid of architectures rather than one fixed shape.
-* Prefer the smallest architecture that is stable under validation and does not collapse under class imbalance.
 
-### 2.2 Allowed Architecture Search
-* Search over a small set of compact KANs.
-* Example starting points may include:
-  * a shallow KAN for tabular lagged features,
-  * a compact KAN with 1 to 3 hidden layers,
-  * a few narrow width choices.
-* The agent must not assume that deeper or wider is better.
-* The agent must report the selected architecture and justify it using validation performance and stability.
+Daily BTC has ~2,000–3,000 usable training observations after CUSUM
+filtering. Overparameterization is lethal. Start small.
 
-### 2.3 Input Format
-* Use the preprocessed feature matrix provided by the preprocessing skill.
-* If the input is tabular lagged features, treat it as a binary classification problem on one feature vector per observation.
-* If the input is sequential windows, preserve the window structure only if the model variant explicitly supports sequence input.
-* Do not reshape data arbitrarily; the input structure must be consistent with the chosen model family.
+**Default candidate grid for daily tabular data:**
 
-### 2.4 KAN Layer Behavior
-* Prefer KAN variants that expose learnable edge functions and remain interpretable.
-* Use spline-based or equivalent KAN implementations when available.
-* Keep the model simple enough that learned functions can be visualized and inspected after training.
-* If a variant introduces extra architectural components, they must be documented and compared fairly.
+| ID | Shape | Grid points | Notes |
+|---|---|---|---|
+| K1 | `[F, 4, 1]` | 5 | Baseline: 1 hidden layer, 4 nodes |
+| K2 | `[F, 8, 1]` | 5 | Wider hidden layer |
+| K3 | `[F, 4, 4, 1]` | 5 | 2 hidden layers |
+| K4 | `[F, 8, 4, 1]` | 5 | Wider 2-layer |
+
+Where `F` = number of features after importance-based dropping.
+
+Search this grid in full. Do not add architectures mid-search without
+registering the new configuration in `trial_registry.json`.
+
+### 2.2 Input Format
+
+- Input: 2D tensor of shape `(N_events, F)` — one row per CUSUM event.
+- Do not construct rolling windows unless using a sequence-aware KAN
+  variant. Rolling-window reshaping is not the default.
+- Features must already be scaled (`RobustScaler` from the inner CV fold).
+
+### 2.3 Spline Order
+
+- Default: `k=3` (cubic B-splines). Sufficient for smooth activation
+  functions and symbolic approximation.
+- Try `k=2` if training is unstable. Document any change.
 
 ---
 
-## 3. Training Objective and Optimization
+## 3. Training Protocol — Two-Phase (Grid Coarsening → Refinement)
 
-### 3.1 Classification Loss
-* Use **binary cross-entropy with logits** as the default loss for binary direction prediction.
-* If the classes are imbalanced, use **class weighting** or **focal loss**.
-* Do not use MSE or Huber loss as the primary objective for a binary direction classifier.
-* If calibration is planned, train the base classifier first, then calibrate probabilities afterward.
+KANs are trained in **two phases**. Skipping phase 2 degrades symbolic
+extraction quality significantly.
 
-### 3.2 Optimization
-* Use a standard gradient-based optimizer such as Adam or AdamW.
-* Track training and validation loss, but make model selection based on validation classification metrics, not loss alone.
-* Apply early stopping when validation performance stops improving for a predefined patience window.
+### Phase 1 — Coarse Grid Training
 
-### 3.3 Regularization
-* Regularize aggressively, because financial data are noisy and labels are often weak.
-* Acceptable regularizers include:
-  * weight decay,
-  * sparsity penalties,
-  * pruning,
-  * dropout if supported by the implementation,
-  * early stopping.
-* Prefer simpler regularization before increasing architectural complexity.
-* If the KAN implementation supports edge/function pruning, use it after training to simplify the model.
+```python
+model = KAN(width=[F, 4, 1], grid=5, k=3, seed=42)
+model.train(
+    dataset,
+    opt="Adam",
+    lr=1e-3,
+    steps=200,
+    lamb=1e-4,          # L1 sparsity on activations
+    lamb_entropy=2.0,   # Entropy regularization — encourages simple functions
+    loss_fn=bce_with_weights,
+    metrics=[auc_metric],
+)
+```
+
+### Phase 2 — Grid Refinement
+
+After phase 1 converges, refine the spline grid without reinitializing weights:
+
+```python
+model = model.refine(grid=20)   # increase grid resolution
+model.train(
+    dataset,
+    opt="Adam",
+    lr=5e-4,
+    steps=100,
+    lamb=1e-4,
+    lamb_entropy=2.0,
+)
+```
+
+Grid refinement allows the splines to capture finer functional detail
+before symbolic extraction. Use `grid=20` as default; increase to `grid=50`
+only if symbolic candidates are still imprecise.
+
+### 3.1 Loss Function
+
+Use binary cross-entropy with sample weights from the preprocessing skill:
+
+```python
+def bce_with_weights(pred, target, weights):
+    bce = F.binary_cross_entropy_with_logits(pred, target, reduction='none')
+    return (bce * weights).mean()
+```
+
+Never use MSE. If class imbalance is severe after CUSUM filtering,
+apply `pos_weight = n_neg / n_pos` inside `BCEWithLogitsLoss`.
+
+### 3.2 Early Stopping
+
+Monitor validation AUC. Stop if AUC does not improve for `patience=20`
+steps (phase 1) or `patience=10` steps (phase 2).
+Save the checkpoint with highest validation AUC, not lowest loss.
+
+### 3.3 Regularization Priority
+
+Apply in this order before increasing architecture size:
+
+1. L1 on spline activations (`lamb`): start at `1e-4`.
+2. Entropy regularization (`lamb_entropy`): start at `2.0`.
+3. Early stopping with generous patience.
+4. Weight decay on the optimizer (`1e-5`).
+
+If after all four the model still overfits, reduce architecture width,
+not regularization.
 
 ---
 
 ## 4. Imbalance Handling
 
-### 4.1 Class Balance Awareness
-* Always inspect the post-labeling class distribution before training.
-* Report the share of up, down, and any neutral observations if neutral labels are retained upstream.
-* Do not train a binary classifier without checking whether the positive class is rare or dominant.
-
-### 4.2 Loss Weighting
-* If the class distribution is imbalanced, apply:
-  * class weights, or
-  * focal loss, or
-  * sample weights passed from the preprocessing stage.
-* Sample weights must be applied only as they were produced upstream and must not be recomputed inside the model skill unless explicitly documented.
-
-### 4.3 Thresholding
-* Do not assume 0.5 is always the best decision threshold.
-* Tune the classification threshold on the validation fold only.
-* The chosen threshold must be reported and reused unchanged on the test fold.
+- Always report class distribution of TBM labels before training.
+- If `|n_+1 - n_-1| / N > 0.15`, apply `pos_weight` or sample weights.
+- Sample weights from `skill_MLdP_pipeline.md §4` are passed directly
+  to the loss function. Do not recompute them here.
+- Threshold tuning: grid search on validation fold only, step size 0.01.
+  Report the chosen threshold. Apply it unchanged to the test fold.
 
 ---
 
-## 5. Probability Calibration
+## 5. Baseline Models
 
-### 5.1 Calibration Requirement
-* The model must output probabilities that can be interpreted as estimated likelihoods of an upward move.
-* Raw model outputs are not automatically valid probabilities unless the implementation explicitly guarantees calibration.
+Every KAN result requires comparison against baselines on **identical**
+features, labels, splits, and evaluation protocol.
 
-### 5.2 Calibration Methods
-* Apply post-hoc calibration on validation data only when needed.
-* Acceptable methods include:
-  * Platt scaling,
-  * isotonic regression,
-  * or another held-out calibration method.
-* Calibration must be fitted only on training or validation data designated for calibration, never on the test set.
+### 5.1 Required Baselines
 
-### 5.3 Calibration Evaluation
-* Evaluate calibration using:
-  * Brier score,
-  * calibration curves,
-  * reliability diagrams,
-  * and, if available, expected calibration error.
-* Prefer the calibrated probability model when decision thresholds and trading rules depend on confidence.
+| Baseline | Library | Notes |
+|---|---|---|
+| Logistic Regression | `sklearn` | L2 regularized, calibrated with Platt |
+| Random Forest | `sklearn` | 500 trees, `class_weight='balanced'` |
+| LightGBM | `lightgbm` | Binary objective, `is_unbalance=True` |
+| MLP (2-layer) | `torch` | Same input/output shape as KAN, BCEWithLogitsLoss |
 
----
+**Why no LSTM/1D-CNN:** daily tabular data does not have a natural sequence
+structure after CUSUM event sampling. Sequence models would require
+arbitrary window construction and introduce additional hyperparameters
+that make comparison unfair.
 
-## 6. Validation and Model Selection
+### 5.2 Hyperparameter Budget Rule
 
-### 6.1 Leak-Free Validation
-* Evaluation must use the preprocessed leakage-safe split strategy provided by the upstream skill.
-* Do not fit the model on data that contains future information relative to the evaluation fold.
-* Do not use random cross-validation.
-
-### 6.2 Selection Criteria
-* Primary selection metrics:
-  * AUC,
-  * balanced accuracy,
-  * F1,
-  * MCC,
-  * and calibration quality.
-* Secondary selection metrics:
-  * precision,
-  * recall,
-  * log loss,
-  * Brier score.
-* If the thesis later includes trading results, those should be evaluated separately from classification metrics.
-
-### 6.3 Robustness
-* Use multiple evaluation folds if available.
-* Report both mean performance and variability across folds.
-* Prefer the model that is stable, not just the model with the highest single-fold score.
+Each baseline gets at most **one** hyperparameter search round with
+`n_iter=20` randomized search on the validation fold.
+Results are logged to `trial_registry.json` under the baseline name.
 
 ---
 
-## 7. Baseline Models
+## 6. Probability Calibration
 
-### 7.1 Baseline Comparison Requirement
-* Every KAN result must be compared against strong baselines.
-* KAN is not meaningful unless compared to simpler and more established models on the same preprocessed data.
+Raw KAN sigmoid outputs are not guaranteed to be calibrated.
 
-### 7.2 Recommended Baselines
-* The modeling skill should support at least the following baseline families:
-  * AR-Logistic,
-  * plain Logistic Regression,
-  * Random Forest,
-  * XGBoost or LightGBM,
-  * 1D-CNN,
-  * LSTM.
+### 6.1 When to Calibrate
 
-### 7.3 Fair Comparison Rule
-* All baselines must use the same features, the same labels, the same split logic, and the same evaluation protocol.
-* Hyperparameter tuning must be limited and documented.
-* Do not give KAN a different preprocessing path than the baselines.
+Calibrate if the Brier skill score on the validation fold is worse
+than the logistic regression baseline, or if the reliability diagram
+shows systematic over- or under-confidence.
 
----
+### 6.2 Method
 
-## 8. Pruning and Interpretability
+Use **Platt scaling** (logistic regression on raw logits) as the default.
+Fit the calibrator on a held-out calibration partition of the training
+fold (20% of training fold, never the test fold).
 
-### 8.1 Pruning
-* After training, prune unimportant nodes and edges if the KAN implementation supports it.
-* Prefer simpler pruned models when performance remains comparable.
-* Pruning should reduce complexity without materially degrading validation performance.
+```python
+from sklearn.calibration import CalibratedClassifierCV
+# or manually: fit LogisticRegression on (raw_logits, y_val_calib)
+```
 
-### 8.2 Visual Inspection
-* Always inspect learned edge functions when available.
-* Plot the most important learned functions and compare them with financial intuition.
-* Interpretability is a secondary contribution only if the predictive performance remains credible.
+### 6.3 Calibration Evaluation
 
-### 8.3 Function Stability
-* If learned functions vary wildly across folds, the model is likely unstable.
-* Prefer models whose learned functions are qualitatively similar across validation splits.
+Report: Brier score, ECE (15-bin), reliability diagram.
+The calibrated model is the one fed into the bet sizing formula
+from `skill_MLdP_pipeline.md §9`.
 
 ---
 
-## 9. Optional Symbolic Extraction
+## 7. Pruning Protocol
 
-### 9.1 When to Use
-* Symbolic extraction is optional and should be treated as an interpretability extension, not a training requirement.
-* Attempt symbolic extraction only after the classifier has shown stable validation performance.
+Pruning must happen **before** symbolic extraction.
+Pruning on an uncalibrated or unstable model is wasted effort.
 
-### 9.2 Pruning Before Extraction
-* Prune the model before attempting symbolic extraction.
-* Remove weak or redundant edges first.
-* Do not attempt to symbolify a highly redundant or unstable network.
+### 7.1 Two-Stage Pruning
 
-### 9.3 Fidelity Check
-* If a symbolic formula is extracted, validate that it preserves the predictive behavior of the trained KAN.
-* Compare the symbolic approximation to the original KAN using held-out classification performance and probability ranking behavior.
-* Use metrics appropriate to classification, such as AUC, log loss, and calibration quality.
-* If a regression-style fidelity metric is used internally by the implementation, it is only a secondary check and not the main success criterion for this thesis.
+**Stage 1 — Node pruning:**
 
----
+```python
+model.prune_node(threshold=5e-2)   # remove nodes with low attribution
+```
 
-## 10. Output Standards
-The modeling pipeline must output:
-* the trained KAN model,
-* training and validation curves,
-* calibrated probabilities if calibration was applied,
-* chosen threshold,
-* fold-level metrics,
-* final test metrics,
-* pruning summary,
-* interpretability plots if available,
-* and a reproducible record of hyperparameters.
+**Stage 2 — Edge pruning:**
 
----
+```python
+model.prune_edge(threshold=5e-3)   # remove splines with near-zero magnitude
+```
 
-## 11. Forbidden Actions
-* Do not treat binary direction prediction as a regression problem.
-* Do not optimize primarily for MSE or Huber loss.
-* Do not calibrate on the test set.
-* Do not tune thresholds on the test set.
-* Do not compare KAN to baselines with different feature sets or split logic.
-* Do not force symbolic extraction before the classifier is stable.
-* Do not use oversized architectures by default.
-* Do not assume the raw KAN output is already a valid probability.
-* Do not bypass the preprocessing skill file by redoing feature engineering here.
+After pruning, retrain for a short fine-tuning pass (50 steps, low LR)
+to restore any performance loss from pruning.
+
+### 7.2 Pruning Gate
+
+Accept the pruned model only if its validation AUC drops by less than
+`0.02` relative to the pre-pruned model. If the drop exceeds this,
+loosen the pruning threshold by 50% and retry.
+
+### 7.3 Function Stability Check
+
+Train the same architecture on each of the CPCV training folds.
+Plot the learned spline functions for the top-3 features across folds.
+If the functions change shape qualitatively across folds, the model is
+regime-dependent. Document this — do not suppress it.
 
 ---
 
-## 12. Recommended Default Workflow
-The agent should follow this order:
-1. Load leak-free preprocessed data from the preprocessing skill.
-2. Train a compact baseline KAN classifier.
-3. Compare against logistic, tree-based, and sequence baselines.
-4. Apply class weighting or focal loss if needed.
-5. Calibrate probabilities on validation data if calibration is poor.
-6. Tune the decision threshold on validation only.
-7. Prune the best stable KAN.
-8. Optionally attempt symbolic extraction.
-9. Report fold-wise and final test metrics.
+## 8. Symbolic Extraction (Primary Thesis Contribution)
+
+Symbolic extraction is the methodological core of this thesis.
+Treat it with the same rigor applied to the classification validation.
+
+### 8.1 Prerequisites (all must pass before extraction)
+
+- [ ] Model passes pruning gate (§7.2).
+- [ ] Validation AUC ≥ logistic regression baseline.
+- [ ] DSR > 0.95 on at least one CPCV path (from `skill_MLdP_pipeline.md §10`).
+- [ ] Function stability confirmed (§7.3).
+
+### 8.2 Extraction Workflow (pykan)
+
+**Step 1 — Suggest candidates per edge:**
+
+```python
+model.suggest_symbolic(
+    lib=['x', 'x^2', 'x^3', 'exp', 'log', 'tanh', 'sin', 'abs', 'sqrt'],
+    a_range=(-5, 5), b_range=(-5, 5),
+    verbose=True
+)
+```
+
+This outputs a ranked list of symbolic candidates per spline edge,
+scored by R² fit to the learned spline.
+
+**Step 2 — Fix candidates with R² > 0.97:**
+
+```python
+model.fix_symbolic(layer_id, node_in, node_out, fn_name)
+```
+
+Only fix edges where the top candidate has `R² ≥ 0.97`.
+For edges below this threshold, keep the spline — do not force a
+symbolic assignment on a poor fit.
+
+**Step 3 — Auto-symbolify remaining edges (optional):**
+
+```python
+model.auto_symbolic(lib=['x', 'x^2', 'exp', 'log', 'tanh', 'abs'])
+```
+
+Use only after manual review of Step 1 candidates.
+
+**Step 4 — Extract the formula:**
+
+```python
+formula = model.symbolic_formula()
+```
+
+### 8.3 Symbolic Fidelity Tests (Required)
+
+After extraction, run all three fidelity checks:
+
+| Test | Pass Criterion |
+|---|---|
+| AUC parity | AUC(symbolic) ≥ AUC(KAN) − 0.03 |
+| Log-loss parity | LogLoss(symbolic) ≤ LogLoss(KAN) + 0.05 |
+| Rank correlation | Spearman ρ(symbolic probs, KAN probs) ≥ 0.95 |
+
+If any test fails, do not claim the formula as equivalent.
+Report the gap and label the formula as an approximation.
+
+### 8.4 Regime Generalization Test (Thesis Differentiator)
+
+This is what separates a rigorous thesis from a demonstration.
+
+1. Extract the symbolic formula on the full training period.
+2. Split the test period into sub-regimes by SADF signal:
+   - **Explosive regime:** SADF > critical value (bubble / strong trend).
+   - **Stable regime:** SADF ≤ critical value (mean-reverting / quiet).
+3. Evaluate the symbolic formula's AUC separately on each sub-regime.
+4. Compare to the full-period AUC.
+
+If the formula degrades sharply in one regime, it has captured a regime-
+specific pattern, not a universal structure. Report this finding — it is
+scientifically valid and interesting.
+
+### 8.5 Formula Documentation
+
+For the extracted formula, report:
+- The full symbolic expression.
+- Which input features appear in it (and which were pruned away).
+- The financial interpretation of each retained function (e.g., "log of
+  lagged volume" suggests the model uses volume acceleration as a signal).
+- The regime generalization results from §8.4.
 
 ---
 
-## 13. Thesis Alignment
-This modeling skill must be used to support a thesis on **binary Bitcoin direction prediction**. Therefore:
-* the target is directional,
-* the output is probabilistic,
-* the evaluation is classification-oriented,
-* and the modeling conclusions must remain consistent with the preprocessing skill and the thesis methodology.
+## 9. Meta-Labeling Integration
+
+KAN can serve as either the **primary** model (predicts direction) or
+the **secondary** model (filters false positives from a simpler primary).
+
+### 9.1 KAN as Primary Model
+
+- Symmetric TBM barriers, side labels `{+1, -1}`.
+- Optimize for recall; accept lower precision.
+- Pass false positive rate and F1 to the secondary model stage.
+
+### 9.2 KAN as Secondary (Meta-Labeling) Model
+
+- Meta-labels: `{1=true positive, 0=false positive}` from primary's calls.
+- Use `class_weight='balanced'` — false positives typically dominate.
+- Score with F1. AUC is a secondary check.
+- Output: `P(true positive)` → fed into bet sizing.
+
+The decision of which role to assign should be based on which setup
+achieves higher F1 on the validation fold. Document both attempts.
+
+---
+
+## 10. CPCV Integration
+
+Each CPCV training/test fold combination is a separate model fit.
+
+**Per CPCV path:**
+1. Train KAN on the fold's training observations.
+2. Evaluate on the path's test observations.
+3. Record: AUC, F1, Brier, annualized SR of the implied strategy.
+4. Write to `trial_registry.json`.
+
+**Aggregate across paths:**
+- Report distribution of SR across paths (mean, std, min, max, fraction > 0).
+- Report distribution of AUC across paths.
+- Use SR distribution to compute DSR per `skill_MLdP_pipeline.md §10.2`.
+
+A KAN result is only reportable as the thesis final result if DSR > 0.95.
+
+---
+
+## 11. Validation and Selection Criteria
+
+### 11.1 Primary Metrics (in priority order)
+
+1. AUC (discrimination ability)
+2. F1 (precision/recall balance under imbalance)
+3. Brier score (calibration)
+4. DSR (statistical reliability after multiple trials)
+
+### 11.2 Secondary Metrics
+
+- MCC (balanced accuracy for imbalanced classes)
+- Log-loss
+- Precision @ chosen threshold
+- Recall @ chosen threshold
+
+### 11.3 Model Selection Gate
+
+Accept a KAN configuration as the final model only if:
+- Validation AUC ≥ LightGBM baseline AUC.
+- DSR > 0.95 across CPCV paths.
+- Brier score ≤ logistic regression baseline Brier score.
+
+If no KAN configuration passes all three, report the best KAN honestly
+alongside the best baseline and discuss the gap in the thesis.
+
+---
+
+## 12. Output Artefacts
+
+| File | Content |
+|---|---|
+| `models/kan_*.pt` | Trained KAN checkpoint per fold |
+| `models/kan_pruned_*.pt` | Pruned KAN checkpoint |
+| `models/calibrator_*.pkl` | Platt scaler per fold |
+| `models/symbolic_formula.json` | Extracted formula, R², fidelity test results |
+| `models/trial_registry.json` | All configs tested + SR for DSR (shared with MLdP skill) |
+| `models/baseline_*.pkl` | Baseline model checkpoints |
+| `models/backtest_stats.json` | SR distribution across CPCV paths (shared with MLdP skill) |
+| `models/spline_plots/` | Edge function plots per fold for stability check |
+| `models/regime_fidelity.json` | Symbolic formula AUC per SADF regime |
+
+---
+
+## 13. Forbidden Actions
+
+| Action | Reason |
+|---|---|
+| Skip grid refinement (Phase 2) | Degrades symbolic extraction quality |
+| Extract symbols before pruning | Redundant edges corrupt the formula |
+| Fix symbolic edges with R² < 0.97 | Forces a false simplification |
+| Compare KAN to baselines on different feature sets | Invalidates the comparison |
+| Report SR without DSR | Cannot distinguish skill from trial count |
+| Use MSE or Huber as primary loss | Wrong objective for binary classification |
+| Calibrate on test set | Look-ahead bias |
+| Skip regime generalization test | Incomplete thesis methodology |
+| Report single-fold AUC as final result | Ignores variability across CPCV paths |
+| Use LSTM/1D-CNN baselines on daily events | Requires arbitrary window construction |
+
+---
+
+## 14. Default Workflow (Sequential Steps)
+
+```
+1.  Receive: features, labels, sample_weights, fold_indices
+             from skill_MLdP_pipeline.md
+2.  Confirm: feature importance rankings available
+3.  Drop:    bottom-quartile features (MDI+MDA+SFI consensus)
+4.  Loop over CPCV fold combinations:
+    a.  Scale features (RobustScaler on training fold only)
+    b.  Train baseline grid (LogReg, RF, LightGBM, MLP)
+    c.  Train KAN grid [K1–K4] — Phase 1 (coarse grid)
+    d.  Grid refinement — Phase 2 (grid=20)
+    e.  Select best KAN by validation AUC
+    f.  Calibrate probabilities (Platt on held-out train partition)
+    g.  Tune decision threshold on validation fold
+    h.  Record SR, AUC, F1, Brier → trial_registry.json
+5.  Select best KAN across all folds by median validation AUC
+6.  Prune (node then edge), fine-tune 50 steps
+7.  Verify function stability across folds (spline plots)
+8.  Attempt symbolic extraction (§8.2)
+9.  Run symbolic fidelity tests (§8.3)
+10. Run regime generalization test (§8.4)
+11. Compute DSR from trial_registry.json
+12. Report: SR distribution, DSR, AUC, symbolic formula
+```
