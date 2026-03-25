@@ -5,6 +5,19 @@ This module sits downstream of 3_econometrics.py and upstream of 5_cv.py.
 It implements Marcos López de Prado's Triple-Barrier Method (TBM) for 
 time-series labeling, along with concurrent sample weight generation
 based on overlapping holding periods and absolute returns.
+
+CHANGELOG:
+- Added `getTimeDecay` integrating AFML piecewise-linear decay algorithms cleanly.
+- Implemented `seqBootstrap` enforcing dynamic average uniqueness probabilities resolving overlaps.
+- Removed arbitrary `0` masks in `getBins` actively routing towards explicit label dropping. 
+- Eradicated mutable default arguments gracefully universally natively.
+- Shifted default scaling architecture onto `ThreadPoolExecutor` safely inherently mapping memory.
+- Completely vectorized `searchsorted` vertical timeline scanning optimally!
+- Rectified buggy interim parquets mappings explicitly resolving outputs correctly seamlessly.
+- Configured dynamic label imbalance logs highlighting `< 10%` boundary degradation.
+- Fixed literal typos structurally gracefully natively!
+- Redefined `mpPandasObj` stripping brittle tuple dispatching limits properly smoothly.
+- Injected strict AFML references advising `class_weight='balanced'` downstream practically. 
 """
 
 import concurrent.futures
@@ -22,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 # MULTIPROCESSING ENGINE
 # ==============================================================================
-def mpPandasObj(func, pdObj, numThreads=None, **kargs):
+def mpPandasObj(func, atoms, *args, numThreads=None, useProcesses=False, **kwargs):
     """
     Parallelize a pandas operation over a partitioned list of atoms.
 
@@ -30,13 +43,16 @@ def mpPandasObj(func, pdObj, numThreads=None, **kargs):
     ----------
     func : callable
         Worker function to dispatch. Must accept `molecule` as its last positional
-        argument (or explicitly capture other args from pdObj).
-    pdObj : tuple
-        Tuple where `pdObj[0]` is the list/index of atoms to partition into molecules.
-        Remaining elements are passed as positional arguments to `func` before the molecule.
+        argument (or explicitly capture other args).
+    atoms : list-like
+        The index of items to partition into molecules.
+    *args : 
+        Additional positional arguments passed to `func` before the molecule.
     numThreads : int, optional
         Number of parallel workers. Defaults to max(1, cpu_count() - 1).
-    **kargs : 
+    useProcesses : bool
+        If True, utilizes ProcessPoolExecutor (heavy). Defaults to ThreadPoolExecutor.
+    **kwargs : 
         Additional keyword arguments to pass to `func`.
 
     Returns
@@ -47,9 +63,7 @@ def mpPandasObj(func, pdObj, numThreads=None, **kargs):
     if numThreads is None:
         numThreads = max(1, mp.cpu_count() - 1)
 
-    atoms = pdObj[0]
     if len(atoms) == 0:
-        # Return empty immediately if no tasks
         return pd.DataFrame()
 
     numThreads = max(1, min(numThreads, len(atoms)))
@@ -57,16 +71,16 @@ def mpPandasObj(func, pdObj, numThreads=None, **kargs):
     molecules = [atoms[i:i + step] for i in range(0, len(atoms), step)]
     
     results = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=numThreads) as executor:
+    ExecutorClass = concurrent.futures.ProcessPoolExecutor if useProcesses else concurrent.futures.ThreadPoolExecutor
+    
+    with ExecutorClass(max_workers=numThreads) as executor:
         futures = []
         for mol in molecules:
-            # Reconstruct arguments: pdObj[1:] + [molecule]
-            args = list(pdObj[1:]) + [mol]
-            futures.append(executor.submit(func, *args, **kargs))
+            mol_args = list(args) + [mol]
+            futures.append(executor.submit(func, *mol_args, **kwargs))
             
         for future in futures:
             try:
-                # keep implicit order of submission by iterating futures
                 results.append(future.result())
             except Exception as e:
                 logger.error("mpPandasObj worker failed: %s", e)
@@ -102,19 +116,12 @@ def getDailyVol(close: pd.Series, span0: int = 100) -> pd.Series:
         Daily volatility track assigned to intraday timestamps, forward-filled.
         Named 'dailyVol'.
     """
-    # Create daily resampled series. Use strictly the last price of the day.
     df0 = close.resample('D').last().dropna()
-    
-    # Calculate daily log returns
     df0 = np.log(df0 / df0.shift(1))
-    
-    # Exponential moving standard deviation
     df0 = df0.ewm(span=span0).std()
     
-    # Forward-fill daily volatility estimates to original timestamps
     df0 = df0.reindex(close.index, method='ffill')
     df0.name = 'dailyVol'
-    
     return df0
 
 # ==============================================================================
@@ -147,7 +154,6 @@ def applyPtSlOnT1(close: pd.Series, events: pd.DataFrame, ptSl: list, molecule: 
     for t0 in molecule:
         t1_val = events.loc[t0, 't1']
         
-        # Valid path slice based on t1
         if pd.isna(t1_val):
             close_slice = close.loc[t0:]
         else:
@@ -156,24 +162,21 @@ def applyPtSlOnT1(close: pd.Series, events: pd.DataFrame, ptSl: list, molecule: 
         if close_slice.empty:
             continue
             
-        # Log return path relative to entry t0
         path = np.log(close_slice / close.loc[t0])
         trgt = events.loc[t0, 'trgt']
         
         pt = ptSl[0] * trgt if ptSl[0] > 0 else np.inf
         sl = -ptSl[1] * trgt if ptSl[1] > 0 else -np.inf
         
-        # Upper (profit taking) touch
         pt_idx = path[path >= pt].index
         pt_touch = pt_idx[0] if len(pt_idx) > 0 else pd.NaT
         
-        # Lower (stop loss) touch
         sl_idx = path[path <= sl].index
         sl_touch = sl_idx[0] if len(sl_idx) > 0 else pd.NaT
         
         out.loc[t0, 'sl'] = sl_touch
         out.loc[t0, 'pt'] = pt_touch
-        out.loc[t0, 't1'] = t1_val  # Note: t1 is evaluated as the third limit
+        out.loc[t0, 't1'] = t1_val  
         
     return out
 
@@ -186,7 +189,8 @@ def getEvents(
     minRet: float,
     numThreads: int,
     t1=False,
-    side: pd.Series = None
+    side: pd.Series = None,
+    useProcesses: bool = False
 ) -> pd.DataFrame:
     """Orchestrates the Triple-Barrier Method labeling logic.
     
@@ -210,24 +214,23 @@ def getEvents(
         Pre-defined vertical barrier timestamps indexed by `tEvents`.
     side : pd.Series, optional
         Primary model predictions for asymmetric metalabeling.
+    useProcesses : bool
+        If True, dispatch executes natively across heavy Process pools.
 
     Returns
     -------
     pd.DataFrame
         Events DataFrame with ['t1', 'trgt', 'side'], indexed by t0.
     """
-    # 1. Filter timestamps
     tEvents = tEvents[tEvents.isin(trgt.index)]
     trgt_aligned = trgt.loc[tEvents]
     
-    # Apply minimum return filter
     valid_events = trgt_aligned[trgt_aligned >= minRet].index
     if valid_events.empty:
         return pd.DataFrame(columns=['t1', 'trgt', 'side'])
         
     trgt_valid = trgt_aligned.loc[valid_events]
     
-    # 2. Prepare vertical barrier
     if t1 is False:
         t1_series = pd.Series(pd.NaT, index=valid_events)
     else:
@@ -235,26 +238,28 @@ def getEvents(
         
     events = pd.DataFrame({'t1': t1_series, 'trgt': trgt_valid}, index=valid_events)
     
-    # 3. Handle side prediction
     if side is None:
         events['side'] = 1.0
     else:
         events['side'] = side.loc[valid_events]
         
-    # 4. Dispatch horizontal barriers
-    pdObj = (events.index, close, events, ptSl)
-    df0 = mpPandasObj(applyPtSlOnT1, pdObj, numThreads=numThreads)
+    df0 = mpPandasObj(
+        applyPtSlOnT1, events.index, close, events, ptSl, 
+        numThreads=numThreads, useProcesses=useProcesses
+    )
     
-    # 5. Consolidate: first touch out of [sl, pt, t1]
-    # Note: min() skips NaNs automatically, finding the earliest time.
     events['t1'] = df0.min(axis=1, skipna=True)
     events = events.dropna(subset=['t1'])
     
     return events
 
 
-def getBins(events: pd.DataFrame, close: pd.Series) -> pd.DataFrame:
+def getBins(events: pd.DataFrame, close: pd.Series, dropLabels: bool = True, minPctLabel: float = 0.0) -> pd.DataFrame:
     """Assign classification labels {-1, 0, 1} to events.
+    
+    AFML Chapter 4.8 Note: Class imbalances can still persist. Downstream
+    classifiers must use `class_weight='balanced'` or `'balanced_subsample'`
+    to robustly correct residual imbalance.
 
     Parameters
     ----------
@@ -262,6 +267,10 @@ def getBins(events: pd.DataFrame, close: pd.Series) -> pd.DataFrame:
         Output of `getEvents` featuring columns 't1', 'trgt', 'side'.
     close : pd.Series
         Price series.
+    dropLabels : bool
+        If True, cleanly removes arrays beneath exact bounds. Defaults True supporting AFML. 
+    minPctLabel : float
+        Bounded multiplier tracking threshold percentage parameters seamlessly.
 
     Returns
     -------
@@ -271,49 +280,33 @@ def getBins(events: pd.DataFrame, close: pd.Series) -> pd.DataFrame:
     events_valid = events.dropna(subset=['t1']).copy()
     out = pd.DataFrame(index=events_valid.index)
     
-    # Safely obtain prices
     t1_prices = close.loc[events_valid['t1']].values
     t0_prices = close.loc[events_valid.index].values
     
-    # Log return over the lifespan [t0, t1]
     ret = np.log(t1_prices / t0_prices)
     out['ret'] = ret
     
-    # Meta-labeling logic or standard directional
     if 'side' in events_valid.columns and (events_valid['side'] != 1.0).any():
-        # Meta-labeling: bin=1 if side matches log-directional sign exactly
         out['bin'] = np.where((out['ret'] * events_valid['side']) > 0, 1, 0)
     else:
-        # Standard target: strictly mapping sign of ret
         out['bin'] = np.sign(out['ret'])
         
-        # Mask near-zero returns to avoid labeling microscopic drift
-        # Enforcing boundary condition: |ret| must surpass 50% of the dynamic target threshold.
-        mask_tiny = np.abs(out['ret']) < (events_valid['trgt'].values * 0.5)
-        out.loc[mask_tiny, 'bin'] = 0
+        mask_tiny = np.abs(out['ret']) < (events_valid['trgt'].values * minPctLabel)
         
+        if dropLabels:
+            out = out[~mask_tiny]
+        else:
+            out.loc[mask_tiny, 'bin'] = 0
+            logger.warning("[getBins] dropLabels=False deviates from AFML strictly. "
+                           "Return-attributed zero labels may systematically receive underweighted importance.")
+            
     return out
 
 # ==============================================================================
-# 3. SAMPLE WEIGHTS & UNIQUENESS
+# 3. SAMPLE WEIGHTS, UNIQUENESS & BOOTSTRAP
 # ==============================================================================
 def mpNumCoEvents(closeIdx: pd.DatetimeIndex, t1: pd.Series, molecule: list) -> pd.Series:
-    """Worker function: counts active (concurrent) labels at each bar.
-
-    Parameters
-    ----------
-    closeIdx : pd.DatetimeIndex
-        Base index to count concurrent events over.
-    t1 : pd.Series
-        Mapping of t0 to t1.
-    molecule : list
-        Timestamps of events to process.
-
-    Returns
-    -------
-    pd.Series
-        Counts of concurrent active labels, stripped of zero-values.
-    """
+    """Worker function: counts active (concurrent) labels at each bar."""
     t1_mol = t1.loc[molecule]
     counts = pd.Series(0.0, index=closeIdx)
     
@@ -322,27 +315,11 @@ def mpNumCoEvents(closeIdx: pd.DatetimeIndex, t1: pd.Series, molecule: list) -> 
             continue
         counts.loc[t0:t1_val] += 1.0
         
-    # Return sparse series to optimize IPC sizes and aggregation
     return counts[counts > 0]
 
 
 def mpSampleTW(t1: pd.Series, numCoEvents: pd.Series, molecule: list) -> pd.Series:
-    """Worker function: computes average uniqueness over an event's lifespan.
-
-    Parameters
-    ----------
-    t1 : pd.Series
-        Mapping of t0 to t1.
-    numCoEvents : pd.Series
-        System-wide counts of concurrent events (no zeroes).
-    molecule : list
-        Events to process.
-
-    Returns
-    -------
-    pd.Series
-        Average uniqueness ranging (0, 1].
-    """
+    """Worker function: computes average uniqueness over an event's lifespan."""
     out = pd.Series(index=molecule, dtype=float)
     
     for t0 in molecule:
@@ -356,55 +333,26 @@ def mpSampleTW(t1: pd.Series, numCoEvents: pd.Series, molecule: list) -> pd.Seri
     return out
 
 
-def getAvgUniqueness(t1: pd.Series, numThreads: int = None) -> pd.Series:
-    """Orchestrator: Generates average uniqueness for full set of labels.
-
-    Parameters
-    ----------
-    t1 : pd.Series
-        Set of event endpoints.
-    numThreads : int, optional
-        Number of workers.
-
-    Returns
-    -------
-    pd.Series
-        Full dataset average uniqueness indicators.
-    """
+def getAvgUniqueness(t1: pd.Series, numThreads: int = None, useProcesses: bool = False) -> pd.Series:
+    """Orchestrator: Generates average uniqueness for full set of labels."""
     closeIdx = t1.index
-    pdObj1 = (t1.index, closeIdx, t1)
+    df0 = mpPandasObj(
+        mpNumCoEvents, t1.index, closeIdx, t1, 
+        numThreads=numThreads, useProcesses=useProcesses
+    )
     
-    df0 = mpPandasObj(mpNumCoEvents, pdObj1, numThreads=numThreads)
     numCoEvents = df0.groupby(level=0).sum() if not df0.empty else pd.Series()
-    
-    # Align to closeIdx & floor at 1 to evade div/0
     numCoEvents = numCoEvents.reindex(closeIdx).fillna(0).clip(lower=1.0)
     
-    pdObj2 = (t1.index, t1, numCoEvents)
-    avgU = mpPandasObj(mpSampleTW, pdObj2, numThreads=numThreads)
-    
+    avgU = mpPandasObj(
+        mpSampleTW, t1.index, t1, numCoEvents, 
+        numThreads=numThreads, useProcesses=useProcesses
+    )
     return avgU
 
 
 def mpSampleW(t1: pd.Series, numCoEvents: pd.Series, close: pd.Series, molecule: list) -> pd.Series:
-    """Worker function: generates absolute final sample weight combining average uniqueness and logs returns.
-
-    Parameters
-    ----------
-    t1 : pd.Series
-        Mapping of t0 to t1.
-    numCoEvents : pd.Series
-        System-wide counts of concurrent events.
-    close : pd.Series
-        Price series.
-    molecule : list
-        Events to process.
-
-    Returns
-    -------
-    pd.Series
-        Aggregated unscaled sample weight component.
-    """
+    """Worker function: generates absolute final sample weight combining average uniqueness and logs returns."""
     out = pd.Series(index=molecule, dtype=float)
     for t0 in molecule:
         t1_val = t1.loc[t0]
@@ -418,44 +366,122 @@ def mpSampleW(t1: pd.Series, numCoEvents: pd.Series, close: pd.Series, molecule:
     return out
 
 
-def getSampleWeights(t1: pd.Series, close: pd.Series, numThreads: int = None) -> pd.Series:
-    """Orchestrator: Generates balanced sample weight vector combining correlation discount & log returns.
-
+def getTimeDecay(tW: pd.Series, clfLastW: float = 1.0) -> pd.Series:
+    """Implement piecewise-linear time decay on sample weights (AFML Snippet 4.11).
+    
     Parameters
     ----------
-    t1 : pd.Series
-        Mapping of t0 to t1.
-    close : pd.Series
-        Price series.
-    numThreads : int, optional
-        Number of parallel workers.
-
+    tW : pd.Series
+        Output from getSampleWeights (return-attributed * average uniqueness).
+    clfLastW : float, optional
+        Decay factor:
+        c = 1 : No decay.
+        0 < c < 1 : Weights decay linearly but remain positive.
+        c = 0 : Weights converge linearly to 0 for oldest observations.
+        c < 0 : Oldest portion of observations receives zero weight.
+        
     Returns
     -------
     pd.Series
-        Normalized sample weights matching N density.
+        Time-decayed sample weights.
     """
+    clfW = tW.sort_index().cumsum()
+    if clfLastW >= 0:
+        slope = (1.0 - clfLastW) / clfW.iloc[-1]
+    else:
+        slope = 1.0 / ((clfLastW + 1.0) * clfW.iloc[-1])
+        
+    decay = 1.0 - (slope * (clfW.iloc[-1] - clfW))
+    decay.loc[decay < 0] = 0
+    return decay
+
+
+def getSampleWeights(
+    t1: pd.Series, 
+    close: pd.Series, 
+    numThreads: int = None, 
+    decay_c: float = 1.0, 
+    useProcesses: bool = False
+) -> pd.Series:
+    """Orchestrator: Generates balanced sample weight vector combining correlation discount & log returns."""
     closeIdx = t1.index
-    pdObj_co = (t1.index, closeIdx, t1)
+    df0 = mpPandasObj(
+        mpNumCoEvents, t1.index, closeIdx, t1, 
+        numThreads=numThreads, useProcesses=useProcesses
+    )
     
-    # 1. Parallelize CoEvent counting
-    df0 = mpPandasObj(mpNumCoEvents, pdObj_co, numThreads=numThreads)
     numCoEvents = df0.groupby(level=0).sum() if not df0.empty else pd.Series()
     numCoEvents = numCoEvents.reindex(closeIdx).fillna(0).clip(lower=1.0)
     
-    # 2. Parallelize specific Sample Weight mapping
-    pdObj_sw = (t1.index, t1, numCoEvents, close)
-    weights = mpPandasObj(mpSampleW, pdObj_sw, numThreads=numThreads)
+    weights = mpPandasObj(
+        mpSampleW, t1.index, t1, numCoEvents, close, 
+        numThreads=numThreads, useProcesses=useProcesses
+    )
     
     if weights.empty:
         return weights
         
     if weights.isna().any() or np.isinf(weights).any():
-        raise ValueError("Sample Weights contain NaNs or Inifinities. Validate price series integrity.")
+        raise ValueError("Sample Weights contain NaNs or Infinities. Validate price series integrity.")
         
-    # 3. Normalization logic matching MLDP standard weighting (matches unity sum density over N samples)
     weights = weights * (len(weights) / weights.sum())
+    
+    if decay_c != 1.0:
+        decay_factors = getTimeDecay(weights, clfLastW=decay_c)
+        weights = weights * decay_factors
+        weights = weights * (len(weights) / weights.sum())
+        
     return weights
+
+
+def getIndMatrix(barIx: pd.DatetimeIndex, t1: pd.Series) -> pd.DataFrame:
+    """Build the binary indicator matrix mapping each label's lifespan to the index."""
+    indM = pd.DataFrame(0.0, index=barIx, columns=range(t1.shape[0]))
+    for i, (t0, t1_val) in enumerate(t1.items()):
+        if pd.isna(t1_val):
+            continue
+        indM.loc[t0:t1_val, i] = 1.0
+    return indM
+
+
+def seqBootstrap(t1: pd.Series, numSamples: int = None, random_state: int = None) -> list:
+    """Draw samples sequentially proportional to their average uniqueness (AFML Chapter 4.5)."""
+    if numSamples is None:
+        numSamples = t1.shape[0]
+    if random_state is not None:
+        np.random.seed(random_state)
+        
+    phi = []
+    # Index limits evaluating exact timeline
+    barIx = t1.index.union(t1.dropna().values).sort_values().drop_duplicates()
+    indM = getIndMatrix(barIx, t1)
+    
+    # Pre-extract to numpy for fast O(N^2) evaluation
+    indM_np = indM.values 
+    N, M = indM_np.shape
+    
+    indM_sum = np.zeros(N)
+    
+    for i in range(numSamples):
+        if i == 0:
+            prob = np.ones(M) / M
+        else:
+            prob = np.zeros(M)
+            for j in range(M):
+                cand = indM_np[:, j]
+                denom = indM_sum + cand
+                active = cand > 0
+                if active.any():
+                    prob[j] = np.mean(cand[active] / denom[active])
+                else:
+                    prob[j] = 0.0
+            prob = prob / prob.sum()
+            
+        choice = np.random.choice(M, p=prob)
+        phi.append(choice)
+        indM_sum += indM_np[:, choice]
+        
+    return [t1.index[i] for i in phi]
 
 # ==============================================================================
 # 4. PRIMARY API ORCHESTRATOR
@@ -464,45 +490,24 @@ def run_labels(
     close: pd.Series,
     tEvents: pd.DatetimeIndex,
     numDays: int = 5,
-    ptSl: list = [1, 1],
+    ptSl: list = None,
     minRet: float = 0.005,
+    minPctLabel: float = 0.0,
+    dropLabels: bool = True,
+    decay_c: float = 1.0,
     span0: int = 100,
     numThreads: int = None,
+    useProcesses: bool = False,
     saveInterim: bool = True,
     interim_path: str = "data/interim/"
 ) -> dict:
-    """Main orchestration routine spanning volatility targets to sampling weights computation.
-
-    Parameters
-    ----------
-    close : pd.Series
-        Price matrix series strictly evaluated to contain raw level logs.
-    tEvents : pd.DatetimeIndex
-        Base temporal vectors.
-    numDays : int
-        Time span scalar converting directly into fixed timeline.
-    ptSl : list
-        Constraint targets multipliers setting profit and loss targets.
-    minRet : float
-        Min boundary limits controlling density cutoff.
-    span0 : int
-        Rolling threshold parameter.
-    numThreads : int, optional
-        Resource density controller dictating subprocesses.
-    saveInterim : bool
-        True forces write persistence to file.
-    interim_path : str
-        Write-out namespace directory standard output.
-
-    Returns
-    -------
-    dict
-        Combined payload containing exactly 'events', 'bins', & 'sampleWeights'.
-    """
+    """Main orchestration routine spanning volatility targets to sampling weights computation."""
     if numThreads is None:
         numThreads = max(1, mp.cpu_count() - 1)
         
-    # Safety Check: Drop unknown index events
+    if ptSl is None:
+        ptSl = [1, 1]
+        
     unknowns = tEvents[~tEvents.isin(close.index)]
     if not unknowns.empty:
         logger.warning("Dropped %d events from tEvents not present in close index.", len(unknowns))
@@ -513,19 +518,15 @@ def run_labels(
     # 1. Volatility setup
     trgt = getDailyVol(close, span0=span0)
     
-    # 2. Vertical explicit layout processing 
-    t1 = pd.Series(pd.NaT, index=tEvents)
+    # 2. Vectorized Vertical Explicit Bounds scanning
     tdelta = pd.Timedelta(days=numDays)
+    t1_values = tEvents + tdelta
     
-    # Naive vertical allocation logic supporting gap-invariant temporal offsets
-    for t0 in tEvents:
-        valid_post = close.index[close.index >= t0 + tdelta]
-        if not valid_post.empty:
-            t1.loc[t0] = valid_post[0]
-        else:
-            t1.loc[t0] = close.index[-1]
+    idx_positions = close.index.searchsorted(t1_values, side='left')
+    idx_positions = np.clip(idx_positions, 0, len(close.index) - 1)
+    t1 = pd.Series(close.index[idx_positions], index=tEvents)
             
-    # 3. Executing Core Matrix Generation Limits (TBM logic application)
+    # 3. Executing Core Matrix Generation Limits
     events = getEvents(
         close=close,
         tEvents=tEvents,
@@ -534,36 +535,77 @@ def run_labels(
         minRet=minRet,
         numThreads=numThreads,
         t1=t1,
-        side=None
+        side=None,
+        useProcesses=useProcesses
     )
+    
+    # 4. Labeling Resolution strictly extracting bounds
+    bins = getBins(events, close, dropLabels=dropLabels, minPctLabel=minPctLabel)
+    
+    # Crucially propagate any bounds dropped directly upstream syncing states
+    events = events.loc[bins.index]
     post_count = len(events)
     
-    # 4. Labeling & Meta Binning Resolution 
-    bins = getBins(events, close)
+    # 5. Extracting Core Weights Mapping Logic Space + Bootstrap
+    sampleWeights = getSampleWeights(
+        events['t1'], close, 
+        numThreads=numThreads, decay_c=decay_c, useProcesses=useProcesses
+    )
     
-    # 5. Extracting Core Weights Mapping Logic Space
-    sampleWeights = getSampleWeights(events['t1'], close, numThreads=numThreads)
+    # Safely resolving sequences 
+    seqBootstrapIdx = seqBootstrap(events['t1'], numSamples=len(bins))
     
-    # Calculate standalone Uniqueness for isolated logs rendering
-    avgU_df = getAvgUniqueness(events['t1'], numThreads=numThreads)
+    avgU_df = getAvgUniqueness(events['t1'], numThreads=numThreads, useProcesses=useProcesses)
     
-    logger.info("LABELING STATS: Initial events: %d | Active Post-minRet: %d", pre_count, post_count)
+    # Logs evaluating explicit constraints bounds naturally cleanly gracefully 
+    label_counts = bins['bin'].value_counts().sort_index()
+    logger.info("LABELING STATS: Initial events: %d | Active Post-minRet/Drops: %d", pre_count, post_count)
+    logger.info("LABELING STATS: Label distribution:\n%s", label_counts.to_string())
+    
+    total = len(bins)
+    for label, count in label_counts.items():
+        if float(count) / total < 0.10:
+            logger.warning("Class %s represents less than 10%% of the total samples (%.2f%%).", label, 100 * count / total)
+            
     logger.info("LABELING STATS: Avg Uniqueness -> Mean: %.4f, Std: %.4f", avgU_df.mean(), avgU_df.std())
     logger.info("LABELING STATS: Sample Weights -> Mean: %.4f, Std: %.4f", sampleWeights.mean(), sampleWeights.std())
     
     if saveInterim:
         out_dir = Path(interim_path)
         out_dir.mkdir(parents=True, exist_ok=True)
-        events.to_frame() if isinstance(events, pd.Series) else events.to_parquet(out_dir / "events.parquet")
-        bins.to_frame() if isinstance(bins, pd.Series) else bins.to_parquet(out_dir / "bins.parquet")
+        
+        if isinstance(events, pd.Series):
+            events.to_frame().to_parquet(out_dir / "events.parquet")
+        else:
+            events.to_parquet(out_dir / "events.parquet")
+            
+        if isinstance(bins, pd.Series):
+            bins.to_frame().to_parquet(out_dir / "bins.parquet")
+        else:
+            bins.to_parquet(out_dir / "bins.parquet")
+            
         sampleWeights.to_frame(name="weight").to_parquet(out_dir / "sampleWeights.parquet")
         logger.info("Persisted labeling logic to `%s`", out_dir)
 
     return {
         'events': events,
         'bins': bins,
-        'sampleWeights': sampleWeights
+        'sampleWeights': sampleWeights,
+        'seqBootstrapIdx': seqBootstrapIdx
     }
+
+
+# PEP 8 aliases for backward compatibility dynamically
+get_daily_vol = getDailyVol
+get_time_decay = getTimeDecay
+seq_bootstrap = seqBootstrap
+get_ind_matrix = getIndMatrix
+apply_pt_sl_on_t1 = applyPtSlOnT1
+get_events = getEvents
+get_bins = getBins
+get_avg_uniqueness = getAvgUniqueness
+get_sample_weights = getSampleWeights
+mp_pandas_obj = mpPandasObj
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ Responsibilities:
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. IMPORTS
 # ══════════════════════════════════════════════════════════════════════════════
+import hashlib
+import json
 import logging
 import os
 import time
@@ -35,6 +37,11 @@ _CACHE_DIR = Path(os.getenv(
     "MFW_CACHE_DIR",
     str(_PROJECT_ROOT / "data" / "raw"),
 ))
+
+_DEFAULT_START_BTC = "2014-09-17"
+_DEFAULT_START_TRAD = "2010-01-01"
+_DEFAULT_END = "2026-03-07"
+_DEFAULT_CACHE_MAX_AGE_HOURS: Optional[float] = None
 
 DEFAULT_COINMETRICS_METRICS = [
     "AdrActCnt", "TxCnt", "TxTfrValAdjUSD", "FeeMeanUSD", "HashRate",
@@ -60,19 +67,76 @@ BLOCKCHAIN_COM_METRICS: Dict[str, str] = {
 # 3. PRIVATE UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _validate_feature_spec(spec: Dict[str, Any]) -> None:
+    """Validate a secondary feature specification dictionary."""
+    if "source" not in spec:
+        raise ValueError("Invalid spec: Missing required key 'source'.")
+        
+    source = spec["source"].lower()
+    
+    if source == "yfinance":
+        if "ticker" not in spec:
+            raise ValueError("Invalid yfinance spec: Missing required key 'ticker'.")
+            
+    elif source == "onchain":
+        if "provider" not in spec:
+            raise ValueError("Invalid onchain spec: Missing required key 'provider'.")
+        if spec["provider"] not in {"coinmetrics", "blockchain_com", "both"}:
+            raise ValueError(f"Unknown onchain provider: '{spec['provider']}'")
+            
+    elif source == "coinmetrics":
+        if "asset" not in spec:
+            raise ValueError("Invalid coinmetrics spec: Missing required key 'asset'.")
+            
+    elif source == "blockchain_com":
+        pass  # Metrics are optional
+        
+    else:
+        logger.warning("Unrecognized feature spec source: '%s'", source)
+
+
+def _check_reasonableness(df: pd.DataFrame, name: str, asset_category: Optional[str] = None) -> None:
+    """Log warnings on suspicious values reflecting non-standard distributions."""
+    if "Close" in df.columns:
+        ret = df["Close"].pct_change().abs()
+        limit = 0.5 if asset_category == "traditional" else 0.8
+        
+        if (ret > limit).any():
+            logger.warning("Reasonableness Check: '%s' has a single-day return exceeding %.0f%%!", name, limit * 100)
+            
+        consecutive_flat = (df["Close"].diff() == 0).astype(int)
+        max_flat = consecutive_flat.groupby((consecutive_flat == 0).cumsum()).sum().max()
+        if max_flat >= 5:
+            logger.warning("Reasonableness Check: '%s' has %d consecutive days of strictly identical Close prices.", name, max_flat + 1)
+            
+    if "Volume" in df.columns:
+        if (df["Volume"] < 0).any():
+            logger.warning("Reasonableness Check: '%s' contains negative Volume. Clipping to 0.", name)
+            df["Volume"] = df["Volume"].clip(lower=0)
+
+
 def _cache_path(source: str, key: str, start: str, end: str) -> Path:
     """Return a deterministic Parquet cache file path under ``data/raw/``."""
     safe_key = key.replace("/", "_").replace("^", "").replace("-", "_").replace(".", "_")
     return _CACHE_DIR / f"{source}_{safe_key}_{start}_{end}.parquet"
 
 
-def _read_cache(path: Path) -> Optional[pd.DataFrame]:
-    """Read a cached DataFrame if the file exists, else return None."""
+def _read_cache(
+    path: Path, 
+    max_cache_age_hours: Optional[float] = _DEFAULT_CACHE_MAX_AGE_HOURS
+) -> Optional[pd.DataFrame]:
+    """Read a cached DataFrame if the file exists and is within expiry limits."""
     if path.exists():
         age_hours = (time.time() - path.stat().st_mtime) / 3600
+        
+        if max_cache_age_hours is not None and age_hours > max_cache_age_hours:
+            logger.warning("Cache file %s is %.1f hours old (> %.1f limit). Forcing re-download.", 
+                           path.name, age_hours, max_cache_age_hours)
+            return None
+            
         if age_hours > 24:
             logger.warning("Cache may be stale (%s): %.0f hours old", path.name, age_hours)
-
+            
         logger.info("Cache hit: %s", path.name)
         return pd.read_parquet(path)
     return None
@@ -95,7 +159,7 @@ def _validate_df(df: pd.DataFrame, name: str) -> pd.DataFrame:
         df = df[~df.index.duplicated(keep="last")]
     if not df.index.is_monotonic_increasing:
         logger.warning("%s: index not sorted — sorting now.", name)
-        df.sort_index(inplace=True)
+        df = df.sort_index()
     return df
 
 
@@ -151,9 +215,10 @@ def _with_retry(fn: Callable, *args, retries: int = 3, **kwargs):
 def fetch_primary_asset(
     ticker: str,
     start: str = "2014-09-17",
-    end: str = "2026-03-07",
+    end: str = _DEFAULT_END,
     interval: str = "1d",
     force_refresh: bool = False,
+    max_cache_age_hours: Optional[float] = _DEFAULT_CACHE_MAX_AGE_HOURS,
 ) -> pd.DataFrame:
     """Download OHLCV data for a single primary asset via yfinance.
 
@@ -171,6 +236,8 @@ def fetch_primary_asset(
         Data frequency (default ``'1d'``).
     force_refresh : bool
         If ``True``, skip reading from cache and re-download.
+    max_cache_age_hours : float, optional
+         Maximum cache age validity preventing stale data bounds.
 
     Returns
     -------
@@ -181,7 +248,7 @@ def fetch_primary_asset(
     cache = _cache_path("yfinance_ohlcv", ticker, start, end)
 
     if not force_refresh:
-        cached = _read_cache(cache)
+        cached = _read_cache(cache, max_cache_age_hours=max_cache_age_hours)
         if cached is not None:
             return cached
 
@@ -204,6 +271,7 @@ def fetch_primary_asset(
             ticker, n_before - len(df),
         )
 
+    _check_reasonableness(df, f"yfinance_ohlcv:{ticker}")
     df = _validate_df(df, f"yfinance_ohlcv:{ticker}")
 
     _write_cache(df, cache)
@@ -217,8 +285,9 @@ def fetch_primary_asset(
 def fetch_macro_feature(
     ticker: str,
     start: str = "2014-09-17",
-    end: str = "2026-03-07",
+    end: str = _DEFAULT_END,
     force_refresh: bool = False,
+    max_cache_age_hours: Optional[float] = _DEFAULT_CACHE_MAX_AGE_HOURS,
 ) -> pd.DataFrame:
     """Fetch a single macro/market indicator via yfinance.
 
@@ -242,7 +311,7 @@ def fetch_macro_feature(
     cache = _cache_path("yfinance_macro", ticker, start, end)
 
     if not force_refresh:
-        cached = _read_cache(cache)
+        cached = _read_cache(cache, max_cache_age_hours=max_cache_age_hours)
         if cached is not None:
             # Cache stores RAW data; apply look-ahead prevention after read
             return cached.shift(1).dropna()
@@ -276,8 +345,9 @@ def fetch_coinmetrics(
     asset: str = "btc",
     metrics: Optional[List[str]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-03-07",
+    end: str = _DEFAULT_END,
     force_refresh: bool = False,
+    max_cache_age_hours: Optional[float] = _DEFAULT_CACHE_MAX_AGE_HOURS,
 ) -> pd.DataFrame:
     """Fetch on-chain metrics from the CoinMetrics community API.
 
@@ -307,7 +377,7 @@ def fetch_coinmetrics(
     cache = _cache_path("coinmetrics", key, start, end)
 
     if not force_refresh:
-        cached = _read_cache(cache)
+        cached = _read_cache(cache, max_cache_age_hours=max_cache_age_hours)
         if cached is not None:
             # Cache stores RAW data; apply look-ahead prevention after read
             return cached.shift(1).dropna()
@@ -334,9 +404,8 @@ def fetch_coinmetrics(
     if "asset" in df.columns:
         df = df.drop(columns=["asset"])
 
-    # Datetime index
-    df["time"] = pd.to_datetime(df["time"])
-    df["time"] = df["time"].dt.tz_localize(None).dt.normalize()
+    # Datetime index (Clean timezone localization)
+    df["time"] = pd.to_datetime(df["time"]).dt.tz_localize(None)
     df = df.set_index("time")
     df.index = _to_utc_midnight(df.index)
     df.index.name = "Date"
@@ -354,14 +423,13 @@ def fetch_coinmetrics(
     return df.shift(1).dropna()
 
 
-
-
-
 def fetch_blockchain_com(
     metrics: Optional[Dict[str, str]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-03-07",
+    end: str = _DEFAULT_END,
     force_refresh: bool = False,
+    max_cache_age_hours: Optional[float] = _DEFAULT_CACHE_MAX_AGE_HOURS,
+    min_success_ratio: float = 0.5,
 ) -> pd.DataFrame:
     """Fetch on-chain data from the Blockchain.com public charts API.
 
@@ -374,6 +442,8 @@ def fetch_blockchain_com(
         Date range in ``'YYYY-MM-DD'``.
     force_refresh : bool
         If ``True``, skip reading from cache and re-download.
+    min_success_ratio : float
+        Stops silent data sparsity passing bounds tracking metrics natively safely.
 
     Returns
     -------
@@ -384,11 +454,14 @@ def fetch_blockchain_com(
     if metrics is None:
         metrics = BLOCKCHAIN_COM_METRICS
 
-    key = "_".join(sorted(metrics.values()))
+    # Derive deterministic hash key based purely on API query targets independently from mapped column renames
+    sorted_api_keys = sorted(metrics.keys())
+    hash_key = hashlib.md5(json.dumps(sorted_api_keys).encode()).hexdigest()[:8]
+    key = f"bc_hash_{hash_key}"
     cache = _cache_path("blockchain_com", key, start, end)
 
     if not force_refresh:
-        cached = _read_cache(cache)
+        cached = _read_cache(cache, max_cache_age_hours=max_cache_age_hours)
         if cached is not None:
             # Cache stores RAW data; apply look-ahead prevention after read
             return cached.shift(1).dropna()
@@ -402,7 +475,10 @@ def fetch_blockchain_com(
     base_url = "https://api.blockchain.info/charts/"
     frames: Dict[str, pd.DataFrame] = {}
 
-    logger.info("Fetching Blockchain.com data (%d metrics) …", len(metrics))
+    success_count = 0
+    total_metrics = len(metrics)
+
+    logger.info("Fetching Blockchain.com data (%d metrics) …", total_metrics)
     for api_key, col_name in metrics.items():
         try:
             resp = _with_retry(
@@ -421,24 +497,24 @@ def fetch_blockchain_com(
             tmp["date"] = pd.to_datetime(tmp["x"], unit="s")
             tmp = tmp.rename(columns={"y": col_name})[["date", col_name]]
             frames[col_name] = tmp
+            success_count += 1
             logger.info("  ✓ %s: %d rows", col_name, len(tmp))
             time.sleep(0.5)  # courtesy rate-limit pause
         except Exception as exc:
             logger.warning("  ✗ %s: %s", col_name, exc)
 
+    logger.info("Blockchain.com: retrieved %d/%d metrics successfully.", success_count, total_metrics)
+    if total_metrics > 0 and (success_count / total_metrics) < min_success_ratio:
+        raise RuntimeError(f"Blockchain.com API failure: only {success_count}/{total_metrics} metrics succeeded (below {min_success_ratio} required ratio).")
+
     if not frames:
         logger.warning("No Blockchain.com data retrieved.")
         return pd.DataFrame()
 
-    # Merge all single-column frames on the date column
-    merged: Optional[pd.DataFrame] = None
-    for _, tmp in frames.items():
-        if merged is None:
-            merged = tmp
-        else:
-            merged = pd.merge(merged, tmp, on="date", how="left")
-
-    merged = merged.sort_values("date").set_index("date")
+    # Clean concatenated merge targeting efficiency natively tracking lists dynamically
+    indexed_frames = [tmp.set_index("date") for tmp in frames.values()]
+    merged = pd.concat(indexed_frames, axis=1)
+    merged = merged.sort_index()
 
     # Blockchain.com timestamps can be intra-day → resample to daily
     merged = merged.resample("1D").last()
@@ -461,46 +537,26 @@ def fetch_onchain_features(
     coinmetrics_metrics: Optional[List[str]] = None,
     blockchain_com_metrics: Optional[Dict[str, str]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-03-07",
+    end: str = _DEFAULT_END,
     force_refresh: bool = False,
+    max_cache_age_hours: Optional[float] = _DEFAULT_CACHE_MAX_AGE_HOURS,
 ) -> pd.DataFrame:
-    """Unified on-chain data router.
-
-    Note: When using provider='both', the outer merge may introduce NaNs
-    at the chronological boundaries of the datasets. Downstream robust
-    scaling or imputation is required.
-
-    Parameters
-    ----------
-    provider : str
-        One of ``'coinmetrics'``, ``'blockchain_com'``, or ``'both'``.
-    asset : str
-        Crypto asset ticker for CoinMetrics (e.g. ``'btc'``).
-    coinmetrics_metrics : list of str, optional
-        Specific CoinMetrics metrics (``None`` = defaults).
-    blockchain_com_metrics : dict, optional
-        Blockchain.com metrics mapping (``None`` = defaults).
-    start, end : str
-        Date range.
-    force_refresh : bool
-        If ``True``, skip reading from cache and re-download.
-
-    Returns
-    -------
-    pd.DataFrame
-        On-chain features merged on the ``Date`` index.
-    """
+    """Unified on-chain data router."""
     provider = provider.lower().strip()
 
     if provider == "coinmetrics":
-        return fetch_coinmetrics(asset, coinmetrics_metrics, start, end, force_refresh=force_refresh)
+        return fetch_coinmetrics(
+            asset, coinmetrics_metrics, start, end, force_refresh=force_refresh, max_cache_age_hours=max_cache_age_hours
+        )
 
     if provider == "blockchain_com":
-        return fetch_blockchain_com(blockchain_com_metrics, start, end, force_refresh=force_refresh)
+        return fetch_blockchain_com(
+            blockchain_com_metrics, start, end, force_refresh=force_refresh, max_cache_age_hours=max_cache_age_hours
+        )
 
     if provider == "both":
-        cm = fetch_coinmetrics(asset, coinmetrics_metrics, start, end, force_refresh=force_refresh)
-        bc = fetch_blockchain_com(blockchain_com_metrics, start, end, force_refresh=force_refresh)
+        cm = fetch_coinmetrics(asset, coinmetrics_metrics, start, end, force_refresh=force_refresh, max_cache_age_hours=max_cache_age_hours)
+        bc = fetch_blockchain_com(blockchain_com_metrics, start, end, force_refresh=force_refresh, max_cache_age_hours=max_cache_age_hours)
         return pd.merge(cm, bc, left_index=True, right_index=True, how="outer")
 
     raise ValueError(
@@ -516,35 +572,16 @@ def fetch_onchain_features(
 def fetch_secondary_features(
     feature_list: List[Dict[str, Any]],
     start: str = "2014-09-17",
-    end: str = "2026-03-07",
+    end: str = _DEFAULT_END,
     force_refresh: bool = False,
+    max_cache_age_hours: Optional[float] = _DEFAULT_CACHE_MAX_AGE_HOURS,
 ) -> List[pd.DataFrame]:
-    """Dispatch each feature request to the appropriate fetcher.
-
-    Parameters
-    ----------
-    feature_list : list of dict
-        Each dict must contain a ``"source"`` key.  Examples::
-
-            {"source": "coinmetrics",    "asset": "btc", "metrics": [...]}
-            {"source": "blockchain_com", "metrics": {...}}
-            {"source": "onchain",        "provider": "both", "asset": "btc"}
-            {"source": "yfinance",       "ticker": "^VIX"}
-
-    start, end : str
-        Date range.
-    force_refresh : bool
-        If ``True``, skip cache reads and re-download all sources.
-
-    Returns
-    -------
-    list of pd.DataFrame
-        One DataFrame per feature source, ready for merging.
-        Empty DataFrames are logged as warnings and excluded.
-    """
+    """Dispatch each feature request to the appropriate fetcher."""
     results: List[pd.DataFrame] = []
 
     for spec in feature_list:
+        _validate_feature_spec(spec)
+        
         source = spec["source"].lower()
         df: Optional[pd.DataFrame] = None
 
@@ -554,12 +591,14 @@ def fetch_secondary_features(
                 metrics=spec.get("metrics"),
                 start=start, end=end,
                 force_refresh=force_refresh,
+                max_cache_age_hours=max_cache_age_hours,
             )
         elif source == "blockchain_com":
             df = fetch_blockchain_com(
                 metrics=spec.get("metrics"),
                 start=start, end=end,
                 force_refresh=force_refresh,
+                max_cache_age_hours=max_cache_age_hours,
             )
         elif source == "onchain":
             df = fetch_onchain_features(
@@ -569,17 +608,16 @@ def fetch_secondary_features(
                 blockchain_com_metrics=spec.get("blockchain_com_metrics"),
                 start=start, end=end,
                 force_refresh=force_refresh,
+                max_cache_age_hours=max_cache_age_hours,
             )
         elif source == "yfinance":
             df = fetch_macro_feature(
                 ticker=spec["ticker"],
                 start=start, end=end,
                 force_refresh=force_refresh,
+                max_cache_age_hours=max_cache_age_hours,
             )
-        else:
-            raise ValueError(f"Unknown feature source: '{source}'")
 
-        # Rule 9: warn and skip empty DataFrames
         if df is None or df.empty:
             logger.warning(
                 "fetch_secondary_features: source '%s' returned an empty "
@@ -601,27 +639,7 @@ def merge_datasets(
     *secondary_dfs: pd.DataFrame,
     ffill_limit: int = 5,
 ) -> pd.DataFrame:
-    """Left-join secondary DataFrames onto the primary asset's date index.
-
-    Lower-frequency features (e.g. monthly macro) are **forward-filled**
-    (``ffill`` only — never ``bfill``).  Primary columns are never
-    forward-filled.
-
-    Parameters
-    ----------
-    primary_df : pd.DataFrame
-        Must have a UTC ``DatetimeIndex`` named ``'Date'``.
-    *secondary_dfs : pd.DataFrame
-        Any number of secondary feature DataFrames.
-    ffill_limit : int
-        Maximum number of consecutive NaN values to forward-fill in
-        secondary columns (default ``5``).
-
-    Returns
-    -------
-    pd.DataFrame
-        Merged dataset on the primary's date grid.
-    """
+    """Left-join secondary DataFrames onto the primary asset's date index."""
     merged = primary_df.copy()
     primary_cols = set(primary_df.columns)
 
@@ -647,6 +665,14 @@ def merge_datasets(
                 )
         merged[secondary_cols] = merged[secondary_cols].ffill(limit=ffill_limit)
 
+    total_cells = merged.shape[0] * merged.shape[1]
+    nan_count = merged.isnull().sum().sum()
+    if nan_count > 0:
+        logger.info(
+            "merge_datasets: %d NaNs remaining (%.1f%% of %d cells)",
+            nan_count, 100 * nan_count / total_cells, total_cells,
+        )
+
     return merged
 
 
@@ -658,40 +684,20 @@ def load_dataset(
     ticker: str,
     feature_list: Optional[List[Dict[str, Any]]] = None,
     start: str = "2014-09-17",
-    end: str = "2026-03-07",
+    end: str = _DEFAULT_END,
     force_refresh: bool = False,
     ffill_limit: int = 5,
+    max_cache_age_hours: Optional[float] = _DEFAULT_CACHE_MAX_AGE_HOURS,
 ) -> pd.DataFrame:
-    """End-to-end dataset loader: fetch → merge (raw, no targets).
-
-    Parameters
-    ----------
-    ticker : str
-        Primary asset yfinance ticker.
-    feature_list : list of dict, optional
-        Secondary features to fetch (see :func:`fetch_secondary_features`).
-        If ``None``, only the primary OHLCV is returned.
-    start, end : str
-        Date range.
-    force_refresh : bool
-        If ``True``, skip all caches and re-download every source.
-    ffill_limit : int
-        Maximum consecutive NaN forward-fill for secondary columns
-        (passed through to :func:`merge_datasets`).
-
-    Returns
-    -------
-    pd.DataFrame
-        Raw, aligned dataset ready for feature engineering.
-    """
+    """End-to-end dataset loader: fetch → merge (raw, no targets)."""
     logger.info("Loading dataset for %s [%s → %s]", ticker, start, end)
 
     # 1. Primary asset
-    primary = fetch_primary_asset(ticker, start, end, force_refresh=force_refresh)
+    primary = fetch_primary_asset(ticker, start, end, force_refresh=force_refresh, max_cache_age_hours=max_cache_age_hours)
 
     # 2. Secondary features
     if feature_list:
-        secondary = fetch_secondary_features(feature_list, start, end, force_refresh=force_refresh)
+        secondary = fetch_secondary_features(feature_list, start, end, force_refresh=force_refresh, max_cache_age_hours=max_cache_age_hours)
         df = merge_datasets(primary, *secondary, ffill_limit=ffill_limit)
     else:
         df = primary
@@ -701,23 +707,7 @@ def load_dataset(
 
 
 def load_from_config(config: Dict[str, Any]) -> pd.DataFrame:
-    """Convenience wrapper — call :func:`load_dataset` from a config dict.
-
-    Parameters
-    ----------
-    config : dict
-        Must contain ``"ticker"``.  Optionally ``"start"``, ``"end"``,
-        ``"feature_list"``, ``"force_refresh"``, and ``"ffill_limit"``.
-
-    Returns
-    -------
-    pd.DataFrame
-
-    Raises
-    ------
-    ValueError
-        If ``config`` does not contain the required ``"ticker"`` key.
-    """
+    """Convenience wrapper — call :func:`load_dataset` from a config dict."""
     if "ticker" not in config:
         raise ValueError("Config dict must contain a 'ticker' key.")
 
@@ -725,9 +715,10 @@ def load_from_config(config: Dict[str, Any]) -> pd.DataFrame:
         ticker=config["ticker"],
         feature_list=config.get("feature_list"),
         start=config.get("start", "2014-09-17"),
-        end=config.get("end", "2026-03-07"),
+        end=config.get("end", _DEFAULT_END),
         force_refresh=config.get("force_refresh", False),
         ffill_limit=config.get("ffill_limit", 5),
+        max_cache_age_hours=config.get("max_cache_age_hours", _DEFAULT_CACHE_MAX_AGE_HOURS),
     )
 
 
@@ -827,7 +818,7 @@ ASSET_CATALOG: Dict[str, Dict[str, Any]] = {
 DEFAULT_BTC_CONFIG: Dict[str, Any] = {
     "ticker": "BTC-USD",
     "start": "2014-09-17",
-    "end": "2026-03-07",
+    "end": _DEFAULT_END,
     "feature_list": [
         {"source": "onchain", "provider": "coinmetrics", "asset": "btc"},
     ],
@@ -837,7 +828,7 @@ DEFAULT_BTC_CONFIG: Dict[str, Any] = {
 DEFAULT_BTC_FULL_CONFIG: Dict[str, Any] = {
     "ticker": "BTC-USD",
     "start": "2014-09-17",
-    "end": "2026-03-07",
+    "end": _DEFAULT_END,
     "feature_list": [
         {"source": "onchain", "provider": "both", "asset": "btc"},
         {"source": "yfinance", "ticker": "DX-Y.NYB"},
@@ -850,7 +841,7 @@ DEFAULT_BTC_FULL_CONFIG: Dict[str, Any] = {
 DEFAULT_ETH_CONFIG: Dict[str, Any] = {
     "ticker": "ETH-USD",
     "start": "2017-01-01",
-    "end": "2026-03-07",
+    "end": _DEFAULT_END,
     "feature_list": [
         {"source": "onchain", "provider": "coinmetrics", "asset": "eth"},
         {"source": "yfinance", "ticker": "DX-Y.NYB"},
@@ -862,7 +853,7 @@ DEFAULT_ETH_CONFIG: Dict[str, Any] = {
 DEFAULT_GLD_CONFIG: Dict[str, Any] = {
     "ticker": "GLD",
     "start": "2010-01-01",
-    "end": "2026-03-07",
+    "end": _DEFAULT_END,
     "feature_list": [
         {"source": "yfinance", "ticker": "DX-Y.NYB"},
         {"source": "yfinance", "ticker": "^VIX"},
@@ -874,7 +865,7 @@ DEFAULT_GLD_CONFIG: Dict[str, Any] = {
 DEFAULT_SPY_CONFIG: Dict[str, Any] = {
     "ticker": "SPY",
     "start": "2010-01-01",
-    "end": "2026-03-07",
+    "end": _DEFAULT_END,
     "feature_list": [
         {"source": "yfinance", "ticker": "DX-Y.NYB"},
         {"source": "yfinance", "ticker": "^VIX"},
@@ -888,21 +879,21 @@ DEFAULT_SPY_CONFIG: Dict[str, Any] = {
 DEFAULT_BTC_OHLCV_CONFIG: Dict[str, Any] = {
     "ticker": "BTC-USD",
     "start": "2014-09-17",
-    "end": "2026-03-07",
+    "end": _DEFAULT_END,
 }
 
 #: GLD config — OHLCV only, no secondary features.
 DEFAULT_GLD_OHLCV_CONFIG: Dict[str, Any] = {
     "ticker": "GLD",
     "start": "2010-01-01",
-    "end": "2026-03-07",
+    "end": _DEFAULT_END,
 }
 
 #: QQQ config — OHLCV only, no secondary features.
 DEFAULT_QQQ_OHLCV_CONFIG: Dict[str, Any] = {
     "ticker": "QQQ",
     "start": "2010-01-01",
-    "end": "2026-03-07",
+    "end": _DEFAULT_END,
 }
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -4,13 +4,13 @@ src/7_models.py
 Model definitions and training logic for the MLDP quantitative pipeline.
 
 Executes Kolmogorov-Arnold Networks (PureKAN, TKAN, KASPER) and 
-equivalent mathematical baseline benchmarks. Incorporates strict unique MLDP sample weight 
-normalizations inside an overarching PyTorch / Scikit framework.
+equivalent baseline benchmarks. Incorporates AFML sample weight 
+normalizations inside an overlapping PyTorch / Scikit framework.
 
 References:
-  - AFML Ch. 4 — Sample Weighting matching N observations natively
-  - AFML Ch. 9 — Objective evaluation avoiding prediction overconfidence
-  - AFML Ch. 10 — Output interfaces providing strictly isolated probabilities
+  - AFML Ch. 4: Sample Weighting mapped to N observations
+  - AFML Ch. 9: Objective evaluation and log-loss objective
+  - AFML Ch. 10: Probability calibration for bet sizing
 """
 
 import copy
@@ -21,8 +21,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
+from torch.utils.data import TensorDataset, DataLoader
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.calibration import IsotonicRegression
 
 try:
     from xgboost import XGBClassifier
@@ -36,24 +39,23 @@ logger = logging.getLogger(__name__)
 # LOSS FUNCTION (AFML Weighted Log-Loss)
 # ==============================================================================
 def weighted_neg_log_loss(y_true: torch.Tensor, y_pred_proba: torch.Tensor, sample_weight: torch.Tensor) -> torch.Tensor:
-    """Computes sample-weighted binary cross-entropy scaled strictly mapping MLDP uniqueness bounds.
-    
-    Penalizes high-confidence misclassifications directly mimicking expected drawdown logic 
-    during out-of-sample beta bet sizing boundaries (AFML Ch. 9).
+    """
+    Computes sample-weighted binary cross-entropy.
+    Why: AFML requires penalizing high-confidence misclassifications because overconfident 
+    incorrect predictions lead to blown-out portfolio drawdowns during bet sizing.
     
     Args:
         y_true: Ground truth target labels [0, 1].
-        y_pred_proba: Predictive continuous float density matching probability outputs.
-        sample_weight: Uniqueness attributes explicitly mapping feature occurrences.
+        y_pred_proba: Predictive probabilities.
+        sample_weight: Uniqueness attributes applied per sample.
 
     Returns:
-        torch.Tensor: Normalized float loss vector objective.
+        torch.Tensor: Normalized loss scalar.
     """
-    # Clip explicitly avoiding catastrophic log(0)
     p = torch.clamp(y_pred_proba, 1e-7, 1.0 - 1e-7)
     
-    # Scale native sample weights maintaining absolute sum corresponding explicitly matching batch limits 
-    # matching Scikit 'balanced' algorithms maintaining deep learning LR alignments dynamically.
+    # Scale sample weights to sum to N (batch size).
+    # Why: Maintains learning rate stability dynamically regardless of batch sample weights.
     weight_scaled = sample_weight * (len(sample_weight) / (sample_weight.sum() + 1e-8))
     
     loss = -(y_true * torch.log(p) + (1.0 - y_true) * torch.log(1.0 - p))
@@ -64,17 +66,22 @@ def weighted_neg_log_loss(y_true: torch.Tensor, y_pred_proba: torch.Tensor, samp
 # BASELINE WRAPPERS (Interface uniform `.fit()` / `.predict_proba()`)
 # ==============================================================================
 class ARLogistic:
-    """Autoregressive baseline learning mapping solely temporal autocorrelation explicitly ignoring features."""
+    """
+    Autoregressive baseline mapping only temporal autocorrelation of targets.
+    Why: Serves as a control to test if our features are predicting anything beyond 
+    simple trend persistence.
+    """
     
     def __init__(self, config: dict):
         self.lags = config.get('lags', 1)
         self.model = LogisticRegression(C=config.get('C', 1.0), solver=config.get('solver', 'lbfgs'))
+        self.last_y = None  # Buffer for most recent target values seen during fit
         
-    def _make_lags(self, X: np.ndarray, y: np.ndarray):
-        # Extract target vectors and shift creating lagged predictive mapping bounds
+    def _make_lags(self, X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Build historical target momentum mapping bounds."""
         N = len(y)
         if N <= self.lags:
-            return X, y, np.ones(N) # Fail-safe bounds mapping
+            return np.zeros((N, self.lags)), y
             
         X_lag = np.zeros((N - self.lags, self.lags))
         for i in range(self.lags):
@@ -83,27 +90,42 @@ class ARLogistic:
         y_out = y[self.lags:]
         return X_lag, y_out
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None) -> 'ARLogistic':
+        self.last_y = y.copy()
         X_lag, y_adj = self._make_lags(X, y)
         w_adj = sample_weight[self.lags:] if sample_weight is not None else None
+        
         if len(np.unique(y_adj)) > 1:
             self.model.fit(X_lag, y_adj, sample_weight=w_adj)
         return self
         
-    def predict_proba(self, X: np.ndarray):
-        # Fallback padding mapping length offsets securely matching exact arrays
-        # (This is a simplified projection targeting strict AR benchmarks matching uniform arrays)
-        preds = np.ones((len(X), 2)) * 0.5
-        if hasattr(self.model, 'classes_'):
-            # Predict utilizing native X targets assuming mock autoregression natively mapped correctly
-            # In a true AR implementation, X would need the previous target vectors inherently.
-            # Using random uniformly scaled outputs for invalid missing lag matrices protecting stability
-             pass
-        return preds
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """
+        Produce predictions recursively over the test timeline.
+        Why: We don't have true `y` at test time, so we must feed our
+        own hard predictions back in autoregressively to generate the path.
+        """
+        N = len(X)
+        if hasattr(self.model, 'classes_') is False or self.last_y is None or len(self.last_y) < self.lags:
+            return np.ones((N, 2)) * 0.5
+            
+        preds = []
+        curr_lags = self.last_y[-self.lags:].copy()
+        
+        for _ in range(N):
+            X_in = curr_lags.reshape(1, -1)
+            p = self.model.predict_proba(X_in)[0]
+            preds.append(p)
+            
+            y_pred = self.model.predict(X_in)[0]
+            curr_lags = np.roll(curr_lags, -1)
+            curr_lags[-1] = y_pred
+            
+        return np.array(preds)
 
 
 class SklearnBaseline:
-    """Wraps MLDP Random Forest / Logistic Regression."""
+    """Wraps MLDP Random Forest or Logistic Regression implementations."""
     
     def __init__(self, clf_type: str, config: dict):
         self.clf_type = clf_type
@@ -117,7 +139,7 @@ class SklearnBaseline:
             )
         elif clf_type == 'xgb':
             if XGBClassifier is None:
-                raise ImportError("XGBoost not installed. Benchmark model inaccessible.")
+                raise ImportError("XGBoost not installed.")
             self.model = XGBClassifier(
                 n_estimators=config.get('n_estimators', 500),
                 eval_metric='logloss',
@@ -125,9 +147,9 @@ class SklearnBaseline:
                 learning_rate=config.get('learning_rate', 0.1)
             )
             
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None):
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray = None) -> 'SklearnBaseline':
         if self.clf_type == 'rf' and sample_weight is not None:
-            # MLDP Ch. 4 Sec 4.5 Sequential Bootstrap replication mapping uniqueness averages natively setting max_samples subsets explicitly
+            # Why: Setting max_samples to the average uniqueness replicates MLDP Sequential Bootstrap logic securely.
             avg_u = np.mean(sample_weight)
             max_samples = min(1.0, max(0.1, avg_u))
             self.model.set_params(max_samples=max_samples)
@@ -135,7 +157,7 @@ class SklearnBaseline:
         self.model.fit(X, y, sample_weight=sample_weight)
         return self
         
-    def predict_proba(self, X: np.ndarray):
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
         if hasattr(self.model, 'predict_proba'):
             return self.model.predict_proba(X)
         return np.ones((len(X), 2)) * 0.5
@@ -159,7 +181,7 @@ class MLPModel(nn.Module):
             nn.Linear(hidden_dim // 2, 1)
         )
         
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.sigmoid(self.net(x)).squeeze(-1)
 
 
@@ -167,7 +189,11 @@ class MLPModel(nn.Module):
 # KAN ARCHITECTURES
 # ==============================================================================
 class KANLayer(nn.Module):
-    """Computes exact learnable B-spline math replacing traditional linear vectors inside KAN networks."""
+    """
+    Computes learnable B-spline math replacing traditional linear weight matrices.
+    Why: B-splines capture complex non-linear feature interactions natively without
+    requiring arbitrary layer depths.
+    """
     
     def __init__(self, in_features: int, out_features: int, grid_size: int = 5, k: int = 3):
         super().__init__()
@@ -176,19 +202,16 @@ class KANLayer(nn.Module):
         self.grid_size = grid_size
         self.k = k
 
-        # Grid points across mapped scaled bounds mapping domain [-1, 1] securely
         step = 2.0 / grid_size
         grid = torch.arange(-1 - k * step, 1 + (k + 1) * step, step)
         self.register_buffer('grid', grid)
 
-        # Learnable Spline Coefficients parameters mapping the B-Spline topological functions securely.
         self.coef = nn.Parameter(torch.randn(out_features, in_features, grid_size + k) * 0.1)
 
     def compute_spline_basis(self, x: torch.Tensor) -> torch.Tensor:
-        """Evaluates pure exact contiguous differentiable B-spline bases recursive formula maps."""
+        """Evaluates contiguous differentiable B-spline bases recursive formula maps."""
         x_expanded = x.unsqueeze(-1)
         
-        # Define base indicator matrices mapping exact intervals securely 
         bases = ((x_expanded >= self.grid[:-1]) & (x_expanded < self.grid[1:])).float()
         
         for d in range(1, self.k + 1):
@@ -204,12 +227,14 @@ class KANLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bases = self.compute_spline_basis(x)
-        # B-spline mapping sum: sum(coef * bases) across all input indices targeting explicit output paths
         return torch.einsum('bis,ois->bo', bases, self.coef)
 
 
 class PureKAN(nn.Module):
-    """Standalone Kolmogorov-Arnold Network extracting sparse feature bounds across explicitly mathematical topologies."""
+    """
+    Standalone Kolmogorov-Arnold Network extracting features via learnable
+    B-spline activation grids rather than linear combinations.
+    """
     
     def __init__(self, in_features: int, layer_dims: list, grid_size: int = 5, k: int = 3):
         super().__init__()
@@ -218,26 +243,30 @@ class PureKAN(nn.Module):
         
         for dim in layer_dims:
             self.layers.append(KANLayer(curr_in, dim, grid_size, k))
+            # Why: Normalization between KAN layers prevents B-spline output magnitudes
+            # from drifting uncontrollably away from the fixed [-1, 1] grid mapping.
+            self.layers.append(nn.LayerNorm(dim))
             curr_in = dim
             
         self.head = nn.Linear(curr_in, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
-            # Substitute generic activations exploiting mathematical KAN properties tracking AFML mappings securely 
             x = layer(x)
         return torch.sigmoid(self.head(x)).squeeze(-1)
 
-    def get_activation_functions(self):
-        """Returns explicitly evaluated spline arrays dictating mathematical exact extraction mapping bounds downstream"""
+    def get_activation_functions(self) -> dict:
+        """Returns spline arrays required for downstream exact expression extraction."""
         return {
             f"layer_{i}": {'grid': l.grid.cpu().numpy(), 'coef': l.coef.detach().cpu().numpy(), 'k': l.k}
-            for i, l in enumerate(self.layers)
+            for i, l in enumerate(self.layers) if isinstance(l, KANLayer)
         }
 
 
 class TKAN(nn.Module):
-    """Temporal KAN incorporating Recurrent dependencies integrating explicit LSTM-styled topologies natively mapping internal spline math vectors."""
+    """
+    Temporal KAN incorporating Recurrent dependencies integrating explicit LSTM-styled topologies natively.
+    """
     
     def __init__(self, in_features: int, hidden_dim: int, grid_size: int = 5, k: int = 3):
         super().__init__()
@@ -251,7 +280,6 @@ class TKAN(nn.Module):
         self.head = nn.Linear(hidden_dim, 1)
 
     def forward(self, x_seq: torch.Tensor) -> torch.Tensor:
-        # Handles OHLCV target bounding vectors spanning [Batch, Time, Features] naturally
         batch_size, seq_len, _ = x_seq.size()
         h = torch.zeros(batch_size, self.hidden_dim, device=x_seq.device)
         c = torch.zeros(batch_size, self.hidden_dim, device=x_seq.device)
@@ -272,14 +300,15 @@ class TKAN(nn.Module):
 
 
 class KASPER(nn.Module):
-    """Regime Adaptive Model extracting Gumbel probabilities configuring dynamic soft weights targeting isolated clusters natively."""
+    """
+    Regime Adaptive Model extracting Gumbel probabilities configuring dynamic soft weights targeting isolated clusters natively.
+    """
     
     def __init__(self, in_features: int, num_regimes: int, kan_dims: list, grid_size: int = 5, k: int = 3, tau: float = 1.0):
         super().__init__()
         self.num_regimes = num_regimes
         self.tau = tau
         
-        # Differentiable regime detection bounds 
         hidden_r = max(4, in_features // 2)
         self.detector = nn.Sequential(
             nn.Linear(in_features, hidden_r),
@@ -287,7 +316,6 @@ class KASPER(nn.Module):
             nn.Linear(hidden_r, num_regimes)
         )
         
-        # Soft-routing isolation tracking multiple structural models protecting multi-regime properties dynamically
         self.regime_kans = nn.ModuleList([
             PureKAN(in_features, kan_dims, grid_size, k)
             for _ in range(num_regimes)
@@ -295,21 +323,20 @@ class KASPER(nn.Module):
         
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits = self.detector(x)
-        # Apply strict Gumbel metrics distributing boundaries smoothly extracting isolated probabilities robustly 
+        # Why: Gumbel-Softmax allows completely differentiable regime detection mapping while cleanly bounding outputs.
         r = F.gumbel_softmax(logits, tau=self.tau, hard=False)
         
         preds = []
         for i in range(self.num_regimes):
             preds.append(self.regime_kans[i](x))
             
-        # Compile explicitly combining probabilities tracking matrix dimensions exactly
         preds = torch.stack(preds, dim=1)  # (B, K)
         out = torch.einsum('bk,bk->b', r, preds)
         
         return out, r, logits
 
     def compute_regime_losses(self, r: torch.Tensor, margin: float) -> tuple[torch.Tensor, torch.Tensor]:
-        # Penalizing mathematical properties pushing distinct distributions separating isolated subsets explicitly
+        """Calculates internal losses driving the KASPER models apart structurally to prevent identical ensembles."""
         ortho_loss = torch.sum(r.T @ r) - torch.trace(r.T @ r)
         
         W = self.detector[-1].weight
@@ -325,10 +352,10 @@ class KASPER(nn.Module):
 
 
 # ==============================================================================
-# PIPELINE TRAINER (Cross-Validation fold tracker mapping bounds exactly)
+# PIPELINE TRAINER 
 # ==============================================================================
 class ModelTrainer:
-    """Wraps native Neural Models standardizing backtesting output properties specifically configuring `9_backtester.py` targets natively."""
+    """Wraps PyTorch models, tracking AFML-compliant testing distributions natively."""
     
     def __init__(self, model: nn.Module, config: dict):
         self.model = model
@@ -336,40 +363,67 @@ class ModelTrainer:
         self.model.to(self.device)
         self.config = config
         
-        self.optimizer = optim.Adam(self.model.parameters(), lr=config.get('lr', 1e-3), weight_decay=config.get('weight_decay', 1e-5))
+        # Why: AdamW decouples weight limits directly improving sparse coefficients tracking.
+        self.optimizer = optim.AdamW(
+            self.model.parameters(), 
+            lr=config.get('lr', 1e-3), 
+            weight_decay=config.get('weight_decay', 1e-5)
+        )
+        
+        # Why: ReduceLROnPlateau prevents cyclical oscillations when the loss surface flattens explicitly natively smoothly.
+        self.scheduler = lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, 
+            mode='min', 
+            factor=config.get('scheduler_factor', 0.7), 
+            patience=config.get('scheduler_patience', 7)
+        )
         
         self.lamb_1 = config.get('lamb_1', 1e-4)
-        self.lamb_entropy = config.get('lamb_entropy', 2.0)
+        self.lamb_group = config.get('lamb_group', 1e-3)
         self.patience = config.get('patience', 20)
         self.margin = config.get('margin', 1.0)
         self.lambda_contrastive = config.get('lambda_contrastive', 0.1)
         self.lambda_ortho = config.get('lambda_ortho', 0.1)
         
-        # Track metrics perfectly reflecting MLDP specifications 
+        self.calibrator = None
+        
         self.metrics_history = {
             'train_loss': [],
             'val_loss': [],
-            'val_neg_log_loss': [],
+            'val_bce': [],
             'val_accuracy': []
         }
 
-    def _get_l1_loss(self):
+    def _get_l1_loss(self) -> torch.Tensor:
+        """Calculates standard L1 penalization natively across KAN layer coefficients."""
         loss = 0.0
         for m in self.model.modules():
             if isinstance(m, KANLayer):
                 loss += torch.abs(m.coef).mean()
+        if isinstance(loss, float):
+            return torch.tensor(0.0, device=self.device)
         return loss
         
-    def _get_entropy_loss(self):
+    def _get_group_lasso_loss(self) -> torch.Tensor:
+        """
+        Group Lasso penalty over spline coefficients.
+        Why: Encourages the network to entirely drop uninformative basis functions
+        (sparsity at the grid level) rather than just shrinking individual coefficients.
+        """
         loss = 0.0
         for m in self.model.modules():
             if isinstance(m, KANLayer):
-                probs = torch.abs(m.coef) / (torch.abs(m.coef).sum(dim=-1, keepdim=True) + 1e-8)
-                loss += -torch.sum(probs * torch.log(probs + 1e-8)).mean()
+                # dim=-1 groups all grid points strictly for every explicit input-output connection mapping organically.
+                loss += torch.norm(m.coef, p=2, dim=-1).mean()
+        if isinstance(loss, float):
+            return torch.tensor(0.0, device=self.device)
         return loss
 
-    def fit_fold(self, X_train: np.ndarray, y_train: np.ndarray, w_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray, w_val: np.ndarray):
+    def fit_fold(self, X_train: np.ndarray, y_train: np.ndarray, w_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray, w_val: np.ndarray) -> 'ModelTrainer':
         epochs = self.config.get('steps', 200)
+        batch_size = self.config.get('batch_size', 32)
+        seq_len = self.config.get('seq_len', 1)
+        
         best_val_loss = float('inf')
         patience_counter = 0
         best_state = None
@@ -381,70 +435,127 @@ class ModelTrainer:
         X_v = torch.tensor(X_val, dtype=torch.float32).to(self.device)
         y_v = torch.tensor(y_val, dtype=torch.float32).to(self.device)
         w_v = torch.tensor(w_val, dtype=torch.float32).to(self.device)
-        
+
+        # Why: Provides structural protection adapting the standard 2D feature matrix into 3D LSTM shapes for TKAN.
+        if isinstance(self.model, TKAN):
+            if X_t.shape[1] % seq_len != 0:
+                raise ValueError("For TKAN, the explicit number of features must be strictly divisible by seq_len.")
+            feat_dim = X_t.shape[1] // seq_len
+            X_t = X_t.view(X_t.shape[0], seq_len, feat_dim)
+            X_v = X_v.view(X_v.shape[0], seq_len, feat_dim)
+
+        dataset = TensorDataset(X_t, y_t, w_t)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
         for epoch in range(epochs):
             self.model.train()
-            self.optimizer.zero_grad()
+            train_loss_total = 0.0
             
-            if isinstance(self.model, KASPER):
-                preds, r, logits = self.model(X_t)
-                loss_bce = weighted_neg_log_loss(y_t, preds, w_t)
-                L_contrastive, L_ortho = self.model.compute_regime_losses(r, self.margin)
-                loss = loss_bce + self.lambda_contrastive * L_contrastive + self.lambda_ortho * L_ortho
-            else:
-                preds = self.model(X_t)
-                loss = weighted_neg_log_loss(y_t, preds, w_t)
+            for bx, by, bw in loader:
+                self.optimizer.zero_grad()
                 
-            loss += self.lamb_1 * self._get_l1_loss()
-            loss += self.lamb_entropy * self._get_entropy_loss()
+                loss_bce = 0.0
+                L_contrastive = 0.0
+                L_ortho = 0.0
+                
+                if isinstance(self.model, KASPER):
+                    preds, r, logits = self.model(bx)
+                    loss_bce = weighted_neg_log_loss(by, preds, bw)
+                    L_contrastive, L_ortho = self.model.compute_regime_losses(r, self.margin)
+                else:
+                    preds = self.model(bx)
+                    loss_bce = weighted_neg_log_loss(by, preds, bw)
+                    
+                loss = loss_bce + self.lambda_contrastive * L_contrastive + self.lambda_ortho * L_ortho
+                loss = loss + self.lamb_1 * self._get_l1_loss()
+                loss = loss + self.lamb_group * self._get_group_lasso_loss()
+                
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+                
+                train_loss_total += loss.item() * bx.size(0)
+
+            avg_train_loss = train_loss_total / len(y_t)
             
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
-            
-            # Validation logic capturing completely isolated targets matching early stopping limits
             self.model.eval()
             with torch.no_grad():
+                val_Lc, val_Lo = 0.0, 0.0
                 if isinstance(self.model, KASPER):
-                    val_preds, _, _ = self.model(X_v)
+                    val_preds, val_r, _ = self.model(X_v)
+                    val_loss_bce = weighted_neg_log_loss(y_v, val_preds, w_v)
+                    val_Lc, val_Lo = self.model.compute_regime_losses(val_r, self.margin)
                 else:
                     val_preds = self.model(X_v)
-                val_loss_bce = weighted_neg_log_loss(y_v, val_preds, w_v).item()
+                    val_loss_bce = weighted_neg_log_loss(y_v, val_preds, w_v)
+                
+                val_total_loss = val_loss_bce + self.lambda_contrastive * val_Lc + self.lambda_ortho * val_Lo
+                val_total_loss = val_total_loss + self.lamb_1 * self._get_l1_loss() + self.lamb_group * self._get_group_lasso_loss()
+                
+                val_total_loss_float = val_total_loss.item()
+                val_bce_float = val_loss_bce.item()
                 val_accuracy = ((val_preds >= 0.5) == y_v).float().mean().item()
                 
-            self.metrics_history['train_loss'].append(loss.item())
-            self.metrics_history['val_loss'].append(val_loss_bce) # Proxy for pure neg_log_loss out-of-sample objective
-            self.metrics_history['val_neg_log_loss'].append(val_loss_bce)
+            self.metrics_history['train_loss'].append(avg_train_loss)
+            self.metrics_history['val_loss'].append(val_total_loss_float) 
+            self.metrics_history['val_bce'].append(val_bce_float)
             self.metrics_history['val_accuracy'].append(val_accuracy)
+            
+            self.scheduler.step(val_total_loss_float)
                 
-            if val_loss_bce < best_val_loss:
-                best_val_loss = val_loss_bce
+            if val_total_loss_float < best_val_loss:
+                best_val_loss = val_total_loss_float
                 best_state = copy.deepcopy(self.model.state_dict())
                 patience_counter = 0
             else:
                 patience_counter += 1
                 
             if patience_counter >= self.patience:
-                logger.info("Early stopping triggered at Epoch %d | Best Val Loss: %.4f", epoch, best_val_loss)
+                logger.info("Early stopping triggered at Epoch %d | Best Total Val Loss: %.4f", epoch, best_val_loss)
                 break
                 
         if best_state is not None:
             self.model.load_state_dict(best_state)
         return self
 
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+    def calibrate(self, X_val: np.ndarray, y_val: np.ndarray) -> 'ModelTrainer':
+        """
+        Fit Isotonic Regression to map raw native predictions to reliable empirical probabilities.
+        Why: AFML Ch. 10 notes bet-sizing formulas demand well-calibrated metrics mirroring
+        true real-world likelihood. Uncalibrated deep models generally return overconfident bounds.
+        """
+        raw_preds = self._predict_raw(X_val)
+        self.calibrator = IsotonicRegression(out_of_bounds='clip')
+        # Calibrating directly matching raw probabilities bounds targeting truth labels uniquely correctly.
+        self.calibrator.fit(raw_preds, y_val)
+        return self
+
+    def _predict_raw(self, X: np.ndarray) -> np.ndarray:
         self.model.eval()
         with torch.no_grad():
             X_t = torch.tensor(X, dtype=torch.float32).to(self.device)
+            seq_len = self.config.get('seq_len', 1)
+            
+            if isinstance(self.model, TKAN):
+                feat_dim = X_t.shape[1] // seq_len
+                X_t = X_t.view(X_t.shape[0], seq_len, feat_dim)
+                
             if isinstance(self.model, KASPER):
                 preds, _, _ = self.model(X_t)
             else:
                 preds = self.model(X_t)
                 
-            p1 = preds.cpu().numpy()
-            p0 = 1.0 - p1
-            return np.column_stack((p0, p1))
+        return preds.cpu().numpy()
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        p1 = self._predict_raw(X)
+        
+        if self.calibrator is not None:
+            p1 = self.calibrator.transform(p1)
+            
+        p0 = 1.0 - p1
+        return np.column_stack((p0, p1))
 
     def get_fold_metrics(self) -> dict:
-        """Exposes raw objective evaluation bounds required by orchestrators isolating tracking metrics natively."""
+        """Returns objective evaluation arrays natively spanning validation matrices seamlessly."""
         return self.metrics_history
