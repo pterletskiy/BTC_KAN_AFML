@@ -385,10 +385,18 @@ def fetch_coinmetrics(
     logger.info("Fetching CoinMetrics data for %s …", asset)
     client = CoinMetricsClient()
 
-    # Resolve metric list if not provided
+    # Resolve metric list if not provided globally dynamically logically efficiently
     if metrics is None:
-        metrics = DEFAULT_COINMETRICS_METRICS
-        logger.info("Using default %d CoinMetrics metrics for %s", len(metrics), asset)
+        try:
+            logger.info("Querying available 1d metrics for %s via CoinMetrics Community API catalog...", asset)
+            list_asset_metrics = client.catalog_asset_metrics_v2(assets=asset)
+            asset_list_df = list_asset_metrics.to_dataframe()
+            daily_metrics = asset_list_df[asset_list_df['frequency'] == '1d']
+            metrics = daily_metrics['metric'].tolist()
+            logger.info("Dynamically recovered %d available 1d metrics for %s", len(metrics), asset)
+        except Exception as e:
+            logger.warning("Failed to systematically fetch CoinMetrics catalog: %s. Reverting safely to default limits.", e)
+            metrics = DEFAULT_COINMETRICS_METRICS
 
     raw = _with_retry(
         client.get_asset_metrics,
