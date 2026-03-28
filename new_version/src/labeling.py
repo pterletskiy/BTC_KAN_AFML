@@ -1,613 +1,321 @@
 """
-4_labels.py — Triple-Barrier Method and Sample Weighting logic for MFW pipeline.
+2) Labeling
+=====================
+Take a clean close price series and produce a DataFrame of labels (bins)
+with columns ['ret', 'bin', 't1'], where:
+  - ret  : return at barrier touch
+  - bin  : class label {-1, 0, +1}
+  - t1   : timestamp when the label was resolved (first barrier touch)
 
-This module sits downstream of 3_econometrics.py and upstream of 5_cv.py.
-It implements Marcos López de Prado's Triple-Barrier Method (TBM) for 
-time-series labeling, along with concurrent sample weight generation
-based on overlapping holding periods and absolute returns.
+The t1 column is critical for downstream purging in CPCV.
 
-CHANGELOG:
-- Added `getTimeDecay` integrating AFML piecewise-linear decay algorithms cleanly.
-- Implemented `seqBootstrap` enforcing dynamic average uniqueness probabilities resolving overlaps.
-- Removed arbitrary `0` masks in `getBins` actively routing towards explicit label dropping. 
-- Eradicated mutable default arguments gracefully universally natively.
-- Shifted default scaling architecture onto `ThreadPoolExecutor` safely inherently mapping memory.
-- Completely vectorized `searchsorted` vertical timeline scanning optimally!
-- Rectified buggy interim parquets mappings explicitly resolving outputs correctly seamlessly.
-- Configured dynamic label imbalance logs highlighting `< 10%` boundary degradation.
-- Fixed literal typos structurally gracefully natively!
-- Redefined `mpPandasObj` stripping brittle tuple dispatching limits properly smoothly.
-- Injected strict AFML references advising `class_weight='balanced'` downstream practically. 
+Implements AFML Snippets 2.4, 3.1, 3.2, 3.4, 3.5, 3.8.
 """
 
-import concurrent.futures
 import logging
-import math
-import multiprocessing as mp
-import os
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ==============================================================================
-# MULTIPROCESSING ENGINE
-# ==============================================================================
-def mpPandasObj(func, atoms, *args, numThreads=None, useProcesses=False, **kwargs):
-    """
-    Parallelize a pandas operation over a partitioned list of atoms.
 
-    Parameters
-    ----------
-    func : callable
-        Worker function to dispatch. Must accept `molecule` as its last positional
-        argument (or explicitly capture other args).
-    atoms : list-like
-        The index of items to partition into molecules.
-    *args : 
-        Additional positional arguments passed to `func` before the molecule.
-    numThreads : int, optional
-        Number of parallel workers. Defaults to max(1, cpu_count() - 1).
-    useProcesses : bool
-        If True, utilizes ProcessPoolExecutor (heavy). Defaults to ThreadPoolExecutor.
-    **kwargs : 
-        Additional keyword arguments to pass to `func`.
-
-    Returns
-    -------
-    pd.DataFrame or pd.Series
-        Concatenated results across all dispatch workers.
-    """
-    if numThreads is None:
-        numThreads = max(1, mp.cpu_count() - 1)
-
-    if len(atoms) == 0:
-        return pd.DataFrame()
-
-    numThreads = max(1, min(numThreads, len(atoms)))
-    step = int(np.ceil(len(atoms) / numThreads))
-    molecules = [atoms[i:i + step] for i in range(0, len(atoms), step)]
-    
-    results = []
-    ExecutorClass = concurrent.futures.ProcessPoolExecutor if useProcesses else concurrent.futures.ThreadPoolExecutor
-    
-    with ExecutorClass(max_workers=numThreads) as executor:
-        futures = []
-        for mol in molecules:
-            mol_args = list(args) + [mol]
-            futures.append(executor.submit(func, *mol_args, **kwargs))
-            
-        for future in futures:
-            try:
-                results.append(future.result())
-            except Exception as e:
-                logger.error("mpPandasObj worker failed: %s", e)
-                raise
-
-    if not results:
-        return pd.DataFrame()
-        
-    if isinstance(results[0], (pd.Series, pd.DataFrame)):
-        out = pd.concat(results)
-        return out
-    return results
-
-# ==============================================================================
-# 1. VOLATILITY ESTIMATION
-# ==============================================================================
-def getDailyVol(close: pd.Series, span0: int = 100) -> pd.Series:
-    """Computes the daily volatility estimate at each intraday timestamp.
-    
-    Uses exponential moving standard deviation of daily log returns,
-    forward-filled to the original timestamp frequency.
+# ---------------------------------------------------------------------------
+# Step 1 — Daily volatility (AFML Snippet 3.1)
+# ---------------------------------------------------------------------------
+def compute_daily_volatility(close: pd.Series, span: int = 50) -> pd.Series:
+    """Exponentially weighted moving std of log returns.
 
     Parameters
     ----------
     close : pd.Series
-        Price series with a strictly monotonic pd.DatetimeIndex.
-    span0 : int
-        Span for the EWMA standard deviation (default 100).
+        Close prices with a DatetimeIndex.
+    span : int
+        EWMA span. Default 50 is calibrated for BTC's faster regime
+        transitions (De Prado uses 100 for equities).
 
     Returns
     -------
     pd.Series
-        Daily volatility track assigned to intraday timestamps, forward-filled.
-        Named 'dailyVol'.
+        Daily volatility estimate, indexed identically to *close*.
+        Leading NaNs from the EWMA warm-up are preserved.
     """
-    df0 = close.resample('D').last().dropna()
-    df0 = np.log(df0 / df0.shift(1))
-    df0 = df0.ewm(span=span0).std()
-    
-    df0 = df0.reindex(close.index, method='ffill')
-    df0.name = 'dailyVol'
-    return df0
+    log_returns = np.log(close / close.shift(1))
+    return log_returns.ewm(span=span).std()
 
-# ==============================================================================
-# 2. TRIPLE-BARRIER LABELING
-# ==============================================================================
-def applyPtSlOnT1(close: pd.Series, events: pd.DataFrame, ptSl: list, molecule: list) -> pd.DataFrame:
-    """Worker function: evaluates horizontal barriers for a molecule of events.
-    
-    Determines the exact timestamp at which the first barrier (profit-taking,
-    stop-loss, or the pre-defined vertical time barrier) is touched.
+
+# ---------------------------------------------------------------------------
+# Step 2 — CUSUM filter (AFML Snippet 2.4)
+# ---------------------------------------------------------------------------
+def cusum_filter(log_returns: pd.Series, threshold: float) -> pd.DatetimeIndex:
+    """Symmetric CUSUM filter that fires when cumulative deviation exceeds *threshold*.
 
     Parameters
     ----------
-    close : pd.Series
-        Price series.
-    events : pd.DataFrame
-        Slices of target returns ('trgt') and vertical barriers ('t1').
-    ptSl : list
-        Multipliers [pt_multiplier, sl_multiplier]. A multiplier of 0 disables that barrier.
-    molecule : list
-        Index labels (subset of events.index) to process.
+    log_returns : pd.Series
+        Log returns series (NaN-free).
+    threshold : float
+        Barrier *h* for both positive and negative accumulators.
 
     Returns
     -------
-    pd.DataFrame
-        First cross times in columns ['sl', 'pt', 't1'].
+    pd.DatetimeIndex
+        Timestamps where the filter triggered an event.
     """
-    out = pd.DataFrame(columns=['sl', 'pt', 't1'], index=molecule)
-    
-    for t0 in molecule:
-        t1_val = events.loc[t0, 't1']
-        
-        if pd.isna(t1_val):
-            close_slice = close.loc[t0:]
-        else:
-            close_slice = close.loc[t0:t1_val]
-            
-        if close_slice.empty:
-            continue
-            
-        path = np.log(close_slice / close.loc[t0])
-        trgt = events.loc[t0, 'trgt']
-        
-        pt = ptSl[0] * trgt if ptSl[0] > 0 else np.inf
-        sl = -ptSl[1] * trgt if ptSl[1] > 0 else -np.inf
-        
-        pt_idx = path[path >= pt].index
-        pt_touch = pt_idx[0] if len(pt_idx) > 0 else pd.NaT
-        
-        sl_idx = path[path <= sl].index
-        sl_touch = sl_idx[0] if len(sl_idx) > 0 else pd.NaT
-        
-        out.loc[t0, 'sl'] = sl_touch
-        out.loc[t0, 'pt'] = pt_touch
-        out.loc[t0, 't1'] = t1_val  
-        
-    return out
+    events = []
+    s_pos, s_neg = 0.0, 0.0
+
+    for t, r in log_returns.items():
+        s_pos = max(0.0, s_pos + r)
+        s_neg = min(0.0, s_neg + r)
+
+        if s_pos >= threshold:
+            events.append(t)
+            s_pos = 0.0
+
+        if s_neg <= -threshold:
+            events.append(t)
+            s_neg = 0.0
+
+    return pd.DatetimeIndex(events)
 
 
-def getEvents(
-    close: pd.Series,
-    tEvents: pd.DatetimeIndex,
-    ptSl: list,
-    trgt: pd.Series,
-    minRet: float,
-    numThreads: int,
-    t1=False,
-    side: pd.Series = None,
-    useProcesses: bool = False
-) -> pd.DataFrame:
-    """Orchestrates the Triple-Barrier Method labeling logic.
-    
-    Maps each seed timestamp to its barrier-touch time and target.
-
-    Parameters
-    ----------
-    close : pd.Series
-        Price series.
-    tEvents : pd.DatetimeIndex
-        Seed timestamps to evaluate.
-    ptSl : list
-        Profit-taking and stop-loss multipliers.
-    trgt : pd.Series
-        Dynamic volatility targets, aligned with `close`.
-    minRet : float
-        Minimum target return required to place a barrier.
-    numThreads : int
-        Number of parallel workers.
-    t1 : pd.Series or bool, optional
-        Pre-defined vertical barrier timestamps indexed by `tEvents`.
-    side : pd.Series, optional
-        Primary model predictions for asymmetric metalabeling.
-    useProcesses : bool
-        If True, dispatch executes natively across heavy Process pools.
-
-    Returns
-    -------
-    pd.DataFrame
-        Events DataFrame with ['t1', 'trgt', 'side'], indexed by t0.
-    """
-    tEvents = tEvents[tEvents.isin(trgt.index)]
-    trgt_aligned = trgt.loc[tEvents]
-    
-    valid_events = trgt_aligned[trgt_aligned >= minRet].index
-    if valid_events.empty:
-        return pd.DataFrame(columns=['t1', 'trgt', 'side'])
-        
-    trgt_valid = trgt_aligned.loc[valid_events]
-    
-    if t1 is False:
-        t1_series = pd.Series(pd.NaT, index=valid_events)
-    else:
-        t1_series = t1.loc[valid_events]
-        
-    events = pd.DataFrame({'t1': t1_series, 'trgt': trgt_valid}, index=valid_events)
-    
-    if side is None:
-        events['side'] = 1.0
-    else:
-        events['side'] = side.loc[valid_events]
-        
-    df0 = mpPandasObj(
-        applyPtSlOnT1, events.index, close, events, ptSl, 
-        numThreads=numThreads, useProcesses=useProcesses
-    )
-    
-    events['t1'] = df0.min(axis=1, skipna=True)
-    events = events.dropna(subset=['t1'])
-    
-    return events
-
-
-def getBins(events: pd.DataFrame, close: pd.Series, dropLabels: bool = True, minPctLabel: float = 0.0) -> pd.DataFrame:
-    """Assign classification labels {-1, 0, 1} to events.
-    
-    AFML Chapter 4.8 Note: Class imbalances can still persist. Downstream
-    classifiers must use `class_weight='balanced'` or `'balanced_subsample'`
-    to robustly correct residual imbalance.
-
-    Parameters
-    ----------
-    events : pd.DataFrame
-        Output of `getEvents` featuring columns 't1', 'trgt', 'side'.
-    close : pd.Series
-        Price series.
-    dropLabels : bool
-        If True, cleanly removes arrays beneath exact bounds. Defaults True supporting AFML. 
-    minPctLabel : float
-        Bounded multiplier tracking threshold percentage parameters seamlessly.
-
-    Returns
-    -------
-    pd.DataFrame
-        Labeling outputs DataFrame featuring 'ret' and 'bin'.
-    """
-    events_valid = events.dropna(subset=['t1']).copy()
-    out = pd.DataFrame(index=events_valid.index)
-    
-    t1_prices = close.loc[events_valid['t1']].values
-    t0_prices = close.loc[events_valid.index].values
-    
-    ret = np.log(t1_prices / t0_prices)
-    out['ret'] = ret
-    
-    if 'side' in events_valid.columns and (events_valid['side'] != 1.0).any():
-        out['bin'] = np.where((out['ret'] * events_valid['side']) > 0, 1, 0)
-    else:
-        out['bin'] = np.sign(out['ret'])
-        
-        mask_tiny = np.abs(out['ret']) < (events_valid['trgt'].values * minPctLabel)
-        
-        if dropLabels:
-            out = out[~mask_tiny]
-        else:
-            out.loc[mask_tiny, 'bin'] = 0
-            logger.warning("[getBins] dropLabels=False deviates from AFML strictly. "
-                           "Return-attributed zero labels may systematically receive underweighted importance.")
-            
-    return out
-
-# ==============================================================================
-# 3. SAMPLE WEIGHTS, UNIQUENESS & BOOTSTRAP
-# ==============================================================================
-def mpNumCoEvents(closeIdx: pd.DatetimeIndex, t1: pd.Series, molecule: list) -> pd.Series:
-    """Worker function: counts active (concurrent) labels at each bar."""
-    t1_mol = t1.loc[molecule]
-    counts = pd.Series(0.0, index=closeIdx)
-    
-    for t0, t1_val in t1_mol.items():
-        if pd.isna(t1_val):
-            continue
-        counts.loc[t0:t1_val] += 1.0
-        
-    return counts[counts > 0]
-
-
-def mpSampleTW(t1: pd.Series, numCoEvents: pd.Series, molecule: list) -> pd.Series:
-    """Worker function: computes average uniqueness over an event's lifespan."""
-    out = pd.Series(index=molecule, dtype=float)
-    
-    for t0 in molecule:
-        t1_val = t1.loc[t0]
-        if pd.isna(t1_val):
-            continue
-            
-        uniqueness = 1.0 / numCoEvents.loc[t0:t1_val]
-        out.loc[t0] = uniqueness.mean()
-        
-    return out
-
-
-def getAvgUniqueness(t1: pd.Series, numThreads: int = None, useProcesses: bool = False) -> pd.Series:
-    """Orchestrator: Generates average uniqueness for full set of labels."""
-    closeIdx = t1.index
-    df0 = mpPandasObj(
-        mpNumCoEvents, t1.index, closeIdx, t1, 
-        numThreads=numThreads, useProcesses=useProcesses
-    )
-    
-    numCoEvents = df0.groupby(level=0).sum() if not df0.empty else pd.Series()
-    numCoEvents = numCoEvents.reindex(closeIdx).fillna(0).clip(lower=1.0)
-    
-    avgU = mpPandasObj(
-        mpSampleTW, t1.index, t1, numCoEvents, 
-        numThreads=numThreads, useProcesses=useProcesses
-    )
-    return avgU
-
-
-def mpSampleW(t1: pd.Series, numCoEvents: pd.Series, close: pd.Series, molecule: list) -> pd.Series:
-    """Worker function: generates absolute final sample weight combining average uniqueness and logs returns."""
-    out = pd.Series(index=molecule, dtype=float)
-    for t0 in molecule:
-        t1_val = t1.loc[t0]
-        if pd.isna(t1_val):
-            continue
-            
-        ret = np.log(close.loc[t1_val] / close.loc[t0])
-        uniqueness = 1.0 / numCoEvents.loc[t0:t1_val]
-        out.loc[t0] = abs(ret) * uniqueness.mean()
-        
-    return out
-
-
-def getTimeDecay(tW: pd.Series, clfLastW: float = 1.0) -> pd.Series:
-    """Implement piecewise-linear time decay on sample weights (AFML Snippet 4.11).
-    
-    Parameters
-    ----------
-    tW : pd.Series
-        Output from getSampleWeights (return-attributed * average uniqueness).
-    clfLastW : float, optional
-        Decay factor:
-        c = 1 : No decay.
-        0 < c < 1 : Weights decay linearly but remain positive.
-        c = 0 : Weights converge linearly to 0 for oldest observations.
-        c < 0 : Oldest portion of observations receives zero weight.
-        
-    Returns
-    -------
-    pd.Series
-        Time-decayed sample weights.
-    """
-    clfW = tW.sort_index().cumsum()
-    if clfLastW >= 0:
-        slope = (1.0 - clfLastW) / clfW.iloc[-1]
-    else:
-        slope = 1.0 / ((clfLastW + 1.0) * clfW.iloc[-1])
-        
-    decay = 1.0 - (slope * (clfW.iloc[-1] - clfW))
-    decay.loc[decay < 0] = 0
-    return decay
-
-
-def getSampleWeights(
-    t1: pd.Series, 
-    close: pd.Series, 
-    numThreads: int = None, 
-    decay_c: float = 1.0, 
-    useProcesses: bool = False
+# ---------------------------------------------------------------------------
+# Step 3 — Vertical barriers
+# ---------------------------------------------------------------------------
+def get_vertical_barriers(
+    close: pd.Series, t_events: pd.DatetimeIndex, num_days: int
 ) -> pd.Series:
-    """Orchestrator: Generates balanced sample weight vector combining correlation discount & log returns."""
-    closeIdx = t1.index
-    df0 = mpPandasObj(
-        mpNumCoEvents, t1.index, closeIdx, t1, 
-        numThreads=numThreads, useProcesses=useProcesses
-    )
-    
-    numCoEvents = df0.groupby(level=0).sum() if not df0.empty else pd.Series()
-    numCoEvents = numCoEvents.reindex(closeIdx).fillna(0).clip(lower=1.0)
-    
-    weights = mpPandasObj(
-        mpSampleW, t1.index, t1, numCoEvents, close, 
-        numThreads=numThreads, useProcesses=useProcesses
-    )
-    
-    if weights.empty:
-        return weights
-        
-    if weights.isna().any() or np.isinf(weights).any():
-        raise ValueError("Sample Weights contain NaNs or Infinities. Validate price series integrity.")
-        
-    weights = weights * (len(weights) / weights.sum())
-    
-    if decay_c != 1.0:
-        decay_factors = getTimeDecay(weights, clfLastW=decay_c)
-        weights = weights * decay_factors
-        weights = weights * (len(weights) / weights.sum())
-        
-    return weights
+    """For each event, find the close-index timestamp *num_days* calendar days ahead.
+
+    Parameters
+    ----------
+    close : pd.Series
+        Close prices (used only for its index).
+    t_events : pd.DatetimeIndex
+        Event timestamps from the CUSUM filter.
+    num_days : int
+        Horizon in calendar days.
+
+    Returns
+    -------
+    pd.Series
+        Indexed on *t_events*, values are the vertical barrier timestamps
+        (or NaN if the horizon falls beyond the data).
+    """
+    idx = close.index
+    t1 = t_events + pd.Timedelta(days=num_days)
+    # searchsorted finds the nearest index position at or after the target
+    locs = idx.searchsorted(t1, side="right") - 1
+    # clamp to valid range; mark out-of-bounds as NaN
+    locs = pd.Series(locs, index=t_events)
+    mask = (locs < 0) | (locs >= len(idx))
+    locs[mask] = np.nan
+    result = locs.map(lambda x: idx[int(x)] if not np.isnan(x) else np.nan)
+    return pd.Series(result, index=t_events, name="t1")
 
 
-def getIndMatrix(barIx: pd.DatetimeIndex, t1: pd.Series) -> pd.DataFrame:
-    """Build the binary indicator matrix mapping each label's lifespan to the index."""
-    indM = pd.DataFrame(0.0, index=barIx, columns=range(t1.shape[0]))
-    for i, (t0, t1_val) in enumerate(t1.items()):
-        if pd.isna(t1_val):
-            continue
-        indM.loc[t0:t1_val, i] = 1.0
-    return indM
-
-
-def seqBootstrap(t1: pd.Series, numSamples: int = None, random_state: int = None) -> list:
-    """Draw samples sequentially proportional to their average uniqueness (AFML Chapter 4.5)."""
-    if numSamples is None:
-        numSamples = t1.shape[0]
-    if random_state is not None:
-        np.random.seed(random_state)
-        
-    phi = []
-    # Index limits evaluating exact timeline
-    barIx = t1.index.union(t1.dropna().values).sort_values().drop_duplicates()
-    indM = getIndMatrix(barIx, t1)
-    
-    # Pre-extract to numpy for fast O(N^2) evaluation
-    indM_np = indM.values 
-    N, M = indM_np.shape
-    
-    indM_sum = np.zeros(N)
-    
-    for i in range(numSamples):
-        if i == 0:
-            prob = np.ones(M) / M
-        else:
-            prob = np.zeros(M)
-            for j in range(M):
-                cand = indM_np[:, j]
-                denom = indM_sum + cand
-                active = cand > 0
-                if active.any():
-                    prob[j] = np.mean(cand[active] / denom[active])
-                else:
-                    prob[j] = 0.0
-            prob = prob / prob.sum()
-            
-        choice = np.random.choice(M, p=prob)
-        phi.append(choice)
-        indM_sum += indM_np[:, choice]
-        
-    return [t1.index[i] for i in phi]
-
-# ==============================================================================
-# 4. PRIMARY API ORCHESTRATOR
-# ==============================================================================
-def run_labels(
+# ---------------------------------------------------------------------------
+# Step 4 — Triple-barrier labels (AFML Snippets 3.2 + 3.4 + 3.5)
+# ---------------------------------------------------------------------------
+def triple_barrier_labels(
     close: pd.Series,
-    tEvents: pd.DatetimeIndex,
-    numDays: int = 5,
-    ptSl: list = None,
-    minRet: float = 0.005,
-    minPctLabel: float = 0.0,
-    dropLabels: bool = True,
-    decay_c: float = 1.0,
-    span0: int = 100,
-    numThreads: int = None,
-    useProcesses: bool = False,
-    saveInterim: bool = True,
-    interim_path: str = "data/interim/"
-) -> dict:
-    """Main orchestration routine spanning volatility targets to sampling weights computation."""
-    if numThreads is None:
-        numThreads = max(1, mp.cpu_count() - 1)
-        
-    if ptSl is None:
-        ptSl = [1, 1]
-        
-    unknowns = tEvents[~tEvents.isin(close.index)]
-    if not unknowns.empty:
-        logger.warning("Dropped %d events from tEvents not present in close index.", len(unknowns))
-        tEvents = tEvents[tEvents.isin(close.index)]
-    
-    pre_count = len(tEvents)
-        
-    # 1. Volatility setup
-    trgt = getDailyVol(close, span0=span0)
-    
-    # 2. Vectorized Vertical Explicit Bounds scanning
-    tdelta = pd.Timedelta(days=numDays)
-    t1_values = tEvents + tdelta
-    
-    idx_positions = close.index.searchsorted(t1_values, side='left')
-    idx_positions = np.clip(idx_positions, 0, len(close.index) - 1)
-    t1 = pd.Series(close.index[idx_positions], index=tEvents)
-            
-    # 3. Executing Core Matrix Generation Limits
-    events = getEvents(
-        close=close,
-        tEvents=tEvents,
-        ptSl=ptSl,
-        trgt=trgt,
-        minRet=minRet,
-        numThreads=numThreads,
-        t1=t1,
-        side=None,
-        useProcesses=useProcesses
-    )
-    
-    # 4. Labeling Resolution strictly extracting bounds
-    bins = getBins(events, close, dropLabels=dropLabels, minPctLabel=minPctLabel)
-    
-    # Crucially propagate any bounds dropped directly upstream syncing states
-    events = events.loc[bins.index]
-    post_count = len(events)
-    
-    # 5. Extracting Core Weights Mapping Logic Space + Bootstrap
-    sampleWeights = getSampleWeights(
-        events['t1'], close, 
-        numThreads=numThreads, decay_c=decay_c, useProcesses=useProcesses
-    )
-    
-    # Safely resolving sequences 
-    seqBootstrapIdx = seqBootstrap(events['t1'], numSamples=len(bins))
-    
-    avgU_df = getAvgUniqueness(events['t1'], numThreads=numThreads, useProcesses=useProcesses)
-    
-    # Logs evaluating explicit constraints bounds naturally cleanly gracefully 
-    label_counts = bins['bin'].value_counts().sort_index()
-    logger.info("LABELING STATS: Initial events: %d | Active Post-minRet/Drops: %d", pre_count, post_count)
-    logger.info("LABELING STATS: Label distribution:\n%s", label_counts.to_string())
-    
-    total = len(bins)
-    for label, count in label_counts.items():
-        if float(count) / total < 0.10:
-            logger.warning("Class %s represents less than 10%% of the total samples (%.2f%%).", label, 100 * count / total)
-            
-    logger.info("LABELING STATS: Avg Uniqueness -> Mean: %.4f, Std: %.4f", avgU_df.mean(), avgU_df.std())
-    logger.info("LABELING STATS: Sample Weights -> Mean: %.4f, Std: %.4f", sampleWeights.mean(), sampleWeights.std())
-    
-    if saveInterim:
-        out_dir = Path(interim_path)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        
-        if isinstance(events, pd.Series):
-            events.to_frame().to_parquet(out_dir / "events.parquet")
+    t_events: pd.DatetimeIndex,
+    trgt: pd.Series,
+    pt_sl: tuple[float, float] = (1.0, 1.0),
+    num_days: int = 5,
+    min_return: float = 0.0,
+) -> pd.DataFrame:
+    """Apply the triple-barrier method to each event.
+
+    Parameters
+    ----------
+    close : pd.Series
+        Close prices with DatetimeIndex.
+    t_events : pd.DatetimeIndex
+        Event timestamps (e.g., from CUSUM filter).
+    trgt : pd.Series
+        Daily volatility at each timestamp (target width).
+    pt_sl : tuple[float, float]
+        Multipliers for (upper, lower) horizontal barriers.
+        Set either to 0 to disable that barrier.
+    num_days : int
+        Vertical barrier horizon in calendar days.
+    min_return : float
+        Minimum absolute return to avoid the 0 label at the vertical barrier.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ['ret', 'bin', 't1'], indexed on event timestamps.
+    """
+    # align events to timestamps present in trgt (drops warm-up NaNs)
+    t_events = t_events[t_events.isin(trgt.dropna().index)]
+
+    vertical = get_vertical_barriers(close, t_events, num_days)
+
+    # build events DataFrame
+    events = pd.DataFrame({"t1": vertical, "trgt": trgt.loc[t_events].values},
+                          index=t_events)
+    events = events.dropna(subset=["trgt"])
+
+    results = []
+    for t0, row in events.iterrows():
+        t1 = row["t1"]
+        target = row["trgt"]
+
+        # if vertical barrier is NaN, skip this event
+        if pd.isna(t1):
+            continue
+
+        # price path from t0 to t1
+        path = close.loc[t0:t1]
+        if len(path) < 2:
+            continue
+
+        p0 = close.loc[t0]
+
+        # horizontal barriers
+        upper = p0 * (1.0 + pt_sl[0] * target) if pt_sl[0] > 0 else np.inf
+        lower = p0 * (1.0 - pt_sl[1] * target) if pt_sl[1] > 0 else -np.inf
+
+        # find first touch of each barrier
+        upper_touch = path[path >= upper].index.min() if pt_sl[0] > 0 else pd.NaT
+        lower_touch = path[path <= lower].index.min() if pt_sl[1] > 0 else pd.NaT
+
+        # earliest barrier touch
+        touches = pd.Series(
+            {"upper": upper_touch, "lower": lower_touch, "vertical": t1}
+        ).dropna()
+        first_touch = touches.min()
+
+        # return at first touch
+        ret = close.loc[first_touch] / p0 - 1.0
+
+        # assign label
+        if first_touch == upper_touch:
+            label = 1
+        elif first_touch == lower_touch:
+            label = -1
         else:
-            events.to_parquet(out_dir / "events.parquet")
-            
-        if isinstance(bins, pd.Series):
-            bins.to_frame().to_parquet(out_dir / "bins.parquet")
-        else:
-            bins.to_parquet(out_dir / "bins.parquet")
-            
-        sampleWeights.to_frame(name="weight").to_parquet(out_dir / "sampleWeights.parquet")
-        logger.info("Persisted labeling logic to `%s`", out_dir)
+            # vertical barrier: sign of return, or 0 if below min_return
+            if abs(ret) < min_return:
+                label = 0
+            else:
+                label = int(np.sign(ret))
 
-    return {
-        'events': events,
-        'bins': bins,
-        'sampleWeights': sampleWeights,
-        'seqBootstrapIdx': seqBootstrapIdx
-    }
+        results.append({"t0": t0, "ret": ret, "bin": label, "t1": first_touch})
 
-
-# PEP 8 aliases for backward compatibility dynamically
-get_daily_vol = getDailyVol
-get_time_decay = getTimeDecay
-seq_bootstrap = seqBootstrap
-get_ind_matrix = getIndMatrix
-apply_pt_sl_on_t1 = applyPtSlOnT1
-get_events = getEvents
-get_bins = getBins
-get_avg_uniqueness = getAvgUniqueness
-get_sample_weights = getSampleWeights
-mp_pandas_obj = mpPandasObj
+    out = pd.DataFrame(results).set_index("t0")
+    out.index.name = None
+    logger.info(
+        "Triple-barrier: %d events labeled. Class distribution: %s",
+        len(out),
+        out["bin"].value_counts().to_dict(),
+    )
+    return out
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    logger.info("4_labels.py module initialized.")
+# ---------------------------------------------------------------------------
+# Drop rare labels (AFML Snippet 3.8)
+# ---------------------------------------------------------------------------
+def drop_rare_labels(
+    bins: pd.DataFrame, min_pct: float = 0.05
+) -> pd.DataFrame:
+    """Remove rows whose class appears in fewer than *min_pct* of samples.
+
+    Parameters
+    ----------
+    bins : pd.DataFrame
+        Must contain a 'bin' column.
+    min_pct : float
+        Minimum fraction of total samples for a class to survive.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered copy of *bins*.
+    """
+    counts = bins["bin"].value_counts(normalize=True)
+    rare = counts[counts < min_pct].index.tolist()
+
+    if rare:
+        n_before = len(bins)
+        bins = bins[~bins["bin"].isin(rare)].copy()
+        n_dropped = n_before - len(bins)
+        logger.warning(
+            "Dropped %d row(s) belonging to rare class(es) %s (< %.1f%%).",
+            n_dropped, rare, min_pct * 100,
+        )
+
+    return bins
+
+
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
+def run_labeling_pipeline(
+    close: pd.Series,
+    vol_span: int = 50,
+    cusum_enabled: bool = True,
+    cusum_threshold_multiplier: float = 1.0,
+    pt_sl: tuple[float, float] = (1, 1),
+    num_days: int = 5,
+    min_return: float = 0.0,
+    drop_rare: bool = True,
+    min_rare_pct: float = 0.05,
+) -> pd.DataFrame:
+    """Chain volatility estimation, CUSUM filtering, triple-barrier labeling,
+    and rare-label pruning into one call.
+
+    Parameters
+    ----------
+    close : pd.Series
+        Clean close prices with DatetimeIndex.
+    vol_span : int
+        EWMA span for daily volatility.
+    cusum_enabled : bool
+        If False, every close timestamp becomes an event (no filtering).
+    cusum_threshold_multiplier : float
+        CUSUM threshold = multiplier × mean(daily_vol).
+    pt_sl : tuple[float, float]
+        (upper, lower) barrier multipliers.
+    num_days : int
+        Vertical barrier horizon in calendar days.
+    min_return : float
+        Minimum return to avoid the 0 label at vertical barrier.
+    drop_rare : bool
+        Whether to drop classes below *min_rare_pct*.
+    min_rare_pct : float
+        Threshold for rare-class removal.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ['ret', 'bin', 't1'], indexed by event timestamps.
+    """
+    daily_vol = compute_daily_volatility(close, span=vol_span)
+    log_rets = np.log(close / close.shift(1)).dropna()
+
+    if cusum_enabled:
+        h = cusum_threshold_multiplier * daily_vol.mean()
+        t_events = cusum_filter(log_rets, h)
+        logger.info("CUSUM filter: threshold=%.6f, %d events detected.", h, len(t_events))
+    else:
+        t_events = close.index
+        logger.info("CUSUM disabled: using all %d timestamps as events.", len(t_events))
+
+    bins = triple_barrier_labels(
+        close, t_events, trgt=daily_vol,
+        pt_sl=pt_sl, num_days=num_days, min_return=min_return,
+    )
+
+    if drop_rare:
+        bins = drop_rare_labels(bins, min_pct=min_rare_pct)
+
+    print(
+        f"[labeling] {len(bins)} labels | "
+        f"classes: {bins['bin'].value_counts().to_dict()} | "
+        f"date range: {bins.index[0].date()} → {bins.index[-1].date()}"
+    )
+
+    return bins

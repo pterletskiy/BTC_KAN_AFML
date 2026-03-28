@@ -1,5 +1,5 @@
 """
-Step 0 — Data Loader
+1) Data Loader
 ====================
 Fetch BTC-USD daily OHLCV from yfinance, validate data quality,
 and return a clean DatetimeIndex DataFrame.

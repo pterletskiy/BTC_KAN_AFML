@@ -1,421 +1,506 @@
 """
-features.py — Feature engineering for the MFW Asset Direction Predictor.
+4) Features
+============================
+Compute all features from the full OHLCV DataFrame. Returns a feature
+matrix covering every daily bar. Feature selection by row (restricting
+to labeled events) happens later in alignment.
 
-This module contains **only** feature creation logic. It produces strictly
-causal (backward-looking) features aligned with the MLDP (López de Prado)
-quantitative pipeline.
-
-Features flagged with `_REQUIRES_FFD` MUST undergo Fractional Differentiation
-downstream before being passed into models.
+Implements technical analysis features (Step 6a), AFML Part 4
+mathematical features (Step 6b), and log transforms (Step 7).
 """
 
 import logging
-import re
-from typing import Dict, List, Optional, Tuple
-
+import os
 import numpy as np
 import pandas as pd
-import ta
+from numpy.lib.stride_tricks import sliding_window_view
 
 logger = logging.getLogger(__name__)
 
-# Raw OHLCV columns — kept in the DataFrame for downstream label creation,
-# but NEVER included in the returned feature metadata dictionary.
-_RAW_OHLCV = {"Open", "High", "Low", "Close", "Volume"}
-
-# Tags exempt from the universal .shift(1) lag rule:
-# - 'cyclical': perfectly predictable calendar features
-# - 'event_time': deterministic event counters (e.g. Days_Since_Halving)
-_SHIFT_EXEMPT_TAGS = {"cyclical", "event_time"}
-
-# Explicit mapping requiring FFD handling sequentially.
-_REQUIRES_FFD = {"raw_level"}
-
-# Default subset of features to create autoregressive lags for.
-DEFAULT_FEATURES_TO_LAG = ["RSI_14", "Realized_Vol_7d", "ROC_7d"]
-
-HALVING_DATES = pd.to_datetime(["2012-11-28", "2016-07-09", "2020-05-11", "2024-04-20"])
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Helpers
-# ═══════════════════════════════════════════════════════════════════════════
-
-class FeatureBuilder:
-    """Accumulates feature columns and their metadata tags."""
-    def __init__(self, df: pd.DataFrame):
-        self.df = df.copy()
-        self.meta: Dict[str, str] = {}
-
-    def add(self, col: str, series: pd.Series, tag: str) -> None:
-        self.df[col] = series
-        self.meta[col] = tag
-
-
-def days_since_halving(index: pd.DatetimeIndex, halving_dates: pd.DatetimeIndex = HALVING_DATES) -> np.ndarray:
-    if getattr(index, 'tz', None) is not None:
-        halvings = halving_dates.tz_localize(index.tz)
-    else:
-        halvings = halving_dates
-
-    days = np.empty(len(index))
-    days[:] = np.nan
-    for dt in halvings:
-        mask = index >= dt
-        days[mask] = (index[mask] - dt).days
-
-    mask_before = index < halvings[0]
-    if mask_before.any():
-        days[mask_before] = (index[mask_before] - halvings[0]).days
-
-    return days
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Technical Analysis Features
-# ═══════════════════════════════════════════════════════════════════════════
-
-def create_ta_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    """Generate Technical Analysis features from OHLCV data."""
-    missing = _RAW_OHLCV - set(df.columns)
-    if missing:
-        raise ValueError(f"DataFrame is missing required OHLCV columns: {missing}")
-
-    if not isinstance(df.index, pd.DatetimeIndex):
-        raise TypeError("DataFrame index must be a DatetimeIndex for calendar feature extraction.")
-
-    b = FeatureBuilder(df)
-
-    # 1. Momentum & Oscillators (7d and 14d variants)
-    b.add("RSI_7", ta.momentum.RSIIndicator(df["Close"], window=7).rsi(), "bounded_oscillator")
-    b.add("RSI_14", ta.momentum.RSIIndicator(df["Close"], window=14).rsi(), "bounded_oscillator")
-
-    stoch = ta.momentum.StochasticOscillator(
-        high=df["High"], low=df["Low"], close=df["Close"], window=14, smooth_window=3
-    )
-    b.add("Stoch_K", stoch.stoch(), "bounded_oscillator")
-    b.add("Stoch_D", stoch.stoch_signal(), "bounded_oscillator")
-
-    b.add("Williams_R", ta.momentum.WilliamsRIndicator(
-        high=df["High"], low=df["Low"], close=df["Close"], lbp=14
-    ).williams_r(), "bounded_oscillator")
-
-    b.add("ROC_7d", (df["Close"] / df["Close"].shift(7).replace(0, np.nan) - 1) * 100, "zero_centered")
-    b.add("ROC_14d", (df["Close"] / df["Close"].shift(14).replace(0, np.nan) - 1) * 100, "zero_centered")
-
-    b.add("ADX_7", ta.trend.ADXIndicator(
-        high=df["High"], low=df["Low"], close=df["Close"], window=7
-    ).adx(), "bounded_oscillator")
-    b.add("ADX_14", ta.trend.ADXIndicator(
-        high=df["High"], low=df["Low"], close=df["Close"], window=14
-    ).adx(), "bounded_oscillator")
-
-    # 2. Moving Averages — EMA + VWMA only (KAN Orthogonality)
-    b.add("EMA_7", df["Close"].ewm(span=7, adjust=False).mean(), "raw_level")
-    b.add("EMA_14", df["Close"].ewm(span=14, adjust=False).mean(), "raw_level")
-    b.add("EMA_50", df["Close"].ewm(span=50, adjust=False).mean(), "raw_level")
-    b.add("EMA_200", df["Close"].ewm(span=200, adjust=False).mean(), "raw_level")
-
-    def _calc_vwma(close: pd.Series, vol: pd.Series, window: int) -> pd.Series:
-        return (close * vol).rolling(window).sum() / vol.rolling(window).sum().replace(0, np.nan)
-
-    b.add("VWMA_7", _calc_vwma(df["Close"], df["Volume"], 7), "raw_level")
-    b.add("VWMA_14", _calc_vwma(df["Close"], df["Volume"], 14), "raw_level")
-    b.add("VWMA_50", _calc_vwma(df["Close"], df["Volume"], 50), "raw_level")
-    b.add("VWMA_200", _calc_vwma(df["Close"], df["Volume"], 200), "raw_level")
-
-    # 3. Moving Average Ratios (Stationary)
-    b.add("Price_to_EMA_7", df["Close"] / b.df["EMA_7"].replace(0, np.nan), "ratio")
-    b.add("Price_to_EMA_14", df["Close"] / b.df["EMA_14"].replace(0, np.nan), "ratio")
-    b.add("Price_to_EMA_50", df["Close"] / b.df["EMA_50"].replace(0, np.nan), "ratio")
-    b.add("Price_to_EMA_200", df["Close"] / b.df["EMA_200"].replace(0, np.nan), "ratio")
-
-    b.add("Price_to_VWMA_7", df["Close"] / b.df["VWMA_7"].replace(0, np.nan), "ratio")
-    b.add("Price_to_VWMA_14", df["Close"] / b.df["VWMA_14"].replace(0, np.nan), "ratio")
-    b.add("Price_to_VWMA_50", df["Close"] / b.df["VWMA_50"].replace(0, np.nan), "ratio")
-    b.add("Price_to_VWMA_200", df["Close"] / b.df["VWMA_200"].replace(0, np.nan), "ratio")
-
-    b.add("EMA7_EMA14_ratio", b.df["EMA_7"] / b.df["EMA_14"].replace(0, np.nan), "ratio")
-    b.add("EMA50_EMA200_ratio", b.df["EMA_50"] / b.df["EMA_200"].replace(0, np.nan), "ratio")
-    b.add("VWMA7_VWMA14_ratio", b.df["VWMA_7"] / b.df["VWMA_14"].replace(0, np.nan), "ratio")
-    b.add("VWMA50_VWMA200_ratio", b.df["VWMA_50"] / b.df["VWMA_200"].replace(0, np.nan), "ratio")
-
-    macd = ta.trend.MACD(close=df["Close"])
-    b.add("MACD", macd.macd(), "zero_centered")
-    b.add("Signal_Line", macd.macd_signal(), "zero_centered")
-
-    b.add("OSCP", df["Close"].ewm(span=5, adjust=False).mean() - df["Close"].ewm(span=10, adjust=False).mean(), "zero_centered")
-
-    # 4. Volatility & Volume
-    b.add("ATR_7", ta.volatility.AverageTrueRange(
-        high=df["High"], low=df["Low"], close=df["Close"], window=7
-    ).average_true_range(), "raw_level")
-    b.add("ATR_14", ta.volatility.AverageTrueRange(
-        high=df["High"], low=df["Low"], close=df["Close"], window=14
-    ).average_true_range(), "raw_level")
-
-    if "Log_Return" not in df.columns:
-        b.df["Log_Return"] = np.log(df["Close"] / df["Close"].shift(1).replace(0, np.nan))
-
-    b.add("Realized_Vol_7d", b.df["Log_Return"].rolling(7).std(), "raw_level")
-    b.add("Realized_Vol_14d", b.df["Log_Return"].rolling(14).std(), "raw_level")
-
-    b.add("CCI", ta.trend.CCIIndicator(
-        high=df["High"], low=df["Low"], close=df["Close"], window=20
-    ).cci(), "zero_centered")
-
-    b.add("OBV_pct", ta.volume.OnBalanceVolumeIndicator(
-        close=df["Close"], volume=df["Volume"]
-    ).on_balance_volume().pct_change(), "zero_centered")
-
-    b.add("MFI", ta.volume.MFIIndicator(
-        high=df["High"], low=df["Low"], close=df["Close"], volume=df["Volume"], window=14
-    ).money_flow_index(), "bounded_oscillator")
-
-    adl = ta.volume.AccDistIndexIndicator(
-        high=df["High"], low=df["Low"], close=df["Close"], volume=df["Volume"]
-    ).acc_dist_index()
-    b.add("Chaikin_Oscillator", adl.ewm(span=3, adjust=False).mean() - adl.ewm(span=10, adjust=False).mean(), "zero_centered")
-
-    bbands = ta.volatility.BollingerBands(close=df["Close"], window=20, window_dev=2)
-    upper_band = bbands.bollinger_hband()
-    lower_band = bbands.bollinger_lband()
-    moving_average = bbands.bollinger_mavg()
-    
-    b.add("BB_Width", (upper_band - lower_band) / moving_average.replace(0, np.nan), "ratio")
-    b.add("BB_Position", (df["Close"] - lower_band) / (upper_band - lower_band).replace(0, np.nan), "bounded_oscillator")
-
-    # 5. Pivot Points
-    pp = (df["High"] + df["Low"] + df["Close"]) / 3
-    s1 = (pp * 2) - df["High"]
-    s2 = pp - (df["High"] - df["Low"])
-    r1 = (pp * 2) - df["Low"]
-    r2 = pp + (df["High"] - df["Low"])
-
-    b.add("Price_to_PP", df["Close"] / pp.replace(0, np.nan), "ratio")
-    atr_safe = b.df["ATR_14"].replace(0, np.nan)
-    b.add("Distance_to_S1", (df["Close"] - s1) / atr_safe, "zero_centered")
-    b.add("Distance_to_S2", (df["Close"] - s2) / atr_safe, "zero_centered")
-    b.add("Distance_to_R1", (df["Close"] - r1) / atr_safe, "zero_centered")
-    b.add("Distance_to_R2", (df["Close"] - r2) / atr_safe, "zero_centered")
-
-    # 6. Calendar Anomalies & Cycles
-    b.add("DoW_sin", np.sin(2 * np.pi * df.index.dayofweek / 7), "cyclical")
-    b.add("DoW_cos", np.cos(2 * np.pi * df.index.dayofweek / 7), "cyclical")
-    b.add("Month_sin", np.sin(2 * np.pi * df.index.month / 12), "cyclical")
-    b.add("Month_cos", np.cos(2 * np.pi * df.index.month / 12), "cyclical")
-    b.add("Days_Since_Halving", days_since_halving(df.index), "event_time")
-
-    # Safety Drop: Ensure raw OHLCV never leaks into metadata
-    b.meta = {k: v for k, v in b.meta.items() if k not in _RAW_OHLCV}
-
-    VALID_TAGS = {"raw_level", "ratio", "bounded_oscillator", "zero_centered", "cyclical", "event_time"}
-    assert all(tag in VALID_TAGS for tag in b.meta.values()), f"Invalid metadata tag found: {set(b.meta.values()) - VALID_TAGS}"
-    assert len(b.meta) == len(set(b.meta)), "Duplicate feature names detected in metadata"
-    nan_only = [c for c in b.meta if b.df[c].isna().all()]
-    if nan_only:
-        logger.warning("Features with all-NaN values detected: %s", nan_only)
-
-    logger.info("TA features created: %d", len(b.meta))
-    return b.df, b.meta
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# On-Chain Engineered Features
-# ═══════════════════════════════════════════════════════════════════════════
-
-def create_onchain_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    """Generate engineered on-chain features from CoinMetrics / Blockchain.com data."""
-    b = FeatureBuilder(df)
-
-    if "FlowInExNtv" in df.columns and "FlowOutExNtv" in df.columns:
-        b.add("Net_Exchange_Flow", df["FlowInExNtv"] - df["FlowOutExNtv"], "zero_centered")
-        b.add("Flow_Ratio", df["FlowInExNtv"] / df["FlowOutExNtv"].replace(0, np.nan), "ratio")
-
-    if "AdrActCnt" in df.columns:
-        b.add("AdrAct_ROC_7d", (df["AdrActCnt"] / df["AdrActCnt"].shift(7).replace(0, np.nan) - 1) * 100, "zero_centered")
-        if "TxTfrCnt" in df.columns:
-            b.add("TxTfr_per_Active_Adr", df["TxTfrCnt"] / df["AdrActCnt"].replace(0, np.nan), "ratio")
-
-    if "IssTotUSD" in df.columns and "Volume" in df.columns:
-        b.add("Miner_Sell_Pressure", df["IssTotUSD"] / df["Volume"].replace(0, np.nan), "ratio")
-
-    if "CapMVRVCur" in df.columns:
-        b.add("MVRV_Momentum", df["CapMVRVCur"] - df["CapMVRVCur"].rolling(7).mean(), "zero_centered")
-
-    if "HashRate" in df.columns:
-        b.add("HashRate_ROC_30d", (df["HashRate"] / df["HashRate"].shift(30).replace(0, np.nan) - 1) * 100, "zero_centered")
-
-    if "NVTAdj" in df.columns:
-        b.add("NVTAdj", df["NVTAdj"], "raw_level")
-
-    VALID_TAGS = {"raw_level", "ratio", "bounded_oscillator", "zero_centered", "cyclical", "event_time"}
-    assert all(tag in VALID_TAGS for tag in b.meta.values()), f"Invalid metadata tag found: {set(b.meta.values()) - VALID_TAGS}"
-    assert len(b.meta) == len(set(b.meta)), "Duplicate feature names detected in metadata"
-    nan_only = [c for c in b.meta if b.df[c].isna().all()]
-    if nan_only:
-        logger.warning("Features with all-NaN values detected: %s", nan_only)
-
-    logger.info("On-chain features created: %d", len(b.meta))
-    return b.df, b.meta
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Multicollinearity Filter
-# ═══════════════════════════════════════════════════════════════════════════
-
-def filter_correlated_features(
-    df: pd.DataFrame, 
-    meta: Dict[str, str], 
-    threshold: float = 0.95
-) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    """Drop highly correlated features (keeping the one with the longer lookback)."""
-    df_filtered = df.copy()
-    meta_filtered = meta.copy()
-    
-    feature_cols = list(meta.keys())
-    corr_matrix = df[feature_cols].corr().abs()
-    
-    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-    to_drop = set()
-
-    def extract_window(name: str) -> int:
-        nums = re.findall(r'\d+', name)
-        return int(nums[-1]) if nums else 0
-
-    for col in upper.columns:
-        highly_correlated = upper.index[upper[col] > threshold].tolist()
-        
-        for corr_col in highly_correlated:
-            if col in to_drop or corr_col in to_drop:
-                continue
-                
-            win_col = extract_window(col)
-            win_corr = extract_window(corr_col)
-            
-            if win_col < win_corr:
-                to_drop.add(col)
-            elif win_col > win_corr:
-                to_drop.add(corr_col)
-            else:
-                to_drop.add(col) 
-
-    if to_drop:
-        logger.info("Dropping %d highly correlated features (>%s): %s", len(to_drop), threshold, to_drop)
-        df_filtered = df_filtered.drop(columns=list(to_drop))
-        for col in to_drop:
-            if col in meta_filtered:
-                del meta_filtered[col]
-                
-    return df_filtered, meta_filtered
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# NaN Cleanup
-# ═══════════════════════════════════════════════════════════════════════════
-
-def drop_warmup_nans(df: pd.DataFrame, feature_cols: List[str]) -> pd.DataFrame:
-    """Drop rows where any *feature_cols* column is NaN."""
-    before = len(df)
-    df = df.dropna(subset=feature_cols)
-    dropped = before - len(df)
-    logger.info(
-        "Dropped %d warm-up rows (%.1f%%). Remaining: %d",
-        dropped, 100 * dropped / max(before, 1), len(df),
-    )
-    return df
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Autoregressive Lag Features (Restricted Subset)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def create_lagged_features(
-    df: pd.DataFrame,
-    base_metadata: Dict[str, str],
-    lags: int = 3,
-    drop_na: bool = True,
-    features_to_lag: Optional[List[str]] = None,
-) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    """Create shifted (lagged) columns for autoregressive modelling."""
-    df = df.copy()
-    lag_meta: Dict[str, str] = {}
-
-    if features_to_lag is None:
-        features_to_lag = DEFAULT_FEATURES_TO_LAG
-
-    for feat in features_to_lag:
-        if feat not in df.columns or feat not in base_metadata:
-            continue
-        tag = base_metadata[feat]
-        for lag in range(1, lags + 1):
-            col_name = f"{feat}_t-{lag}"
-            df[col_name] = df[feat].shift(lag)
-            lag_meta[col_name] = tag
-
-    if drop_na and lag_meta:
-        before = len(df)
-        df = df.dropna(subset=list(lag_meta.keys()))
-        logger.info(
-            "Lagged features: %d cols created, %d warm-up rows dropped",
-            len(lag_meta), before - len(df),
-        )
-
-    return df, lag_meta
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Orchestrator
-# ═══════════════════════════════════════════════════════════════════════════
-
-def create_all_features(
-    df: pd.DataFrame,
-    include_ta: bool = True,
-    include_onchain: bool = True,
-    drop_correlated: bool = False,
-) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    """Run all feature engineering and build the metadata dictionary.
-
-    The returned DataFrame retains raw OHLCV columns (``Open, High, Low,
-    Close, Volume``) because downstream ``4_labels.py`` needs ``Close``
-    for Triple-Barrier Labeling.  However, those raw columns are
-    **excluded** from the returned ``feature_metadata`` dict so the model
-    only trains on explicitly engineered and tagged features.
-    
-    Features with tags in `_REQUIRES_FFD` (such as `raw_level`) MUST 
-    undergo Fractional Differentiation (FFD) before being fed to a model.
+# ── TA parameters ─────────────────────────────────────────────────────
+RSI_PERIOD = 14
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+BB_PERIOD = 20
+ATR_PERIOD = 14
+ROLLING_WINDOW = 21
+
+# ── Mathematical feature parameters ──────────────────────────────────
+SADF_MIN_SL = 63        # minimum sample length (~1 quarter)
+SADF_LAGS = 1
+ENTROPY_WINDOW = 21
+LZ_WINDOW = 63
+HURST_WINDOW = 126
+
+# ── Log transform targets ────────────────────────────────────────────
+LOG_TRANSFORM_COLUMNS = ["atr", "obv"]
+
+# ── Cache ─────────────────────────────────────────────────────────────
+CACHE_DIR = "cache/"
+MATH_CACHE_FILE = "math_features.parquet"
+
+
+# =====================================================================
+# Step 6a — Technical Analysis Features
+# =====================================================================
+def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute backward-looking TA features from OHLCV data.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        OHLCV DataFrame with DatetimeIndex.
+
+    Returns
+    -------
+    pd.DataFrame
+        One column per feature, indexed identically to *df*.
     """
-    feature_metadata: Dict[str, str] = {}
+    close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"]
+    open_ = df["Open"]
 
-    if include_ta:
-        df, ta_meta = create_ta_features(df)
-        feature_metadata.update(ta_meta)
+    features = pd.DataFrame(index=df.index)
 
-    if include_onchain:
-        df, oc_meta = create_onchain_features(df)
-        feature_metadata.update(oc_meta)
+    # 1. Log returns
+    log_ret = np.log(close / close.shift(1))
+    features["log_ret"] = log_ret
 
-    if drop_correlated:
-        df, feature_metadata = filter_correlated_features(df, feature_metadata, threshold=0.95)
+    # 2. RSI (Wilder smoothing via EWMA)
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1.0 / RSI_PERIOD, min_periods=RSI_PERIOD).mean()
+    avg_loss = loss.ewm(alpha=1.0 / RSI_PERIOD, min_periods=RSI_PERIOD).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    features["rsi"] = 100.0 - 100.0 / (1.0 + rs)
 
-    # Final safety net: ensure raw OHLCV never leaks into metadata
-    feature_metadata = {k: v for k, v in feature_metadata.items() if k not in _RAW_OHLCV}
+    # 3. MACD
+    ema_fast = close.ewm(span=MACD_FAST, min_periods=MACD_FAST).mean()
+    ema_slow = close.ewm(span=MACD_SLOW, min_periods=MACD_SLOW).mean()
+    macd_line = ema_fast - ema_slow
+    macd_signal = macd_line.ewm(span=MACD_SIGNAL, min_periods=MACD_SIGNAL).mean()
+    features["macd"] = macd_line
+    features["macd_signal"] = macd_signal
+    features["macd_hist"] = macd_line - macd_signal
 
-    # Universal Lag Rule (skill_mldp_pipeline.md):
-    # Shift all rolling/expanding predictor features by 1 to prevent look-ahead bias,
-    # except 'cyclical' and 'event_time' tagged features which are exempt.
-    cols_to_shift = [col for col, tag in feature_metadata.items() if tag not in _SHIFT_EXEMPT_TAGS]
-    if cols_to_shift:
-        df[cols_to_shift] = df[cols_to_shift].shift(1)
-        logger.info("Universal Lag Rule: Applied .shift(1) to %d features", len(cols_to_shift))
+    # 4. Bollinger Band width (dimensionless)
+    bb_mid = close.rolling(BB_PERIOD).mean()
+    bb_std = close.rolling(BB_PERIOD).std()
+    bb_upper = bb_mid + 2.0 * bb_std
+    bb_lower = bb_mid - 2.0 * bb_std
+    features["bb_width"] = (bb_upper - bb_lower) / bb_mid
 
-    raw_level_count = sum(1 for tag in feature_metadata.values() if tag in _REQUIRES_FFD)
-    if raw_level_count > 0:
-        logger.warning(
-            "Feature builder: %d 'raw_level' features generated. "
-            "These strictly require Fractional Differentiation (FFD) before modeling.", 
-            raw_level_count
-        )
+    # 5. ATR (EWMA smoothed)
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    features["atr"] = tr.ewm(span=ATR_PERIOD, min_periods=ATR_PERIOD).mean()
 
-    logger.info("Total engineered features tracked in metadata: %d", len(feature_metadata))
-    return df, feature_metadata
+    # 6. OBV
+    sign = np.sign(close.diff()).fillna(0)
+    features["obv"] = (volume * sign).cumsum()
+
+    # 7. Garman-Klass volatility (rolling)
+    log_hl = np.log(high / low)
+    log_co = np.log(close / open_)
+    gk_daily = 0.5 * log_hl ** 2 - (2.0 * np.log(2) - 1.0) * log_co ** 2
+    features["gk_vol"] = gk_daily.rolling(ROLLING_WINDOW).mean()
+
+    # 8. Rolling realized volatility (annualized)
+    features["realized_vol"] = log_ret.rolling(ROLLING_WINDOW).std() * np.sqrt(365)
+
+    # 9. Rolling skewness
+    features["skewness"] = log_ret.rolling(ROLLING_WINDOW).skew()
+
+    # 10. Rolling kurtosis
+    features["kurtosis"] = log_ret.rolling(ROLLING_WINDOW).kurt()
+
+    logger.info("TA features: %d columns, %d rows.", features.shape[1], features.shape[0])
+    return features
+
+
+# =====================================================================
+# Step 6b — Mathematical Features (AFML Part 4)
+# =====================================================================
+def compute_math_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute AFML mathematical features with Parquet caching.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        OHLCV DataFrame with DatetimeIndex.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: sadf, smt_poly1, smt_exp, entropy, lz_complexity, hurst.
+    """
+    cache_path = os.path.join(CACHE_DIR, MATH_CACHE_FILE)
+
+    # check cache
+    if os.path.exists(cache_path):
+        cached = pd.read_parquet(cache_path)
+        if (cached.index[0] == df.index[0]) and (cached.index[-1] == df.index[-1]):
+            logger.info("Math features loaded from cache.")
+            return cached
+        logger.info("Cache date range mismatch, recomputing.")
+
+    close = df["Close"]
+    log_price = np.log(close)
+    log_ret = np.log(close / close.shift(1)).dropna()
+
+    # compute each feature
+    print("[features] Computing SADF (this may take a few minutes)...")
+    sadf = _compute_sadf(log_price)
+
+    print("[features] Computing SMT...")
+    smt_poly1, smt_exp = _compute_smt(log_price)
+
+    print("[features] Computing rolling entropy...")
+    entropy = _compute_rolling_entropy(log_ret, window=ENTROPY_WINDOW)
+
+    print("[features] Computing Lempel-Ziv complexity...")
+    lz = _compute_rolling_lz(log_ret, window=LZ_WINDOW)
+
+    print("[features] Computing Hurst exponent...")
+    hurst = _compute_rolling_hurst(log_ret, window=HURST_WINDOW)
+
+    # assemble
+    features = pd.DataFrame(index=df.index)
+    features["sadf"] = sadf
+    features["smt_poly1"] = smt_poly1
+    features["smt_exp"] = smt_exp
+    features["entropy"] = entropy
+    features["lz_complexity"] = lz
+    features["hurst"] = hurst
+
+    # save cache
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    features.to_parquet(cache_path)
+    logger.info("Math features computed and cached to %s.", cache_path)
+
+    return features
+
+
+# ---------------------------------------------------------------------------
+# SADF (AFML Snippet 17.1)
+# ---------------------------------------------------------------------------
+def _compute_sadf(log_price: pd.Series) -> pd.Series:
+    """Supremum Augmented Dickey-Fuller test on log prices."""
+    result = pd.Series(np.nan, index=log_price.index)
+    y = log_price.values
+    n = len(y)
+
+    for t in range(SADF_MIN_SL, n):
+        sup_adf = -np.inf
+        # backward-expanding start points
+        for t0 in range(0, t - SADF_MIN_SL + 1):
+            segment = y[t0 : t + 1]
+            tstat = _adf_tstat(segment, lags=SADF_LAGS)
+            if tstat > sup_adf:
+                sup_adf = tstat
+        result.iloc[t] = sup_adf
+
+    return result
+
+
+def _adf_tstat(y: np.ndarray, lags: int = 1) -> float:
+    """Compute the ADF t-statistic for β in Δy_t = α + β*y_{t-1} + Σγ_k*Δy_{t-k} + ε."""
+    dy = np.diff(y)
+    n = len(dy)
+
+    if n <= lags + 2:
+        return np.nan
+
+    # build regressor matrix: [const, y_{t-1}, Δy_{t-1}, ..., Δy_{t-lags}]
+    # trim to align everything
+    start = lags
+    dep = dy[start:]  # Δy_t
+    m = len(dep)
+
+    if m <= lags + 2:
+        return np.nan
+
+    regressors = np.ones((m, 2 + lags))
+    regressors[:, 1] = y[start : start + m]  # y_{t-1}
+    for k in range(1, lags + 1):
+        regressors[:, 1 + k] = dy[start - k : start - k + m]  # Δy_{t-k}
+
+    try:
+        beta, residuals, _, _ = np.linalg.lstsq(regressors, dep, rcond=None)
+        if len(residuals) == 0:
+            resid = dep - regressors @ beta
+            sse = np.sum(resid ** 2)
+        else:
+            sse = residuals[0]
+        mse = sse / (m - regressors.shape[1])
+        cov = mse * np.linalg.inv(regressors.T @ regressors)
+        se_beta = np.sqrt(cov[1, 1])
+        return beta[1] / se_beta if se_beta > 0 else np.nan
+    except (np.linalg.LinAlgError, ValueError):
+        return np.nan
+
+
+# ---------------------------------------------------------------------------
+# SMT (AFML Section 17.4.3)
+# ---------------------------------------------------------------------------
+def _compute_smt(log_price: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Sub/Super-Martingale tests: polynomial-1 and exponential specifications."""
+    n = len(log_price)
+    y = log_price.values
+    idx = log_price.index
+
+    smt_poly1 = pd.Series(np.nan, index=idx)
+    smt_exp = pd.Series(np.nan, index=idx)
+
+    for t in range(SADF_MIN_SL, n):
+        sup_poly = -np.inf
+        sup_exp = -np.inf
+
+        for t0 in range(0, t - SADF_MIN_SL + 1):
+            seg = y[t0 : t + 1]
+            length = len(seg)
+            phi = 0.5
+
+            # SM-Poly1: log[y] = α + β*t + ε
+            t_vec = np.arange(length, dtype=np.float64)
+            tstat_p = _ols_tstat(seg, t_vec)
+            if not np.isnan(tstat_p):
+                val = abs(tstat_p) / (length ** phi)
+                if val > sup_poly:
+                    sup_poly = val
+
+            # SM-Exp: log[y] = α + β*exp(t/length) + ε
+            exp_vec = np.exp(t_vec / length)
+            tstat_e = _ols_tstat(seg, exp_vec)
+            if not np.isnan(tstat_e):
+                val = abs(tstat_e) / (length ** phi)
+                if val > sup_exp:
+                    sup_exp = val
+
+        smt_poly1.iloc[t] = sup_poly if sup_poly > -np.inf else np.nan
+        smt_exp.iloc[t] = sup_exp if sup_exp > -np.inf else np.nan
+
+    return smt_poly1, smt_exp
+
+
+def _ols_tstat(y: np.ndarray, x: np.ndarray) -> float:
+    """T-statistic for β in y = α + β*x + ε."""
+    n = len(y)
+    if n < 3:
+        return np.nan
+    X = np.column_stack([np.ones(n), x])
+    try:
+        beta, residuals, _, _ = np.linalg.lstsq(X, y, rcond=None)
+        if len(residuals) == 0:
+            resid = y - X @ beta
+            sse = np.sum(resid ** 2)
+        else:
+            sse = residuals[0]
+        mse = sse / (n - 2)
+        cov = mse * np.linalg.inv(X.T @ X)
+        se = np.sqrt(cov[1, 1])
+        return beta[1] / se if se > 0 else np.nan
+    except (np.linalg.LinAlgError, ValueError):
+        return np.nan
+
+
+# ---------------------------------------------------------------------------
+# Rolling Shannon entropy
+# ---------------------------------------------------------------------------
+def _compute_rolling_entropy(
+    log_ret: pd.Series, window: int = ENTROPY_WINDOW
+) -> pd.Series:
+    """Quantile-encoded Shannon entropy over a rolling window."""
+    result = pd.Series(np.nan, index=log_ret.index)
+    values = log_ret.values
+    n = len(values)
+    n_bins = 5
+
+    for i in range(window - 1, n):
+        w = values[i - window + 1 : i + 1]
+        if np.any(np.isnan(w)):
+            continue
+        # quantile-encode into 5 bins based on the window itself
+        try:
+            edges = np.quantile(w, np.linspace(0, 1, n_bins + 1))
+            edges[0] -= 1e-10
+            edges[-1] += 1e-10
+            digitized = np.digitize(w, edges[1:-1])
+            counts = np.bincount(digitized, minlength=n_bins)
+            probs = counts / counts.sum()
+            probs = probs[probs > 0]
+            ent = -np.sum(probs * np.log2(probs))
+        except (ValueError, IndexError):
+            ent = np.nan
+        result.iloc[i] = ent
+
+    # reindex to full OHLCV index (log_ret is one row shorter)
+    return result.reindex(log_ret.index)
+
+
+# ---------------------------------------------------------------------------
+# Rolling Lempel-Ziv complexity
+# ---------------------------------------------------------------------------
+def _compute_rolling_lz(
+    log_ret: pd.Series, window: int = LZ_WINDOW
+) -> pd.Series:
+    """Binary-encoded Lempel-Ziv-76 complexity over a rolling window."""
+    result = pd.Series(np.nan, index=log_ret.index)
+    values = log_ret.values
+    n = len(values)
+
+    for i in range(window - 1, n):
+        w = values[i - window + 1 : i + 1]
+        if np.any(np.isnan(w)):
+            continue
+        binary_str = "".join("1" if r > 0 else "0" for r in w)
+        c = _lempel_ziv_76(binary_str)
+        # normalize
+        norm = window / np.log2(window) if window > 1 else 1.0
+        result.iloc[i] = c / norm
+
+    return result.reindex(log_ret.index)
+
+
+def _lempel_ziv_76(s: str) -> int:
+    """Lempel-Ziv-76 complexity: count distinct sub-patterns."""
+    n = len(s)
+    if n == 0:
+        return 0
+    complexity = 1
+    i = 0
+    k = 1
+    k_max = 1
+    while i + k <= n:
+        # check if s[i+1 : i+k+1] exists in s[0 : i+k]
+        if s[i + 1 : i + k + 1] in s[0 : i + k]:
+            k += 1
+            if i + k > n:
+                complexity += 1
+                break
+        else:
+            complexity += 1
+            if k > k_max:
+                k_max = k
+            i += k_max
+            k = 1
+            k_max = 1
+            if i >= n - 1:
+                break
+    return complexity
+
+
+# ---------------------------------------------------------------------------
+# Rolling Hurst exponent (R/S analysis)
+# ---------------------------------------------------------------------------
+def _compute_rolling_hurst(
+    log_ret: pd.Series, window: int = HURST_WINDOW
+) -> pd.Series:
+    """Rescaled Range (R/S) Hurst exponent over a rolling window."""
+    result = pd.Series(np.nan, index=log_ret.index)
+    values = log_ret.values
+    n = len(values)
+    sub_periods = np.array([10, 21, 42, 63])
+    sub_periods = sub_periods[sub_periods < window]
+
+    for i in range(window - 1, n):
+        w = values[i - window + 1 : i + 1]
+        if np.any(np.isnan(w)):
+            continue
+        result.iloc[i] = _hurst_rs(w, sub_periods)
+
+    return result.reindex(log_ret.index)
+
+
+def _hurst_rs(data: np.ndarray, sub_periods: np.ndarray) -> float:
+    """Estimate Hurst exponent from R/S statistics at multiple scales."""
+    log_ns = []
+    log_rs = []
+
+    for sp in sub_periods:
+        n_chunks = len(data) // sp
+        if n_chunks < 1:
+            continue
+        rs_values = []
+        for j in range(n_chunks):
+            chunk = data[j * sp : (j + 1) * sp]
+            mean_c = chunk.mean()
+            deviations = np.cumsum(chunk - mean_c)
+            r = deviations.max() - deviations.min()
+            s = chunk.std(ddof=1)
+            if s > 1e-12:
+                rs_values.append(r / s)
+        if rs_values:
+            log_ns.append(np.log(sp))
+            log_rs.append(np.log(np.mean(rs_values)))
+
+    if len(log_ns) < 2:
+        return np.nan
+
+    # slope of log(R/S) vs log(n)
+    log_ns = np.array(log_ns)
+    log_rs = np.array(log_rs)
+    slope, _ = np.polyfit(log_ns, log_rs, 1)
+    return slope
+
+
+# =====================================================================
+# Step 7 — Log transforms
+# =====================================================================
+def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
+    """Apply log transforms to scale-compress specified columns.
+
+    - ATR: ``log(|x| + 1e-8)`` (always positive)
+    - OBV: ``sign(x) * log(|x| + 1)`` (preserves sign)
+
+    Returns a modified copy of *features*.
+    """
+    features = features.copy()
+
+    for col in LOG_TRANSFORM_COLUMNS:
+        if col not in features.columns:
+            continue
+        if col == "obv":
+            features[col] = np.sign(features[col]) * np.log(features[col].abs() + 1)
+        else:
+            features[col] = np.log(features[col].abs() + 1e-8)
+
+    logger.info("Log-transformed columns: %s", LOG_TRANSFORM_COLUMNS)
+    return features
+
+
+# =====================================================================
+# Orchestration
+# =====================================================================
+def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """Chain TA features, math features, and log transforms.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Clean OHLCV DataFrame from data_loader.
+
+    Returns
+    -------
+    pd.DataFrame
+        ~20+ feature columns covering every daily bar.
+    """
+    ta = compute_ta_features(df)
+    math = compute_math_features(df)
+    features = pd.concat([ta, math], axis=1)
+    features = apply_log_transforms(features)
+
+    print(
+        f"[features] {features.shape[1]} features, {features.shape[0]} rows | "
+        f"NaN rows (any): {features.isna().any(axis=1).sum()}"
+    )
+
+    return features
