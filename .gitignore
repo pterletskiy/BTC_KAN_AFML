@@ -12,6 +12,7 @@ __pycache__/
 # Virtual Environments
 .conda/
 venv/
+.venv/
 env_ML/
 
 # Data and Jupyter Temporary Files
