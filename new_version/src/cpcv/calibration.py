@@ -182,6 +182,20 @@ class Calibrator:
         else:
             raise ValueError(f"Unknown calibration method: {self.method}")
 
+    def fit_from_logits(self, logits, y_cal, method="temperature"):
+        """Fit calibration directly from pre-computed logits (for LSTM alignment)."""
+        y = y_cal.values if hasattr(y_cal, "values") else np.asarray(y_cal)
+
+        if method == "temperature":
+            self.method = CALIBRATION_METHOD_PYTORCH
+            self.temperature = fit_temperature_scaling(logits, y)
+        else:
+            self.method = CALIBRATION_METHOD_SKLEARN
+            self.platt_model = fit_platt_scaling(logits.ravel(), y)
+
+        self.fitted = True
+        logger.info("Calibrator fitted from pre-computed logits: method=%s.", self.method)
+
     def __repr__(self) -> str:
         if not self.fitted:
             return "Calibrator(fitted=False)"

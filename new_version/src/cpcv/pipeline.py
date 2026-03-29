@@ -204,10 +204,18 @@ def run_cpcv_pipeline(
                     )
                     continue
 
-                # calibrate
+                # calibrate (handle LSTM index mismatch on calibration set)
                 try:
                     calibrator = Calibrator()
-                    calibrator.fit(model, X_c, y_cal)
+                    if model_name == "lstm" and hasattr(model, "last_valid_indices"):
+                        # get logits and align y_cal to valid indices
+                        cal_logits = model.predict_logits(X_c)
+                        cal_valid_idx = model.last_valid_indices
+                        y_cal_aligned = y_cal.iloc[cal_valid_idx]
+                        calibrator.fit_from_logits(cal_logits, y_cal_aligned, method="temperature")
+                    else:
+                        calibrator.fit(model, X_c, y_cal)
+                        
                 except Exception as e:
                     logger.warning(
                         "Calibration failed for %s (seed=%d, split=%d): %s. "
