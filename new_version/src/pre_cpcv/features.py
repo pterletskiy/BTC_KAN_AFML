@@ -1,5 +1,5 @@
 """
-4) Features
+4.1) Features
 ============================
 Compute all features from the full OHLCV DataFrame. Returns a feature
 matrix covering every daily bar. Feature selection by row (restricting
