@@ -42,7 +42,7 @@ def run_cpcv_pipeline(
     embargo_pct: float = 0.01,
     n_seeds: int = 3,
     models: list[str] | None = None,
-    price_columns: list[str] | None = None,
+    ffd_columns: list[str] | None = None,
 ) -> dict:
     """Run the full CPCV evaluation across all models and all splits.
 
@@ -69,7 +69,7 @@ def run_cpcv_pipeline(
         Number of random seeds per model per fold.
     models : list[str], optional
         Model names to evaluate. Defaults to all registered models.
-    price_columns : list[str], optional
+    ffd_columns : list[str], optional
         Columns requiring FFD. Defaults to empty (no FFD applied).
         Specify based on ADF results from EDA step 8.4.
 
@@ -85,8 +85,8 @@ def run_cpcv_pipeline(
     # ── defaults ──────────────────────────────────────────────────────
     if models is None:
         models = list_models()
-    if price_columns is None:
-        price_columns = []  # user must specify from ADF results (EDA step 8.4)
+    if ffd_columns is None:
+        ffd_columns = []  # user must specify from ADF results (EDA step 8.4)
 
     print("=" * 60)
     print("CPCV Pipeline")
@@ -96,7 +96,7 @@ def run_cpcv_pipeline(
     print(f"  Groups (N):     {n_groups}")
     print(f"  Test groups (k):{k}")
     print(f"  Embargo:        {embargo_pct*100:.1f}%")
-    print(f"  Price columns:  {price_columns}")
+    print(f"  FFD columns:    {ffd_columns}")
     print(f"  Samples:        {len(X)}")
     print(f"  Features:       {X.shape[1]}")
     print("=" * 60)
@@ -131,7 +131,7 @@ def run_cpcv_pipeline(
 
         # ── preprocessing (shared across all models this fold) ────────
         X_tr_proc, X_te_proc, selected, prep_info = preprocess_fold(
-            X, train_idx, test_idx, y_tr, w_tr, t1_tr, price_columns
+            X, train_idx, test_idx, y_tr, w_tr, t1_tr, ffd_columns
         )
 
         # re-align y, w, t1, ret after FFD may have dropped NaN rows

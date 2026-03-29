@@ -165,7 +165,7 @@ def ffd_transform(
     X_full: pd.DataFrame,
     train_idx: np.ndarray,
     test_idx: np.ndarray,
-    price_columns: list[str],
+    ffd_columns: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Orchestrate FFD for the current fold.
 
@@ -178,7 +178,7 @@ def ffd_transform(
         Complete feature matrix (all observations, not yet split).
     train_idx, test_idx : np.ndarray
         Positional indices for this fold.
-    price_columns : list[str]
+    ffd_columns : list[str]
         Columns requiring FFD transformation.
 
     Returns
@@ -191,7 +191,7 @@ def ffd_transform(
     ffd_info = {}
     X_transformed = X_full.copy()
 
-    for col in price_columns:
+    for col in ffd_columns:
         if col not in X_transformed.columns:
             logger.warning("FFD: column '%s' not found, skipping.", col)
             continue
@@ -490,7 +490,7 @@ def preprocess_fold(
     y_train: pd.Series,
     w_train: pd.Series,
     t1_train: pd.Series,
-    price_columns: list[str],
+    ffd_columns: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict]:
     """Full preprocessing for one CPCV fold: FFD → scaling → selection.
 
@@ -506,7 +506,7 @@ def preprocess_fold(
         Positional indices for this fold.
     y_train, w_train, t1_train : pd.Series
         Labels, weights, and barrier timestamps for training observations.
-    price_columns : list[str]
+    ffd_columns : list[str]
         Columns requiring FFD transformation.
 
     Returns
@@ -522,7 +522,7 @@ def preprocess_fold(
     """
     # 1. FFD on price-level columns (applied to full series, d* from train only)
     X_train, X_test, ffd_info = ffd_transform(
-        X_full, train_idx, test_idx, price_columns
+        X_full, train_idx, test_idx, ffd_columns
     )
 
     # 2. Re-align y, w, t1 after FFD drops NaN rows

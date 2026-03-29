@@ -66,8 +66,8 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     features = pd.DataFrame(index=df.index)
 
     # 1. Log returns
-    log_ret = np.log(close / close.shift(1))
-    features["log_ret"] = log_ret
+    log_returns = np.log(close / close.shift(1))
+    features["log_returns"] = log_returns
 
     # 2. RSI (Wilder smoothing via EWMA)
     delta = close.diff()
@@ -114,13 +114,13 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     features["gk_vol"] = gk_daily.rolling(ROLLING_WINDOW).mean()
 
     # 8. Rolling realized volatility (annualized)
-    features["realized_vol"] = log_ret.rolling(ROLLING_WINDOW).std() * np.sqrt(365)
+    features["realized_vol"] = log_returns.rolling(ROLLING_WINDOW).std() * np.sqrt(365)
 
     # 9. Rolling skewness
-    features["skewness"] = log_ret.rolling(ROLLING_WINDOW).skew()
+    features["skewness"] = log_returns.rolling(ROLLING_WINDOW).skew()
 
     # 10. Rolling kurtosis
-    features["kurtosis"] = log_ret.rolling(ROLLING_WINDOW).kurt()
+    features["kurtosis"] = log_returns.rolling(ROLLING_WINDOW).kurt()
 
     logger.info("TA features: %d columns, %d rows.", features.shape[1], features.shape[0])
     return features
@@ -154,7 +154,7 @@ def compute_math_features(df: pd.DataFrame) -> pd.DataFrame:
 
     close = df["Close"]
     log_price = np.log(close)
-    log_ret = np.log(close / close.shift(1)).dropna()
+    log_returns = np.log(close / close.shift(1)).dropna()
 
     # compute each feature
     print("[features] Computing SADF (this may take a few minutes)...")
@@ -164,13 +164,13 @@ def compute_math_features(df: pd.DataFrame) -> pd.DataFrame:
     smt_poly1, smt_exp = _compute_smt(log_price)
 
     print("[features] Computing rolling entropy...")
-    entropy = _compute_rolling_entropy(log_ret, window=ENTROPY_WINDOW)
+    entropy = _compute_rolling_entropy(log_returns, window=ENTROPY_WINDOW)
 
     print("[features] Computing Lempel-Ziv complexity...")
-    lz = _compute_rolling_lz(log_ret, window=LZ_WINDOW)
+    lz = _compute_rolling_lz(log_returns, window=LZ_WINDOW)
 
     print("[features] Computing Hurst exponent...")
-    hurst = _compute_rolling_hurst(log_ret, window=HURST_WINDOW)
+    hurst = _compute_rolling_hurst(log_returns, window=HURST_WINDOW)
 
     # assemble
     features = pd.DataFrame(index=df.index)
@@ -316,11 +316,11 @@ def _ols_tstat(y: np.ndarray, x: np.ndarray) -> float:
 # Rolling Shannon entropy
 # ---------------------------------------------------------------------------
 def _compute_rolling_entropy(
-    log_ret: pd.Series, window: int = ENTROPY_WINDOW
+    log_returns: pd.Series, window: int = ENTROPY_WINDOW
 ) -> pd.Series:
     """Quantile-encoded Shannon entropy over a rolling window."""
-    result = pd.Series(np.nan, index=log_ret.index)
-    values = log_ret.values
+    result = pd.Series(np.nan, index=log_returns.index)
+    values = log_returns.values
     n = len(values)
     n_bins = 5
 
@@ -342,19 +342,19 @@ def _compute_rolling_entropy(
             ent = np.nan
         result.iloc[i] = ent
 
-    # reindex to full OHLCV index (log_ret is one row shorter)
-    return result.reindex(log_ret.index)
+    # reindex to full OHLCV index (log_returns is one row shorter)
+    return result.reindex(log_returns.index)
 
 
 # ---------------------------------------------------------------------------
 # Rolling Lempel-Ziv complexity
 # ---------------------------------------------------------------------------
 def _compute_rolling_lz(
-    log_ret: pd.Series, window: int = LZ_WINDOW
+    log_returns: pd.Series, window: int = LZ_WINDOW
 ) -> pd.Series:
     """Binary-encoded Lempel-Ziv-76 complexity over a rolling window."""
-    result = pd.Series(np.nan, index=log_ret.index)
-    values = log_ret.values
+    result = pd.Series(np.nan, index=log_returns.index)
+    values = log_returns.values
     n = len(values)
 
     for i in range(window - 1, n):
@@ -367,7 +367,7 @@ def _compute_rolling_lz(
         norm = window / np.log2(window) if window > 1 else 1.0
         result.iloc[i] = c / norm
 
-    return result.reindex(log_ret.index)
+    return result.reindex(log_returns.index)
 
 
 def _lempel_ziv_76(s: str) -> int:
@@ -402,11 +402,11 @@ def _lempel_ziv_76(s: str) -> int:
 # Rolling Hurst exponent (R/S analysis)
 # ---------------------------------------------------------------------------
 def _compute_rolling_hurst(
-    log_ret: pd.Series, window: int = HURST_WINDOW
+    log_returns: pd.Series, window: int = HURST_WINDOW
 ) -> pd.Series:
     """Rescaled Range (R/S) Hurst exponent over a rolling window."""
-    result = pd.Series(np.nan, index=log_ret.index)
-    values = log_ret.values
+    result = pd.Series(np.nan, index=log_returns.index)
+    values = log_returns.values
     n = len(values)
     sub_periods = np.array([10, 21, 42, 63])
     sub_periods = sub_periods[sub_periods < window]
@@ -417,7 +417,7 @@ def _compute_rolling_hurst(
             continue
         result.iloc[i] = _hurst_rs(w, sub_periods)
 
-    return result.reindex(log_ret.index)
+    return result.reindex(log_returns.index)
 
 
 def _hurst_rs(data: np.ndarray, sub_periods: np.ndarray) -> float:
