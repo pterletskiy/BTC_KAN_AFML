@@ -53,6 +53,10 @@ SADF_LAGS = 1
 ENTROPY_WINDOW = 21
 LZ_WINDOW = 63
 HURST_WINDOW = 126
+VR_WINDOW = 63             
+VR_LAG = 5                 
+JB_WINDOW = 63             
+GAUSS_ENT_WINDOW = 21      
 
 # ── Log transform targets ────────────────────────────────────────────
 LOG_TRANSFORM_COLUMNS = ["atr", "obv"]
@@ -291,10 +295,11 @@ def compute_math_features(
     df : pd.DataFrame
         OHLCV DataFrame with DatetimeIndex.
     which : list[str] or "all"
-        Features to compute. Options: 'entropy', 'lz_complexity', 'hurst',
+        Features to compute. Options: 'shannon_entropy', 'lz_complexity', 'hurst',
         'sadf', 'smt'. Pass "all" for everything.
     """
-    ALL_MATH = ["entropy", "lz_complexity", "hurst", "sadf", "smt"]
+    ALL_MATH = ["shannon_entropy", "lz_complexity", "hurst", "variance_ratio",
+                "jarque_bera", "gaussian_entropy", "sadf", "smt"]
     if which == "all":
         which = ALL_MATH
 
@@ -325,10 +330,10 @@ def compute_math_features(
     features = pd.DataFrame(index=df.index)
 
     # ordered least → most expensive
-    if "entropy" in which:
+    if "shannon_entropy" in which:
         t0 = time.time()
         print("[features] Computing rolling entropy...")
-        features["entropy"] = _compute_rolling_entropy(log_returns, window=ENTROPY_WINDOW)
+        features["shannon_entropy"] = _compute_rolling_entropy(log_returns, window=ENTROPY_WINDOW)
         print(f"  Entropy took {(time.time() - t0) / 60:.1f} min")
 
     if "lz_complexity" in which:
@@ -342,6 +347,30 @@ def compute_math_features(
         print("[features] Computing Hurst exponent...")
         features["hurst"] = _compute_rolling_hurst(log_returns, window=HURST_WINDOW)
         print(f"  Hurst took {(time.time() - t0) / 60:.1f} min")
+
+    if "variance_ratio" in which:
+        t0 = time.time()
+        print("[features] Computing variance ratio...")
+        features["variance_ratio"] = _compute_rolling_variance_ratio(
+            log_returns, window=VR_WINDOW, lag=VR_LAG,
+        )
+        print(f"  Variance ratio took {(time.time() - t0) / 60:.1f} min")
+
+    if "jarque_bera" in which:
+        t0 = time.time()
+        print("[features] Computing Jarque-Bera statistic...")
+        features["jarque_bera"] = _compute_rolling_jarque_bera(
+            log_returns, window=JB_WINDOW,
+        )
+        print(f"  Jarque-Bera took {(time.time() - t0) / 60:.1f} min")
+
+    if "gaussian_entropy" in which:
+        t0 = time.time()
+        print("[features] Computing Gaussian entropy...")
+        features["gaussian_entropy"] = _compute_rolling_gaussian_entropy(
+            log_returns, window=GAUSS_ENT_WINDOW,
+        )
+        print(f"  Gaussian entropy took {(time.time() - t0) / 60:.1f} min")
 
     if "sadf" in which:
         t0 = time.time()
@@ -372,6 +401,109 @@ def compute_math_features(
 
     return features
 
+
+# ---------------------------------------------------------------------------
+# Rolling Variance Ratio (Lo & MacKinlay, 1988)
+# ---------------------------------------------------------------------------
+def _compute_rolling_variance_ratio(
+    log_returns: pd.Series, window: int = VR_WINDOW, lag: int = VR_LAG,
+) -> pd.Series:
+    """Variance ratio VR(q) = Var(r_q) / (q * Var(r_1)).
+
+    VR > 1 indicates momentum (positive autocorrelation).
+    VR < 1 indicates mean-reversion (negative autocorrelation).
+    VR = 1 is consistent with a random walk.
+    """
+    result = pd.Series(np.nan, index=log_returns.index)
+    values = log_returns.values
+    n = len(values)
+
+    for i in range(window - 1, n):
+        w = values[i - window + 1 : i + 1]
+        if np.any(np.isnan(w)):
+            continue
+
+        # single-period variance
+        var_1 = np.var(w, ddof=1)
+        if var_1 < 1e-20:
+            continue
+
+        # multi-period returns
+        m = len(w) - lag
+        if m < 2:
+            continue
+        multi_ret = np.array([w[j:j + lag].sum() for j in range(m)])
+        var_q = np.var(multi_ret, ddof=1)
+
+        result.iloc[i] = var_q / (lag * var_1)
+
+    return result.reindex(log_returns.index)
+
+
+# ---------------------------------------------------------------------------
+# Rolling Jarque-Bera statistic (Jarque & Bera, 1987)
+# ---------------------------------------------------------------------------
+def _compute_rolling_jarque_bera(
+    log_returns: pd.Series, window: int = JB_WINDOW,
+) -> pd.Series:
+    """JB = (n/6) * (S² + K²/4).
+
+    Measures departure from normality. S = skewness, K = excess kurtosis.
+    Higher values indicate stronger non-Gaussianity.
+    """
+    result = pd.Series(np.nan, index=log_returns.index)
+    values = log_returns.values
+    n = len(values)
+
+    for i in range(window - 1, n):
+        w = values[i - window + 1 : i + 1]
+        if np.any(np.isnan(w)):
+            continue
+
+        m = len(w)
+        mean_w = np.mean(w)
+        std_w = np.std(w, ddof=1)
+        if std_w < 1e-20:
+            continue
+
+        z = (w - mean_w) / std_w
+        skew = np.mean(z ** 3)
+        kurt = np.mean(z ** 4) - 3.0  # excess kurtosis
+
+        jb = (m / 6.0) * (skew ** 2 + kurt ** 2 / 4.0)
+        result.iloc[i] = jb
+
+    return result.reindex(log_returns.index)
+
+
+# ---------------------------------------------------------------------------
+# Rolling Gaussian Entropy (AFML Ch. 18.6)
+# ---------------------------------------------------------------------------
+def _compute_rolling_gaussian_entropy(
+    log_returns: pd.Series, window: int = GAUSS_ENT_WINDOW,
+) -> pd.Series:
+    """H_gauss = 0.5 * ln(2 * pi * e * sigma²).
+
+    The entropy of a Gaussian process with the same variance.
+    The gap between this and empirical Shannon entropy measures
+    how non-Gaussian the return distribution is.
+    """
+    result = pd.Series(np.nan, index=log_returns.index)
+    values = log_returns.values
+    n = len(values)
+
+    for i in range(window - 1, n):
+        w = values[i - window + 1 : i + 1]
+        if np.any(np.isnan(w)):
+            continue
+
+        var = np.var(w, ddof=1)
+        if var < 1e-20:
+            continue
+
+        result.iloc[i] = 0.5 * np.log(2.0 * np.pi * np.e * var)
+
+    return result.reindex(log_returns.index)
 
 # ---------------------------------------------------------------------------
 # SADF (AFML Snippet 17.1)
