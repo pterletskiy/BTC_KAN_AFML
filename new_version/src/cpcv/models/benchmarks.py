@@ -94,16 +94,18 @@ class ARLogistic(BaseModel):
 
     # ── internal helpers ──────────────────────────────────────────────
     def _extract_log_ret(self, X) -> pd.Series:
-        """Extract log_ret from X, handling both DataFrame and ndarray."""
+        """Extract log returns from X, handling both DataFrame and ndarray."""
         if isinstance(X, pd.DataFrame):
+            if "log_returns" in X.columns:
+                return X["log_returns"]
             if "log_ret" in X.columns:
                 return X["log_ret"]
             raise ValueError(
-                "ARLogistic requires a 'log_ret' column in X. "
+                "ARLogistic requires a 'log_returns' column in X. "
                 "Pass the pre-feature-selection DataFrame."
             )
         raise ValueError(
-            "ARLogistic requires a DataFrame with a 'log_ret' column, "
+            "ARLogistic requires a DataFrame with a 'log_returns' column, "
             f"got {type(X).__name__}."
         )
 
