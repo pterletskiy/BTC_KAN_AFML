@@ -1,5 +1,5 @@
 """
-12) Symbolic Extraction
+Post-CPCV — Symbolic Extraction
 ================================
 Take the best CPCV fold, retrain a PyKAN model (same architecture and
 parameters as kan_model.py), then apply Algorithm 1 from the VIX KAN paper:
@@ -167,10 +167,16 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
     width = [n_features, 2 * n_features, n_classes]
     model = KAN(width=width, grid=KAN_GRID, k=KAN_K, seed=42)
 
-    # try native fit with CrossEntropyLoss
+    # try native fit with CrossEntropyLoss (needs Long labels)
     try:
+        dataset_fit = {
+            "train_input": dataset["train_input"],
+            "train_label": dataset["train_label"].long(),
+            "test_input": dataset["test_input"],
+            "test_label": dataset["test_label"].long(),
+        }
         model.fit(
-            dataset,
+            dataset_fit,
             opt="LBFGS",
             lr=KAN_LR,
             steps=KAN_TRAIN_STEPS,
@@ -178,10 +184,11 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
             lamb_l1=KAN_LAMB_L1,
             lamb_entropy=KAN_LAMB_ENTROPY,
             loss_fn=nn.CrossEntropyLoss(),
+            update_grid=False,
         )
         logger.info("PyKAN trained via model.fit(): %d steps.", KAN_TRAIN_STEPS)
 
-    except (TypeError, AttributeError, Exception) as e:
+    except (TypeError, AttributeError, RuntimeError, Exception) as e:
         logger.info("model.fit() failed (%s). Using custom loop.", e)
         optimizer = torch.optim.LBFGS(
             model.parameters(), lr=KAN_LR, max_iter=20,
@@ -226,7 +233,6 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
 # =====================================================================
 def prune_network(model, dataset: dict):
     """Prune dead edges and nodes."""
-    # forward pass to populate cached activations
     _ = model(dataset["train_input"])
 
     try:
@@ -234,18 +240,45 @@ def prune_network(model, dataset: dict):
     except AttributeError:
         original_width = ["unknown"]
 
-    # attribution scores
     try:
         model.attribute()
     except Exception as e:
         logger.warning("model.attribute() failed: %s", e)
 
-    # prune
+    # save state before pruning in case it produces an empty layer
+    pre_prune_state = copy.deepcopy(model.state_dict())
+    pre_prune_model = model
+
+    # try different PyKAN prune APIs (varies by version)
+    pruned = False
     try:
         model = model.prune(threshold=PRUNE_THRESHOLD)
+        pruned = True
+    except TypeError:
+        try:
+            model = model.prune(node_th=PRUNE_THRESHOLD, edge_th=PRUNE_THRESHOLD)
+            pruned = True
+        except TypeError:
+            try:
+                model = model.prune()
+                pruned = True
+            except Exception as e:
+                logger.warning("model.prune() failed: %s. Returning unpruned.", e)
+                return pre_prune_model
     except Exception as e:
-        logger.warning("model.prune() failed: %s. Returning unpruned model.", e)
-        return model
+        logger.warning("model.prune() failed: %s. Returning unpruned.", e)
+        return pre_prune_model
+
+    # verify pruned model can still do a forward pass
+    if pruned:
+        try:
+            _ = model(dataset["train_input"])
+        except (RuntimeError, Exception) as e:
+            logger.warning(
+                "Pruned model forward pass failed (%s). "
+                "Pruning removed too many nodes. Returning unpruned model.", e
+            )
+            return pre_prune_model
 
     try:
         pruned_width = list(model.width)
@@ -255,9 +288,7 @@ def prune_network(model, dataset: dict):
     logger.info("Pruned: %s → %s", original_width, pruned_width)
     print(f"  Architecture: {original_width} → {pruned_width}")
 
-    # save visualization
     _save_plot(model, "kan_pruned_network.png")
-
     return model
 
 
@@ -298,27 +329,60 @@ def symbolify_network(model, dataset: dict):
                         suggestions = model.suggest_symbolic(
                             l, i, j, topk=SYMBOLIC_TOPK, lib=SYMBOLIC_LIBRARY,
                         )
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("suggest_symbolic(%d,%d,%d) failed: %s", l, i, j, e)
                         continue
 
-                    if not suggestions:
+                    if suggestions is None:
                         continue
 
-                    best_fn = suggestions[0][0]
-                    best_r2 = suggestions[0][2] if len(suggestions[0]) > 2 else 0.0
+                    # ── parse suggestions (handles both DataFrame and list) ──
+                    best_fn = None
+                    best_r2 = 0.0
 
+                    # newer PyKAN returns a DataFrame
+                    if hasattr(suggestions, "iloc"):
+                        if len(suggestions) == 0:
+                            continue
+                        best_fn = str(suggestions.iloc[0, 0])
+                        r2_col = [
+                            c for c in suggestions.columns
+                            if "r2" in c.lower() and "loss" not in c.lower()
+                        ]
+                        if r2_col:
+                            best_r2 = float(suggestions.iloc[0][r2_col[0]])
+                    # older PyKAN returns a list of tuples
+                    elif isinstance(suggestions, (list, tuple)):
+                        if len(suggestions) == 0:
+                            continue
+                        best_fn = suggestions[0][0]
+                        best_r2 = float(suggestions[0][2]) if len(suggestions[0]) > 2 else 0.0
+                    else:
+                        continue
+
+                    if best_fn is None:
+                        continue
+
+                    # ── apply symbolic replacement if R² is good enough ──
                     if best_r2 >= SYMBOLIC_R2_THRESHOLD:
                         try:
                             model.fix_symbolic(l, i, j, best_fn)
                             symbolified_edges += 1
-                            logger.info("Edge (%d,%d,%d): %s (R²=%.4f)", l, i, j, best_fn, best_r2)
+                            logger.info(
+                                "Edge (%d,%d,%d): %s (R²=%.4f)",
+                                l, i, j, best_fn, best_r2,
+                            )
                         except Exception as e:
-                            logger.warning("fix_symbolic(%d,%d,%d) failed: %s", l, i, j, e)
+                            logger.warning(
+                                "fix_symbolic(%d,%d,%d) failed: %s",
+                                l, i, j, e,
+                            )
                     else:
                         logger.info(
                             "Edge (%d,%d,%d): best R²=%.4f < %.2f, keeping spline.",
                             l, i, j, best_r2, SYMBOLIC_R2_THRESHOLD,
                         )
+
     except Exception as e:
         logger.warning("Symbolification loop error: %s", e)
 
@@ -328,12 +392,19 @@ def symbolify_network(model, dataset: dict):
     # ── Step 4: fine-tune affine parameters ───────────────────────────
     print(f"  Fine-tuning affine parameters ({AFFINE_FINETUNE_STEPS} steps)...")
     try:
+        dataset_fit = {
+            "train_input": dataset["train_input"],
+            "train_label": dataset["train_label"].long(),
+            "test_input": dataset["test_input"],
+            "test_label": dataset["test_label"].long(),
+        }
         model.fit(
-            dataset, opt="LBFGS", lr=AFFINE_LR,
+            dataset_fit, opt="LBFGS", lr=AFFINE_LR,
             steps=AFFINE_FINETUNE_STEPS,
             loss_fn=nn.CrossEntropyLoss(),
+            update_grid=False,  # grid update breaks after symbolification
         )
-    except (TypeError, AttributeError):
+    except (TypeError, AttributeError, RuntimeError):
         try:
             optimizer = torch.optim.LBFGS(model.parameters(), lr=AFFINE_LR, max_iter=10)
             loss_fn = nn.CrossEntropyLoss()
@@ -525,10 +596,12 @@ def run_symbolic_extraction(
 # Helpers
 # ---------------------------------------------------------------------------
 def _save_plot(model, filename: str) -> None:
-    """Save PyKAN network visualization to cache."""
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        model.plot(mask=True, beta=10)
+        try:
+            model.plot(mask=True, beta=10)
+        except TypeError:
+            model.plot(beta=10)
         import matplotlib.pyplot as plt
         plt.savefig(
             os.path.join(CACHE_DIR, filename),
