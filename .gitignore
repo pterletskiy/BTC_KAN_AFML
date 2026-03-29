@@ -1,6 +1,7 @@
 # Models and Results Folders
 figures/
-new_version/models/
+new_version/cache/
+new_version/model/
 backup_old_version/model/
 backup_old_version/PREPROCESSING_COMPARISON.md
 written_report/

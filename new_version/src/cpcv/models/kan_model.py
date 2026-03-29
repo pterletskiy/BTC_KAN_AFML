@@ -23,8 +23,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from kan import KAN
-
 from src.cpcv.models.base import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -68,8 +66,9 @@ class KANModel(BaseModel):
         y_train,
         sample_weight=None,
         X_val=None,
-        y_val=None,
-    ) -> None:
+        y_val=None,) -> None:
+
+        from kan import KAN
 
         # ── reproducibility ───────────────────────────────────────────
         torch.manual_seed(self.seed)

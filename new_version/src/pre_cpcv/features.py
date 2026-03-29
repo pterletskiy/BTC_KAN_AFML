@@ -7,12 +7,20 @@ to labeled events) happens later in alignment.
 
 Implements technical analysis features (Step 6a), AFML Part 4
 mathematical features (Step 6b), and log transforms (Step 7).
+
+TA features (23 total):
+  Original 12: log_returns, rsi, macd, macd_signal, macd_hist, bb_width,
+               atr, obv, gk_vol, realized_vol, skewness, kurtosis
+  New 11:      yz_vol, ema_ratio_20_50, ema_ratio_50_200, vwma_ratio_20_50,
+               roc_14, stoch_k, stoch_d, williams_r, cci_14, chaikin_osc,
+               mfi_14
 """
 
 import logging
 import os
 import numpy as np
 import pandas as pd
+import time
 from numpy.lib.stride_tricks import sliding_window_view
 
 logger = logging.getLogger(__name__)
@@ -25,6 +33,19 @@ MACD_SIGNAL = 9
 BB_PERIOD = 20
 ATR_PERIOD = 14
 ROLLING_WINDOW = 21
+
+# new feature parameters
+EMA_SHORT = 20
+EMA_MID = 50
+EMA_LONG = 200
+ROC_PERIOD = 14
+STOCH_PERIOD = 14
+STOCH_SMOOTH = 3
+CCI_PERIOD = 14
+MFI_PERIOD = 14
+CHAIKIN_FAST = 3
+CHAIKIN_SLOW = 10
+YZ_WINDOW = 21
 
 # ── Mathematical feature parameters ──────────────────────────────────
 SADF_MIN_SL = 63        # minimum sample length (~1 quarter)
@@ -42,7 +63,7 @@ MATH_CACHE_FILE = "math_features.parquet"
 
 
 # =====================================================================
-# Step 6a — Technical Analysis Features
+# Technical Analysis Features
 # =====================================================================
 def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute backward-looking TA features from OHLCV data.
@@ -64,6 +85,8 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     open_ = df["Open"]
 
     features = pd.DataFrame(index=df.index)
+
+    # ── Original 12 features ──────────────────────────────────────────
 
     # 1. Log returns
     log_returns = np.log(close / close.shift(1))
@@ -107,84 +130,245 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     sign = np.sign(close.diff()).fillna(0)
     features["obv"] = (volume * sign).cumsum()
 
-    # 7. Garman-Klass volatility (rolling)
+    # 7. Rolling skewness
+    features["skewness"] = log_returns.rolling(ROLLING_WINDOW).skew()
+
+    # 8. Rolling kurtosis
+    features["kurtosis"] = log_returns.rolling(ROLLING_WINDOW).kurt()
+
+    # 9. Rolling realized volatility (annualized)
+    features["realized_vol"] = log_returns.rolling(ROLLING_WINDOW).std() * np.sqrt(365)
+
+    # 10. Garman-Klass volatility (rolling)
     log_hl = np.log(high / low)
     log_co = np.log(close / open_)
     gk_daily = 0.5 * log_hl ** 2 - (2.0 * np.log(2) - 1.0) * log_co ** 2
     features["gk_vol"] = gk_daily.rolling(ROLLING_WINDOW).mean()
 
-    # 8. Rolling realized volatility (annualized)
-    features["realized_vol"] = log_returns.rolling(ROLLING_WINDOW).std() * np.sqrt(365)
+    # ── Aditional 11 features ───────────────────────────────────────────────
 
-    # 9. Rolling skewness
-    features["skewness"] = log_returns.rolling(ROLLING_WINDOW).skew()
+    # 11. Yang-Zhang volatility (best unbiased OHLC estimator)
+    features["yz_vol"] = _yang_zhang_volatility(
+        open_, high, low, close, window=YZ_WINDOW,
+    )
 
-    # 10. Rolling kurtosis
-    features["kurtosis"] = log_returns.rolling(ROLLING_WINDOW).kurt()
+    # 12. EMA ratio 20/50 (short vs medium trend)
+    ema_20 = close.ewm(span=EMA_SHORT, min_periods=EMA_SHORT).mean()
+    ema_50 = close.ewm(span=EMA_MID, min_periods=EMA_MID).mean()
+    features["ema_ratio_20_50"] = ema_20 / ema_50
+
+    # 13. EMA ratio 50/200 (golden/death cross signal)
+    ema_200 = close.ewm(span=EMA_LONG, min_periods=EMA_LONG).mean()
+    features["ema_ratio_50_200"] = ema_50 / ema_200
+
+    # 14. VWMA ratio 20/50 (volume-weighted trend confirmation)
+    vwma_20 = (close * volume).rolling(EMA_SHORT).sum() / volume.rolling(EMA_SHORT).sum()
+    vwma_50 = (close * volume).rolling(EMA_MID).sum() / volume.rolling(EMA_MID).sum()
+    features["vwma_ratio_20_50"] = vwma_20 / vwma_50
+
+    # 15. Rate of Change (top predictor in Confluence paper)
+    features["roc_14"] = (close / close.shift(ROC_PERIOD) - 1.0) * 100.0
+
+    # 16. Stochastic %K
+    lowest_low = low.rolling(STOCH_PERIOD).min()
+    highest_high = high.rolling(STOCH_PERIOD).max()
+    stoch_k = 100.0 * (close - lowest_low) / (highest_high - lowest_low + 1e-10)
+    features["stoch_k"] = stoch_k
+
+    # 17. Stochastic %D (smoothed %K)
+    features["stoch_d"] = stoch_k.rolling(STOCH_SMOOTH).mean()
+
+    # 18. Williams %R (momentum confirmation)
+    features["williams_r"] = -100.0 * (highest_high - close) / (highest_high - lowest_low + 1e-10)
+
+    # 19. Commodity Channel Index
+    typical_price = (high + low + close) / 3.0
+    tp_sma = typical_price.rolling(CCI_PERIOD).mean()
+    tp_mad = typical_price.rolling(CCI_PERIOD).apply(
+        lambda x: np.mean(np.abs(x - np.mean(x))), raw=True,
+    )
+    features["cci_14"] = (typical_price - tp_sma) / (0.015 * tp_mad + 1e-10)
+
+    # 20. Chaikin Oscillator (volume + price momentum)
+    money_flow_mult = ((close - low) - (high - close)) / (high - low + 1e-10)
+    money_flow_vol = money_flow_mult * volume
+    adl = money_flow_vol.cumsum()
+    features["chaikin_osc"] = (
+        adl.ewm(span=CHAIKIN_FAST, min_periods=CHAIKIN_FAST).mean()
+        - adl.ewm(span=CHAIKIN_SLOW, min_periods=CHAIKIN_SLOW).mean()
+    )
+
+    # 21. Money Flow Index (volume-weighted RSI)
+    features["mfi_14"] = _money_flow_index(high, low, close, volume, period=MFI_PERIOD)
 
     logger.info("TA features: %d columns, %d rows.", features.shape[1], features.shape[0])
     return features
 
 
+# ---------------------------------------------------------------------------
+# Yang-Zhang volatility
+# ---------------------------------------------------------------------------
+def _yang_zhang_volatility(
+    open_: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    window: int = 21,
+) -> pd.Series:
+    """Yang-Zhang (2000) volatility estimator.
+
+    Combines overnight (close-to-open), open-to-close, and
+    Rogers-Satchell components for the most efficient unbiased
+    OHLC volatility estimate.
+    """
+    log_oc = np.log(open_ / close.shift(1))   # overnight return
+    log_co = np.log(close / open_)             # close-to-open
+    log_ho = np.log(high / open_)
+    log_lo = np.log(low / open_)
+    log_hc = np.log(high / close)
+    log_lc = np.log(low / close)
+
+    # Rogers-Satchell component
+    rs = log_ho * log_hc + log_lo * log_lc
+
+    # rolling variances
+    k = 0.34 / (1.34 + (window + 1) / (window - 1))
+
+    var_overnight = log_oc.rolling(window).var()
+    var_close_open = log_co.rolling(window).var()
+    var_rs = rs.rolling(window).mean()
+
+    yz_var = var_overnight + k * var_close_open + (1 - k) * var_rs
+
+    return np.sqrt(yz_var.clip(lower=0))
+
+
+# ---------------------------------------------------------------------------
+# Money Flow Index
+# ---------------------------------------------------------------------------
+def _money_flow_index(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """Money Flow Index: volume-weighted RSI."""
+    typical_price = (high + low + close) / 3.0
+    raw_money_flow = typical_price * volume
+
+    tp_diff = typical_price.diff()
+
+    pos_flow = pd.Series(0.0, index=close.index)
+    neg_flow = pd.Series(0.0, index=close.index)
+
+    pos_mask = tp_diff > 0
+    neg_mask = tp_diff < 0
+
+    pos_flow[pos_mask] = raw_money_flow[pos_mask]
+    neg_flow[neg_mask] = raw_money_flow[neg_mask]
+
+    pos_sum = pos_flow.rolling(period).sum()
+    neg_sum = neg_flow.rolling(period).sum()
+
+    money_ratio = pos_sum / (neg_sum + 1e-10)
+    mfi = 100.0 - 100.0 / (1.0 + money_ratio)
+
+    return mfi
+
+
 # =====================================================================
-# Step 6b — Mathematical Features (AFML Part 4)
+# Mathematical Features (AFML Part 4)
 # =====================================================================
-def compute_math_features(df: pd.DataFrame) -> pd.DataFrame:
+def compute_math_features(
+    df: pd.DataFrame,
+    which: list[str] | str = "all",
+) -> pd.DataFrame:
     """Compute AFML mathematical features with Parquet caching.
 
     Parameters
     ----------
     df : pd.DataFrame
         OHLCV DataFrame with DatetimeIndex.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: sadf, smt_poly1, smt_exp, entropy, lz_complexity, hurst.
+    which : list[str] or "all"
+        Features to compute. Options: 'entropy', 'lz_complexity', 'hurst',
+        'sadf', 'smt'. Pass "all" for everything.
     """
+    ALL_MATH = ["entropy", "lz_complexity", "hurst", "sadf", "smt"]
+    if which == "all":
+        which = ALL_MATH
+
     cache_path = os.path.join(CACHE_DIR, MATH_CACHE_FILE)
 
     # check cache
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
-        if (cached.index[0] == df.index[0]) and (cached.index[-1] == df.index[-1]):
-            logger.info("Math features loaded from cache.")
-            return cached
-        logger.info("Cache date range mismatch, recomputing.")
+        cached_cols = set(cached.columns)
+        requested_cols = set()
+        for w in which:
+            if w == "smt":
+                requested_cols.update(["smt_poly1", "smt_exp"])
+            else:
+                requested_cols.add(w)
+
+        if (cached.index[0] == df.index[0]
+                and cached.index[-1] == df.index[-1]
+                and requested_cols.issubset(cached_cols)):
+            logger.info("Math features loaded from cache (%s).", requested_cols)
+            return cached[sorted(requested_cols)]
+        logger.info("Cache miss (date range or columns). Recomputing requested features.")
 
     close = df["Close"]
     log_price = np.log(close)
     log_returns = np.log(close / close.shift(1)).dropna()
 
-    # compute each feature
-    print("[features] Computing SADF (this may take a few minutes)...")
-    sadf = _compute_sadf(log_price)
-
-    print("[features] Computing SMT...")
-    smt_poly1, smt_exp = _compute_smt(log_price)
-
-    print("[features] Computing rolling entropy...")
-    entropy = _compute_rolling_entropy(log_returns, window=ENTROPY_WINDOW)
-
-    print("[features] Computing Lempel-Ziv complexity...")
-    lz = _compute_rolling_lz(log_returns, window=LZ_WINDOW)
-
-    print("[features] Computing Hurst exponent...")
-    hurst = _compute_rolling_hurst(log_returns, window=HURST_WINDOW)
-
-    # assemble
     features = pd.DataFrame(index=df.index)
-    features["sadf"] = sadf
-    features["smt_poly1"] = smt_poly1
-    features["smt_exp"] = smt_exp
-    features["entropy"] = entropy
-    features["lz_complexity"] = lz
-    features["hurst"] = hurst
 
-    # save cache
+    # ordered least → most expensive
+    if "entropy" in which:
+        t0 = time.time()
+        print("[features] Computing rolling entropy...")
+        features["entropy"] = _compute_rolling_entropy(log_returns, window=ENTROPY_WINDOW)
+        print(f"  Entropy took {(time.time() - t0) / 60:.1f} min")
+
+    if "lz_complexity" in which:
+        t0 = time.time()
+        print("[features] Computing Lempel-Ziv complexity...")
+        features["lz_complexity"] = _compute_rolling_lz(log_returns, window=LZ_WINDOW)
+        print(f"  LZ took {(time.time() - t0) / 60:.1f} min")
+
+    if "hurst" in which:
+        t0 = time.time()
+        print("[features] Computing Hurst exponent...")
+        features["hurst"] = _compute_rolling_hurst(log_returns, window=HURST_WINDOW)
+        print(f"  Hurst took {(time.time() - t0) / 60:.1f} min")
+
+    if "sadf" in which:
+        t0 = time.time()
+        print("[features] Computing SADF (O(n²), may take ~15 min)...")
+        features["sadf"] = _compute_sadf(log_price)
+        print(f"  SADF took {(time.time() - t0) / 60:.1f} min")
+
+    if "smt" in which:
+        t0 = time.time()
+        print("[features] Computing SMT (O(n²), may take ~30 min)...")
+        smt_poly1, smt_exp = _compute_smt(log_price)
+        features["smt_poly1"] = smt_poly1
+        features["smt_exp"] = smt_exp
+        print(f"  SMT took {(time.time() - t0) / 60:.1f} min")
+
+    # save/update cache
     os.makedirs(CACHE_DIR, exist_ok=True)
+    if os.path.exists(cache_path):
+        cached = pd.read_parquet(cache_path)
+        if cached.index[0] == df.index[0] and cached.index[-1] == df.index[-1]:
+            for col in features.columns:
+                cached[col] = features[col]
+            cached.to_parquet(cache_path)
+            logger.info("Cache updated with %s.", list(features.columns))
+            return cached
     features.to_parquet(cache_path)
-    logger.info("Math features computed and cached to %s.", cache_path)
+    logger.info("Math features cached to %s.", cache_path)
 
     return features
 
@@ -200,7 +384,6 @@ def _compute_sadf(log_price: pd.Series) -> pd.Series:
 
     for t in range(SADF_MIN_SL, n):
         sup_adf = -np.inf
-        # backward-expanding start points
         for t0 in range(0, t - SADF_MIN_SL + 1):
             segment = y[t0 : t + 1]
             tstat = _adf_tstat(segment, lags=SADF_LAGS)
@@ -219,19 +402,17 @@ def _adf_tstat(y: np.ndarray, lags: int = 1) -> float:
     if n <= lags + 2:
         return np.nan
 
-    # build regressor matrix: [const, y_{t-1}, Δy_{t-1}, ..., Δy_{t-lags}]
-    # trim to align everything
     start = lags
-    dep = dy[start:]  # Δy_t
+    dep = dy[start:]
     m = len(dep)
 
     if m <= lags + 2:
         return np.nan
 
     regressors = np.ones((m, 2 + lags))
-    regressors[:, 1] = y[start : start + m]  # y_{t-1}
+    regressors[:, 1] = y[start : start + m]
     for k in range(1, lags + 1):
-        regressors[:, 1 + k] = dy[start - k : start - k + m]  # Δy_{t-k}
+        regressors[:, 1 + k] = dy[start - k : start - k + m]
 
     try:
         beta, residuals, _, _ = np.linalg.lstsq(regressors, dep, rcond=None)
@@ -269,7 +450,6 @@ def _compute_smt(log_price: pd.Series) -> tuple[pd.Series, pd.Series]:
             length = len(seg)
             phi = 0.5
 
-            # SM-Poly1: log[y] = α + β*t + ε
             t_vec = np.arange(length, dtype=np.float64)
             tstat_p = _ols_tstat(seg, t_vec)
             if not np.isnan(tstat_p):
@@ -277,7 +457,6 @@ def _compute_smt(log_price: pd.Series) -> tuple[pd.Series, pd.Series]:
                 if val > sup_poly:
                     sup_poly = val
 
-            # SM-Exp: log[y] = α + β*exp(t/length) + ε
             exp_vec = np.exp(t_vec / length)
             tstat_e = _ols_tstat(seg, exp_vec)
             if not np.isnan(tstat_e):
@@ -328,7 +507,6 @@ def _compute_rolling_entropy(
         w = values[i - window + 1 : i + 1]
         if np.any(np.isnan(w)):
             continue
-        # quantile-encode into 5 bins based on the window itself
         try:
             edges = np.quantile(w, np.linspace(0, 1, n_bins + 1))
             edges[0] -= 1e-10
@@ -342,7 +520,6 @@ def _compute_rolling_entropy(
             ent = np.nan
         result.iloc[i] = ent
 
-    # reindex to full OHLCV index (log_returns is one row shorter)
     return result.reindex(log_returns.index)
 
 
@@ -363,7 +540,6 @@ def _compute_rolling_lz(
             continue
         binary_str = "".join("1" if r > 0 else "0" for r in w)
         c = _lempel_ziv_76(binary_str)
-        # normalize
         norm = window / np.log2(window) if window > 1 else 1.0
         result.iloc[i] = c / norm
 
@@ -380,7 +556,6 @@ def _lempel_ziv_76(s: str) -> int:
     k = 1
     k_max = 1
     while i + k <= n:
-        # check if s[i+1 : i+k+1] exists in s[0 : i+k]
         if s[i + 1 : i + k + 1] in s[0 : i + k]:
             k += 1
             if i + k > n:
@@ -445,7 +620,6 @@ def _hurst_rs(data: np.ndarray, sub_periods: np.ndarray) -> float:
     if len(log_ns) < 2:
         return np.nan
 
-    # slope of log(R/S) vs log(n)
     log_ns = np.array(log_ns)
     log_rs = np.array(log_rs)
     slope, _ = np.polyfit(log_ns, log_rs, 1)
@@ -491,7 +665,7 @@ def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        ~20+ feature columns covering every daily bar.
+        ~30 feature columns covering every daily bar.
     """
     ta = compute_ta_features(df)
     math = compute_math_features(df)
