@@ -177,8 +177,9 @@ def compute_sample_weights(
     bins: pd.DataFrame,
     num_bars_index: pd.DatetimeIndex,
     time_decay_factor: float = 1.0,
+    weight_cap_quantile: float = 0.99,
 ) -> pd.Series:
-    """Chain concurrency, uniqueness, return attribution, and time decay.
+    """Chain concurrency, uniqueness, return attribution, time decay, and capping.
 
     Parameters
     ----------
@@ -188,6 +189,8 @@ def compute_sample_weights(
         Full bar timeline (``df_raw.index``).
     time_decay_factor : float
         Passed to :func:`apply_time_decay` as ``oldest_weight``.
+    weight_cap_quantile : float
+        Percentile at which to cap outlier weights. Set to 1.0 to disable.
 
     Returns
     -------
@@ -198,6 +201,17 @@ def compute_sample_weights(
     avg_uniq = get_average_uniqueness(bins["t1"], concurrent)
     weights = get_return_attribution_weights(bins, avg_uniq)
     weights = apply_time_decay(weights, oldest_weight=time_decay_factor)
+
+    # cap outlier weights
+    if weight_cap_quantile < 1.0:
+        cap = weights.quantile(weight_cap_quantile)
+        n_capped = (weights > cap).sum()
+        weights = weights.clip(upper=cap)
+        if n_capped > 0:
+            logger.info(
+                "Capped %d weights at %.2f (%.0f%% percentile).",
+                n_capped, cap, weight_cap_quantile * 100,
+            )
 
     print(
         f"[sample_weights] {len(weights)} weights | "
