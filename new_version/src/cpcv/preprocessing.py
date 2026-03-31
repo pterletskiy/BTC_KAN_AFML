@@ -210,9 +210,21 @@ def ffd_transform(
     X_train = X_transformed.iloc[train_idx].copy()
     X_test = X_transformed.iloc[test_idx].copy()
 
-    # drop NaN rows
-    train_mask = X_train.notna().all(axis=1)
-    test_mask = X_test.notna().all(axis=1)
+    # forward-fill NaN in non-FFD columns (from external data availability gaps)
+    ffd_cols_present = [c for c in ffd_columns if c in X_train.columns]
+    non_ffd_cols = [c for c in X_train.columns if c not in ffd_cols_present]
+
+    if non_ffd_cols:
+        X_train[non_ffd_cols] = X_train[non_ffd_cols].ffill().bfill()
+        X_test[non_ffd_cols] = X_test[non_ffd_cols].ffill().bfill()
+
+    # only drop rows where FFD columns have NaN (from lookback)
+    if ffd_cols_present:
+        train_mask = X_train[ffd_cols_present].notna().all(axis=1)
+        test_mask = X_test[ffd_cols_present].notna().all(axis=1)
+    else:
+        train_mask = pd.Series(True, index=X_train.index)
+        test_mask = pd.Series(True, index=X_test.index)
 
     n_train_dropped = (~train_mask).sum()
     n_test_dropped = (~test_mask).sum()
@@ -222,7 +234,7 @@ def ffd_transform(
 
     if n_train_dropped > 0 or n_test_dropped > 0:
         logger.info(
-            "FFD: dropped %d train, %d test NaN rows from lookback.",
+            "FFD: dropped %d train, %d test NaN rows from FFD lookback.",
             n_train_dropped, n_test_dropped,
         )
 
@@ -253,11 +265,16 @@ def scale_features(
         index=X_train.index,
         columns=X_train.columns,
     )
-    X_test_scaled = pd.DataFrame(
-        scaler.transform(X_test),
-        index=X_test.index,
-        columns=X_test.columns,
-    )
+
+    if len(X_test) == 0:
+        logger.warning("Scaling: test set is empty (0 rows). Returning empty DataFrame.")
+        X_test_scaled = X_test.copy()
+    else:
+        X_test_scaled = pd.DataFrame(
+            scaler.transform(X_test),
+            index=X_test.index,
+            columns=X_test.columns,
+        )
 
     logger.info("Scaling: RobustScaler fitted on %d training rows.", len(X_train))
     return X_train_scaled, X_test_scaled, scaler
