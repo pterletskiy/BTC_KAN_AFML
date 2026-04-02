@@ -39,7 +39,10 @@ MACRO_TICKERS = {
     "sp500": "^GSPC",         # S&P 500
     "nasdaq": "^IXIC",        # Nasdaq Composite
     "gold": "GC=F",           # Gold futures
+    "silver": "SI=F",         # Silver futures
+    "copper": "HG=F",         # Copper futures
     "oil": "CL=F",            # WTI Crude Oil futures
+    "natgas": "NG=F",         # Natural gas futures
 }
 
 # rolling return period
@@ -79,6 +82,8 @@ def _fetch_us2y(start: str, end: str) -> pd.Series:
     # attempt 1: pandas_datareader from FRED (full history)
     try:
         import pandas_datareader.data as web
+        from pandas_datareader.fred import FredReader
+        FredReader.timeout = 60  # increase from default 30s
         series = web.DataReader("DGS2", "fred", start, end)["DGS2"]
         series.index = pd.to_datetime(series.index).tz_localize(None)
         series = series.dropna()
@@ -91,6 +96,8 @@ def _fetch_us2y(start: str, end: str) -> pd.Series:
     # attempt 2: derive from FRED T10Y2Y spread + 10Y yield
     try:
         import pandas_datareader.data as web
+        from pandas_datareader.fred import FredReader
+        FredReader.timeout = 60  # increase from default 30s
         spread = web.DataReader("T10Y2Y", "fred", start, end)["T10Y2Y"]
         spread.index = pd.to_datetime(spread.index).tz_localize(None)
         spread = spread.dropna()
@@ -303,9 +310,23 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     gold = aligned["gold"]
     features["gold_ret_21"] = np.log(gold / gold.shift(RET_WINDOW))
 
-    # 9. Oil rolling 21-day log return
+    # 9. Silver rolling 21-day log return
+    silver = aligned["silver"]
+    features["silver_ret_21"] = np.log(silver / silver.shift(RET_WINDOW))
+
+    # 10. Copper rolling 21-day log return
+    copper = aligned["copper"]
+    features["copper_ret_21"] = np.log(copper / copper.shift(RET_WINDOW))
+    
+    # 11. Oil rolling 21-day log return
     oil = aligned["oil"]
     features["oil_ret_21"] = np.log(oil / oil.shift(RET_WINDOW))
+
+    # 12. Natural gas rolling 21-day log return
+    natgas = aligned["natgas"]
+    features["natgas_ret_21"] = np.log(natgas / natgas.shift(RET_WINDOW))
+
+
 
     n_valid = features.notna().all(axis=1).sum()
     logger.info("Macro features: %d columns, %d/%d rows fully valid.",

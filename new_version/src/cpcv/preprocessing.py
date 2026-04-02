@@ -30,12 +30,11 @@ FFD_THRESHOLD = 1e-4                 # weight truncation threshold τ (1e-4 keep
 FFD_ADF_SIGNIFICANCE = 0.05          # ADF rejection threshold
 FFD_MAX_LOOKBACK = 200               # hard cap on FFD lookback length
 
-# Feature selection
-MDI_N_ESTIMATORS = 500
+# Feature selection (MDA + SFI composite scoring)
 MDA_N_ESTIMATORS = 500
 MDA_N_INNER_FOLDS = 3
 SFI_INNER_TRAIN_PCT = 0.6            # chronological split for SFI
-MIN_METHODS_AGREEMENT = 2            # feature must rank in top-K in ≥2 of 3 methods
+COMPOSITE_TOP_K_FRAC = 0.5           # select top 50% of features by composite score
 
 
 # =====================================================================
@@ -283,34 +282,6 @@ def scale_features(
 # =====================================================================
 # Feature Selection (AFML Chapter 8)
 # =====================================================================
-def compute_mdi(
-    X_train: pd.DataFrame, y_train: pd.Series, w_train: pd.Series
-) -> pd.Series:
-    """Mean Decrease Impurity (AFML Chapter 8.3).
-
-    Uses ``max_features=1`` to reduce the substitution effect where
-    correlated features mask each other's importance.
-    """
-    clf = RandomForestClassifier(
-        n_estimators=MDI_N_ESTIMATORS,
-        max_features=1,
-        class_weight="balanced",
-        random_state=42,
-        n_jobs=-1,
-    )
-    clf.fit(X_train, y_train, sample_weight=w_train)
-
-    importances = pd.Series(
-        clf.feature_importances_, index=X_train.columns, name="MDI"
-    )
-    # normalise to sum to 1
-    total = importances.sum()
-    if total > 0:
-        importances = importances / total
-
-    return importances.sort_values(ascending=False)
-
-
 def compute_mda(
     X_train: pd.DataFrame,
     y_train: pd.Series,
@@ -428,16 +399,90 @@ def compute_sfi(
     return result.sort_values(ascending=False)
 
 
+def compute_composite_score(
+    mda: pd.Series, sfi: pd.Series
+) -> pd.DataFrame:
+    """Combine MDA and SFI into a single composite score via percentile ranks.
+
+    Percentile ranks normalise the two methods to [0, 1] regardless of
+    their native scales (MDA can be negative, SFI is bounded in [0, 1]).
+    Equal weighting (0.5/0.5) treats both signals as equally informative.
+
+    Each feature is also assigned a *profile* that characterises the
+    nature of its predictive contribution:
+
+    - **consensus**: top half in both MDA and SFI. The feature is
+      individually predictive AND contributes unique information to the
+      ensemble. Strongest selection signal.
+    - **substitution**: top half in SFI but not MDA. The feature
+      predicts well alone, but permuting it in the RF barely hurts
+      because correlated features compensate (AFML §8.3 substitution
+      effect). Still selected, but its apparent importance may be
+      shared with neighbours.
+    - **joint**: top half in MDA but not SFI. The feature contributes
+      through interactions with other features in the ensemble but is
+      not predictive in isolation. Valuable for non-linear models.
+    - **weak**: bottom half in both. Little evidence of predictive
+      value under either criterion.
+
+    Parameters
+    ----------
+    mda : pd.Series
+        Mean Decrease Accuracy scores, indexed by feature name.
+    sfi : pd.Series
+        Single Feature Importance scores, indexed by feature name.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: MDA, SFI, MDA_rank, SFI_rank, composite, profile.
+        Sorted by composite descending.
+    """
+    rankings = pd.DataFrame({"MDA": mda, "SFI": sfi})
+
+    # percentile ranks (0 = worst, 1 = best)
+    rankings["MDA_rank"] = rankings["MDA"].rank(pct=True)
+    rankings["SFI_rank"] = rankings["SFI"].rank(pct=True)
+
+    # composite: equal-weighted average of percentile ranks
+    rankings["composite"] = 0.5 * rankings["MDA_rank"] + 0.5 * rankings["SFI_rank"]
+
+    # feature profile based on median split of each method's rank
+    mda_high = rankings["MDA_rank"] >= 0.5
+    sfi_high = rankings["SFI_rank"] >= 0.5
+
+    conditions = [
+        mda_high & sfi_high,       # consensus
+        ~mda_high & sfi_high,      # substitution (high SFI, low MDA)
+        mda_high & ~sfi_high,      # joint (high MDA, low SFI)
+    ]
+    choices = ["consensus", "substitution", "joint"]
+    rankings["profile"] = np.select(conditions, choices, default="weak")
+
+    return rankings.sort_values("composite", ascending=False)
+
+
 def select_features(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     w_train: pd.Series,
     t1_train: pd.Series,
 ) -> list[str]:
-    """Select features via agreement across MDI, MDA, and SFI.
+    """Select features via MDA + SFI composite scoring.
 
-    A feature is selected if it ranks in the top K in at least
-    ``MIN_METHODS_AGREEMENT`` of the 3 methods (default 2).
+    Uses only MDA (permutation importance with purged inner CV) and SFI
+    (single-feature logistic regression). MDI is excluded to avoid
+    over-engineering from tree-based impurity bias (AFML §8.3).
+
+    A feature is selected if its composite percentile-rank score places
+    it in the top ``COMPOSITE_TOP_K_FRAC`` of all features (default 50%).
+    A minimum floor of 5 features is enforced.
+
+    Diagnostic profiles are logged for each feature:
+    - consensus:    high MDA + high SFI (individually and jointly useful)
+    - substitution: low MDA + high SFI  (predictive alone, redundant in ensemble)
+    - joint:        high MDA + low SFI  (useful only through interactions)
+    - weak:         low MDA + low SFI   (dropped)
 
     Returns
     -------
@@ -445,52 +490,42 @@ def select_features(
         Sorted list of selected feature names.
     """
     n_features = X_train.shape[1]
-    top_k = max(n_features // 2, 5)
+    top_k = max(int(n_features * COMPOSITE_TOP_K_FRAC), 5)
 
-    print("[preprocessing] Computing MDI...")
-    mdi = compute_mdi(X_train, y_train, w_train)
     print("[preprocessing] Computing MDA...")
     mda = compute_mda(X_train, y_train, w_train, t1_train)
     print("[preprocessing] Computing SFI...")
     sfi = compute_sfi(X_train, y_train, w_train)
 
-    # top-K sets for each method
-    top_mdi = set(mdi.head(top_k).index)
-    top_mda = set(mda.head(top_k).index)
-    top_sfi = set(sfi.head(top_k).index)
+    # composite scoring
+    rankings = compute_composite_score(mda, sfi)
 
-    # count agreement per feature
-    all_features = set(X_train.columns)
-    agreement = {}
-    for feat in all_features:
-        count = sum([feat in top_mdi, feat in top_mda, feat in top_sfi])
-        agreement[feat] = count
+    # select top-K by composite score
+    selected = sorted(rankings.head(top_k).index.tolist())
 
-    # select features meeting the agreement threshold
-    min_agree = MIN_METHODS_AGREEMENT
-    selected = [f for f, c in agreement.items() if c >= min_agree]
-
-    # fallback: if fewer than 5 selected, relax to agreement >= 1
+    # fallback: ensure at least 5 features
     if len(selected) < 5:
         logger.warning(
-            "Only %d features met agreement >= %d. Relaxing to >= 1.",
-            len(selected), min_agree,
+            "Only %d features above composite threshold. "
+            "Taking top 5 by composite score.", len(selected),
         )
-        selected = list(top_mdi | top_mda | top_sfi)
+        selected = sorted(rankings.head(5).index.tolist())
 
-    selected = sorted(selected)
-
-    # log full rankings
-    rankings = pd.DataFrame({"MDI": mdi, "MDA": mda, "SFI": sfi})
     rankings["selected"] = rankings.index.isin(selected)
+
+    # log full rankings with profiles
     logger.info("Feature selection rankings:\n%s", rankings.to_string())
+
+    # profile summary
+    profile_counts = rankings.loc[rankings["selected"], "profile"].value_counts()
 
     print(
         f"[preprocessing] Feature selection: {len(selected)}/{n_features} features kept "
-        f"(agreement >= {min_agree}, top_k={top_k})"
+        f"(top {top_k} by MDA+SFI composite)"
     )
     print(f"  Selected: {selected}")
-    dropped = sorted(all_features - set(selected))
+    print(f"  Profiles: {profile_counts.to_dict()}")
+    dropped = sorted(set(X_train.columns) - set(selected))
     if dropped:
         print(f"  Dropped:  {dropped}")
 
