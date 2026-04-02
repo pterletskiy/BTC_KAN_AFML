@@ -1,9 +1,9 @@
 """
-Post-CPCV — Symbolic Extraction
+12) Symbolic Extraction
 ================================
 Take the best CPCV fold, retrain a PyKAN model (same architecture and
 parameters as kan_model.py), then apply Algorithm 1 from the VIX KAN paper:
-  1. Train with L1 + entropy regularization
+  1. Train with staged optimizer (Adam → grid extend → LBFGS)
   2. Prune low-importance edges and nodes
   3. Symbolify activation functions with closed-form candidates
   4. Fine-tune affine parameters
@@ -26,8 +26,12 @@ import torch.nn as nn
 from src.cpcv.cv import generate_cpcv_splits
 from src.cpcv.preprocessing import apply_ffd
 from src.cpcv.models.kan_model import (
-    KAN_GRID, KAN_K, KAN_LR, KAN_TRAIN_STEPS,
+    KAN_HIDDEN, KAN_GRID, KAN_GRID_REFINE, KAN_K,
+    ADAM_STEPS, ADAM_LR, ADAM_LAMB,
+    LBFGS_STEPS, LBFGS_LR,
     KAN_LAMB, KAN_LAMB_L1, KAN_LAMB_ENTROPY,
+    KAN_PATIENCE, KAN_LR_DECAY_PATIENCE, KAN_LR_DECAY_FACTOR,
+    KAN_VAL_INTERVAL,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,7 +110,10 @@ def prepare_extraction_data(
     best_split_idx: int,
     prep_info: dict,
 ) -> tuple[dict, list[str]]:
-    """Reconstruct preprocessed data for the extraction fold in PyKAN format."""
+    """Reconstruct preprocessed data for the extraction fold in PyKAN format.
+
+    Applies tanh normalization to match kan_model.py's input preprocessing.
+    """
     splits = generate_cpcv_splits(X, t1)
     train_idx, _ = splits[best_split_idx]
 
@@ -142,81 +149,142 @@ def prepare_extraction_data(
     y_model = y_train.iloc[:cal_boundary]
     y_val = y_train.iloc[cal_boundary:]
 
+    # convert to tensors
+    X_model_t = torch.tensor(X_model.values, dtype=torch.float32)
+    X_val_t = torch.tensor(X_val.values, dtype=torch.float32)
+
+    # tanh normalization (fit on training split, apply to both)
+    input_mean = X_model_t.mean(dim=0)
+    input_std = X_model_t.std(dim=0) + 1e-8
+    X_model_t = torch.tanh((X_model_t - input_mean) / input_std)
+    X_val_t = torch.tanh((X_val_t - input_mean) / input_std)
+
     dataset = {
-        "train_input": torch.tensor(X_model.values, dtype=torch.float32),
+        "train_input": X_model_t,
         "train_label": torch.tensor(y_model.values, dtype=torch.float32),
-        "test_input": torch.tensor(X_val.values, dtype=torch.float32),
+        "test_input": X_val_t,
         "test_label": torch.tensor(y_val.values, dtype=torch.float32),
     }
 
     feature_names = list(selected_features)
     logger.info(
-        "Extraction data: %d train, %d val, %d features.",
+        "Extraction data: %d train, %d val, %d features (tanh-normalized).",
         len(X_model), len(X_val), len(feature_names),
     )
     return dataset, feature_names
 
 
 # =====================================================================
-# 3. Train PyKAN (same architecture as kan_model.py)
+# 3. Train PyKAN (same architecture + staged training as kan_model.py)
 # =====================================================================
 def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
-    """Train a PyKAN model using the same config as kan_model.py."""
+    """Train a PyKAN model using the same staged procedure as kan_model.py.
+
+    Phase 1: Adam (explore, no regularization)
+    Grid extension: 3 → 5
+    Phase 2: LBFGS (refine with L1 + entropy regularization)
+    """
     from kan import KAN
 
-    width = [n_features, 2 * n_features, n_classes]
+    width = [n_features, KAN_HIDDEN, n_classes]
     model = KAN(width=width, grid=KAN_GRID, k=KAN_K, seed=42)
 
-    # try native fit with CrossEntropyLoss (needs Long labels)
+    X_t = dataset["train_input"]
+    y_t = dataset["train_label"].long()
+    X_val_t = dataset["test_input"]
+    y_val_t = dataset["test_label"].long()
+
+    criterion = nn.CrossEntropyLoss()
+
+    # ── Phase 1: Adam ─────────────────────────────────────────────────
+    logger.info("Extraction Phase 1: Adam (%d steps)", ADAM_STEPS)
+    optimizer_adam = torch.optim.Adam(model.parameters(), lr=ADAM_LR)
+
+    best_val_loss = float("inf")
+    best_state = None
+
+    for step in range(ADAM_STEPS):
+        model.train()
+        optimizer_adam.zero_grad()
+        logits = model(X_t)
+        loss = criterion(logits, y_t)
+        loss.backward()
+        optimizer_adam.step()
+
+        if (step + 1) % KAN_VAL_INTERVAL == 0:
+            model.eval()
+            with torch.no_grad():
+                val_loss = criterion(model(X_val_t), y_val_t).item()
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = copy.deepcopy(model.state_dict())
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    logger.info("Phase 1 complete. Best val loss: %.4f", best_val_loss)
+
+    # ── Grid extension ────────────────────────────────────────────────
     try:
-        dataset_fit = {
-            "train_input": dataset["train_input"],
-            "train_label": dataset["train_label"].long(),
-            "test_input": dataset["test_input"],
-            "test_label": dataset["test_label"].long(),
-        }
-        model.fit(
-            dataset_fit,
-            opt="LBFGS",
-            lr=KAN_LR,
-            steps=KAN_TRAIN_STEPS,
-            lamb=KAN_LAMB,
-            lamb_l1=KAN_LAMB_L1,
-            lamb_entropy=KAN_LAMB_ENTROPY,
-            loss_fn=nn.CrossEntropyLoss(),
-            update_grid=False,
-        )
-        logger.info("PyKAN trained via model.fit(): %d steps.", KAN_TRAIN_STEPS)
+        model = model.refine(KAN_GRID_REFINE)
+        logger.info("Grid extended: %d → %d", KAN_GRID, KAN_GRID_REFINE)
+    except (AttributeError, TypeError, Exception) as e:
+        logger.warning("Grid extension failed (%s). Continuing with grid=%d.", e, KAN_GRID)
 
-    except (TypeError, AttributeError, RuntimeError, Exception) as e:
-        logger.info("model.fit() failed (%s). Using custom loop.", e)
-        optimizer = torch.optim.LBFGS(
-            model.parameters(), lr=KAN_LR, max_iter=20,
-            line_search_fn="strong_wolfe",
-        )
-        loss_fn = nn.CrossEntropyLoss()
+    # ── Phase 2: LBFGS ────────────────────────────────────────────────
+    logger.info("Extraction Phase 2: LBFGS (%d steps)", LBFGS_STEPS)
+    optimizer_lbfgs = torch.optim.LBFGS(
+        model.parameters(), lr=LBFGS_LR, max_iter=20,
+        line_search_fn="strong_wolfe",
+    )
 
-        for step in range(KAN_TRAIN_STEPS):
-            model.train()
+    best_val_loss = float("inf")
+    best_state = None
+    patience_counter = 0
 
-            def closure():
-                optimizer.zero_grad()
-                pred = model(dataset["train_input"])
-                loss = loss_fn(pred, dataset["train_label"].long())
-                try:
-                    reg = KAN_LAMB * (
-                        KAN_LAMB_L1 * model.regularization_loss(regularize_activation=1.0)
-                        + KAN_LAMB_ENTROPY * model.regularization_loss(regularize_entropy=1.0)
-                    )
-                    loss = loss + reg
-                except (AttributeError, TypeError):
-                    pass
-                loss.backward()
-                return loss
+    for step in range(LBFGS_STEPS):
+        model.train()
 
-            optimizer.step(closure)
+        def closure():
+            optimizer_lbfgs.zero_grad()
+            logits = model(X_t)
+            loss = criterion(logits, y_t)
+            # regularization
+            try:
+                reg_l1 = model.regularization_loss(
+                    regularize_activation=1.0, regularize_entropy=0.0
+                )
+                reg_ent = model.regularization_loss(
+                    regularize_activation=0.0, regularize_entropy=1.0
+                )
+                loss = loss + KAN_LAMB * (
+                    KAN_LAMB_L1 * reg_l1 + KAN_LAMB_ENTROPY * reg_ent
+                )
+            except (AttributeError, TypeError):
+                pass
+            loss.backward()
+            return loss
 
-        model.eval()
+        optimizer_lbfgs.step(closure)
+
+        if (step + 1) % KAN_VAL_INTERVAL == 0:
+            model.eval()
+            with torch.no_grad():
+                val_loss = criterion(model(X_val_t), y_val_t).item()
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = copy.deepcopy(model.state_dict())
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            if patience_counter >= KAN_PATIENCE:
+                logger.info("LBFGS early stop at step %d (val=%.4f)", step + 1, best_val_loss)
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    model.eval()
+    logger.info("Phase 2 complete. Best val loss: %.4f", best_val_loss)
 
     # store pre-symbolic accuracy
     with torch.no_grad():
@@ -560,7 +628,7 @@ def run_symbolic_extraction(
     )
 
     # 3. train (Step 1)
-    print("\n  Step 1: Training PyKAN...")
+    print("\n  Step 1: Training PyKAN (Adam → grid extend → LBFGS)...")
     model = train_pykan(dataset, n_features=len(feature_names))
 
     # 4. prune (Step 2)
