@@ -43,6 +43,7 @@ def run_cpcv_pipeline(
     n_seeds: int = 3,
     models: list[str] | None = None,
     ffd_columns: list[str] | None = None,
+    top_k_frac: float | None = None,
 ) -> dict:
     """Run the full CPCV evaluation across all models and all splits.
 
@@ -72,6 +73,9 @@ def run_cpcv_pipeline(
     ffd_columns : list[str], optional
         Columns requiring FFD. Defaults to empty (no FFD applied).
         Specify based on ADF results from EDA step 8.4.
+    top_k_frac : float, optional
+        Fraction of features to keep via composite scoring.
+        Overrides the module constant in preprocessing.py.
 
     Returns
     -------
@@ -130,8 +134,10 @@ def run_cpcv_pipeline(
         ret_te = bins_ret.iloc[test_idx]
 
         # ── preprocessing (shared across all models this fold) ────────
+        needs_selection = not all(m == "ar_logistic" for m in models)
         X_tr_proc, X_te_proc, selected, prep_info = preprocess_fold(
-            X, train_idx, test_idx, y_tr, w_tr, t1_tr, ffd_columns
+            X, train_idx, test_idx, y_tr, w_tr, t1_tr, ffd_columns, top_k_frac,
+            skip_selection=not needs_selection,
         )
 
         # re-align y, w, t1, ret after FFD may have dropped NaN rows
@@ -158,11 +164,20 @@ def run_cpcv_pipeline(
         y_cal = y_tr.iloc[cal_boundary:]
         w_model = w_tr.iloc[:cal_boundary]
 
-        print(
-            f"  Preprocessing: {len(selected)} features selected, "
-            f"train={len(X_model)} + cal={len(X_cal)}, "
-            f"test={len(X_te_sel)}"
-        )
+        if needs_selection:
+            print(
+                f"  Preprocessing: {len(selected)} features selected, "
+                f"train={len(X_model)} + cal={len(X_cal)}, "
+                f"test={len(X_te_sel)}"
+            )
+        else:
+            from src.cpcv.models.benchmarks import AR_LAGS
+            print(
+                f"  Preprocessing: FFD + scaling only (no feature selection), "
+                f"train={len(X_model)} + cal={len(X_cal)}, "
+                f"test={len(X_te_full)}"
+            )
+            print(f"  AR Logistic lags: {AR_LAGS}")
 
         # ── model × seed loop ────────────────────────────────────────
         for model_name in models:

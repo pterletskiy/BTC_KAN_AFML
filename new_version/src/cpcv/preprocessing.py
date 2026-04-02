@@ -467,6 +467,7 @@ def select_features(
     y_train: pd.Series,
     w_train: pd.Series,
     t1_train: pd.Series,
+    top_k_frac: float | None = None,
 ) -> list[str]:
     """Select features via MDA + SFI composite scoring.
 
@@ -475,7 +476,7 @@ def select_features(
     over-engineering from tree-based impurity bias (AFML §8.3).
 
     A feature is selected if its composite percentile-rank score places
-    it in the top ``COMPOSITE_TOP_K_FRAC`` of all features (default 50%).
+    it in the top ``top_k_frac`` of all features (default from module constant).
     A minimum floor of 5 features is enforced.
 
     Diagnostic profiles are logged for each feature:
@@ -489,8 +490,10 @@ def select_features(
     list[str]
         Sorted list of selected feature names.
     """
+    if top_k_frac is None:
+        top_k_frac = COMPOSITE_TOP_K_FRAC
     n_features = X_train.shape[1]
-    top_k = max(int(n_features * COMPOSITE_TOP_K_FRAC), 5)
+    top_k = max(int(n_features * top_k_frac), 5)
 
     print("[preprocessing] Computing MDA...")
     mda = compute_mda(X_train, y_train, w_train, t1_train)
@@ -543,6 +546,8 @@ def preprocess_fold(
     w_train: pd.Series,
     t1_train: pd.Series,
     ffd_columns: list[str],
+    top_k_frac: float | None = None,
+    skip_selection: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict]:
     """Full preprocessing for one CPCV fold: FFD → scaling → selection.
 
@@ -560,6 +565,11 @@ def preprocess_fold(
         Labels, weights, and barrier timestamps for training observations.
     ffd_columns : list[str]
         Columns requiring FFD transformation.
+    top_k_frac : float, optional
+        Fraction of features to keep (overrides module constant).
+    skip_selection : bool
+        If True, skip MDA+SFI feature selection and return all columns.
+        Used when only AR Logistic is being evaluated.
 
     Returns
     -------
@@ -586,8 +596,12 @@ def preprocess_fold(
     # 3. Scale all features
     X_train, X_test, scaler = scale_features(X_train, X_test)
 
-    # 4. Select features (but do NOT apply here, return the list)
-    selected = select_features(X_train, y_train, w_train, t1_train)
+    # 4. Select features (skip if only AR Logistic needs preprocessing)
+    if skip_selection:
+        selected = sorted(X_train.columns.tolist())
+        print(f"[preprocessing] Feature selection skipped (AR Logistic uses lagged returns only)")
+    else:
+        selected = select_features(X_train, y_train, w_train, t1_train, top_k_frac)
 
     info = {
         "ffd": ffd_info,
