@@ -1,5 +1,5 @@
 """
-8.3) Tree-Based
+8.3) Tree-Based Models
 ====================
 Random Forest and XGBoost classifiers wrapped in the BaseModel interface.
 """
@@ -100,12 +100,18 @@ class XGBoostModel(BaseModel):
         y = y_train.values if hasattr(y_train, "values") else y_train
         w = sample_weight.values if hasattr(sample_weight, "values") else sample_weight
 
+        # compute scale_pos_weight from training class balance
+        n_neg = np.sum(y == 0)
+        n_pos = np.sum(y == 1)
+        spw = n_neg / max(n_pos, 1)
+
         init_params = {
             "n_estimators": XGB_N_ESTIMATORS,
             "max_depth": XGB_MAX_DEPTH,
             "learning_rate": XGB_LEARNING_RATE,
             "subsample": XGB_SUBSAMPLE,
             "colsample_bytree": XGB_COLSAMPLE_BYTREE,
+            "scale_pos_weight": spw,
             "objective": "binary:logistic",
             "eval_metric": "logloss",
             "random_state": self.seed,
@@ -127,14 +133,14 @@ class XGBoostModel(BaseModel):
 
             best_iter = self.model.best_iteration
             logger.info(
-                "XGBoost fitted: %d samples, early stopped at iteration %d/%d.",
-                X.shape[0], best_iter, XGB_N_ESTIMATORS,
+                "XGBoost fitted: %d samples, early stopped at iteration %d/%d, scale_pos_weight=%.3f.",
+                X.shape[0], best_iter, XGB_N_ESTIMATORS, spw,
             )
         else:
             self.model.fit(**fit_params)
             logger.info(
-                "XGBoost fitted: %d samples, %d rounds (no early stopping).",
-                X.shape[0], XGB_N_ESTIMATORS,
+                "XGBoost fitted: %d samples, %d rounds, scale_pos_weight=%.3f.",
+                X.shape[0], XGB_N_ESTIMATORS, spw,
             )
 
     def predict_proba(self, X) -> np.ndarray:

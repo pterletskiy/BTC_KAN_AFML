@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 TRANSACTION_COST = 0.001          # 0.1% round-trip cost for BTC
 MIN_BET_SIZE = 0.10               # absolute bet sizes below this → don't trade
-BET_DISCRETIZATION = [0.0, 0.25, 0.50, 0.75, 1.0]
+BET_DISCRETIZATION = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.0]
 ANNUALIZATION_FACTOR = 365        # BTC trades every calendar day
 RISK_FREE_RATE = 0.0              # assume 0 for crypto
 
@@ -462,7 +462,7 @@ def compare_models(all_summaries: list[dict]) -> pd.DataFrame:
 
     display_cols = [
         "rank", "model_name", "median_sharpe", "std_sharpe", "dsr",
-        "mean_f1", "mean_accuracy", "mean_auc_roc",
+        "mean_f1", "mean_accuracy", "mean_log_loss", "mean_auc_roc",
         "median_max_dd", "median_cum_return",
         "median_win_rate", "median_profit_factor",
     ]

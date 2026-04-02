@@ -14,7 +14,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, log_loss, roc_auc_score
 
 from src.cpcv.cv import (
     build_path_matrix,
@@ -265,6 +265,10 @@ def run_cpcv_pipeline(
                     auc = roc_auc_score(y_true_aligned, cal_proba[:, 1])
                 except ValueError:
                     auc = float("nan")  # single class in test fold
+                try:
+                    ll = log_loss(y_true_aligned, cal_proba)
+                except ValueError:
+                    ll = float("nan")
 
                 # store
                 store_key = (model_name, split_idx, seed)
@@ -274,6 +278,7 @@ def run_cpcv_pipeline(
                     "cal_proba": cal_proba,
                     "f1_macro": f1,
                     "roc_auc": auc,
+                    "log_loss": ll,
                     "timestamps": test_timestamps,
                     "test_idx": test_idx,
                     "ret": ret_aligned,
@@ -287,7 +292,7 @@ def run_cpcv_pipeline(
                 print(
                     f"  [{task_counter:>3d}/{total_tasks}] "
                     f"{model_name:>20s} (seed={seed}) "
-                    f"F1={f1:.3f}  AUC={auc:.3f} "
+                    f"F1={f1:.3f}  AUC={auc:.3f}  LL={ll:.4f} "
                     f"({elapsed:.1f}s)"
                 )
 

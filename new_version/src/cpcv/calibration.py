@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 CALIBRATION_METHOD_SKLEARN = "platt"
 CALIBRATION_METHOD_PYTORCH = "temperature"
 
-# Models that use temperature scaling (PyTorch-based)
-_TEMPERATURE_MODELS = {"LSTM", "KAN"}
+# Models that use temperature scaling (PyTorch-based, 2D logits)
+# KAN uses Platt scaling for better calibration (two-parameter fit
+# corrects both scale and shift, unlike single-parameter temperature).
+_TEMPERATURE_MODELS = {"LSTM"}
 
 
 # =====================================================================
@@ -144,7 +146,10 @@ class Calibrator:
             self.temperature = fit_temperature_scaling(logits, y)
         else:
             self.method = CALIBRATION_METHOD_SKLEARN
-            logits = model.predict_logits(X_cal)     # (n, 1) or (n,)
+            logits = model.predict_logits(X_cal)
+            # convert 2D logits (n, n_classes) to 1D log-odds for Platt
+            if logits.ndim == 2 and logits.shape[1] >= 2:
+                logits = logits[:, 1] - logits[:, 0]
             logits = logits.ravel()
             self.platt_model = fit_platt_scaling(logits, y)
 
@@ -172,6 +177,9 @@ class Calibrator:
             )
 
         if self.method == CALIBRATION_METHOD_SKLEARN:
+            # convert 2D logits (n, n_classes) to 1D log-odds for Platt
+            if logits.ndim == 2 and logits.shape[1] >= 2:
+                logits = logits[:, 1] - logits[:, 0]
             logits_2d = logits.reshape(-1, 1)
             return self.platt_model.predict_proba(logits_2d)
 
