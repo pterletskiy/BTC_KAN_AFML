@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 TRANSACTION_COST = 0.001          # 0.1% round-trip cost for BTC
 MIN_BET_SIZE = 0.10               # absolute bet sizes below this → don't trade
-BET_DISCRETIZATION = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.0]
+BET_DISCRETIZATION = [0.0, 0.25, 0.50, 0.75, 1.0]
 ANNUALIZATION_FACTOR = 365        # BTC trades every calendar day
 RISK_FREE_RATE = 0.0              # assume 0 for crypto
 

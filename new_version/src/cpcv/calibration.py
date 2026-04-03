@@ -27,9 +27,7 @@ CALIBRATION_METHOD_SKLEARN = "platt"
 CALIBRATION_METHOD_PYTORCH = "temperature"
 
 # Models that use temperature scaling (PyTorch-based, 2D logits)
-# KAN uses Platt scaling for better calibration (two-parameter fit
-# corrects both scale and shift, unlike single-parameter temperature).
-_TEMPERATURE_MODELS = {"LSTM"}
+_TEMPERATURE_MODELS = {"LSTM", "KAN"}
 
 
 # =====================================================================
