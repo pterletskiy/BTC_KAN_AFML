@@ -37,22 +37,31 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # PyKAN-specific training constants (not used by efficient-kan)
 # ---------------------------------------------------------------------------
-# Phase 1: Adam (no regularization, pure accuracy)
-PYKAN_ADAM_STEPS = 400             # increased from 100 — needs comparable
-                                   # training to efficient-kan's 200 epochs
+# Phase 1: Adam with weight decay (no KAN-specific regularization)
+PYKAN_ADAM_STEPS = 600             # longer Adam phase — main learning happens here
 PYKAN_ADAM_LR = 1e-3
+PYKAN_ADAM_WEIGHT_DECAY = 1e-3     # L2 penalty to prevent memorization
+PYKAN_NOISE_STD = 0.05            # Gaussian noise injected into inputs each step
+                                   # (acts as dropout-like regularizer for small data)
 
-# Phase 2: LBFGS (split into accuracy-only + sparsity sub-phases)
-PYKAN_LBFGS_STEPS = 150
-PYKAN_LBFGS_LR = 0.02
+# Phase 2: LBFGS (much shorter — only light refinement, not memorization)
+PYKAN_LBFGS_STEPS = 40            # reduced from 150 — LBFGS memorizes small datasets
+PYKAN_LBFGS_LR = 0.01             # reduced from 0.02 — less aggressive steps
 PYKAN_LBFGS_WARMUP_FRAC = 0.5     # first 50% of LBFGS steps: no regularization
-PYKAN_LAMB = 0.005                 # regularization strength (applied after warmup)
+PYKAN_LAMB = 0.002                 # reduced from 0.005 — gentler sparsity
 PYKAN_LAMB_L1 = 1.0
 PYKAN_LAMB_ENTROPY = 2.0
 
-PYKAN_PATIENCE = 15
+PYKAN_PATIENCE = 10                # reduced — stop faster if overfitting
 PYKAN_VAL_INTERVAL = 5
-PYKAN_GRID_INIT = 3               # start coarse, refine to KAN_GRID
+PYKAN_GRID_INIT = 3               # start coarse
+PYKAN_GRID_EXTEND = False          # DISABLED — with 358 samples, grid extension
+                                   # adds parameters and causes memorization.
+                                   # Only enable for datasets > 1000 samples.
+
+# Data-aware architecture: override KAN_HIDDEN when data is small
+PYKAN_MIN_SAMPLES_PER_PARAM = 5    # want at least 5 samples per parameter
+PYKAN_HIDDEN_OVERRIDE = None       # set dynamically in train_pykan()
 
 # Minimum accuracy gate — skip symbolification if PyKAN can't predict
 PYKAN_MIN_ACCURACY = 0.53          # must beat random (50%) by a margin
@@ -261,30 +270,68 @@ def prepare_extraction_data(
 def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
     """Train a fresh PyKAN model for symbolic extraction.
 
-    Uses the same architecture as efficient-kan ([n_features, HIDDEN, n_classes])
-    but with PyKAN's training API (needed for prune/symbolify/formula).
+    Uses a data-aware architecture: hidden width is chosen so that the
+    total parameter count stays well below the number of training samples,
+    preventing LBFGS memorization.
 
-    Phase 1: Adam (explore, NO regularization — let it learn first)
-    Grid extension: PYKAN_GRID_INIT → KAN_GRID
-    Phase 2a: LBFGS warmup (refine accuracy, still no regularization)
-    Phase 2b: LBFGS sparsity (introduce L1 + entropy gradually)
+    Phase 1: Adam with weight decay + input noise (generalization)
+    Grid extension: only if dataset is large enough
+    Phase 2a: LBFGS warmup (short, no regularization)
+    Phase 2b: LBFGS sparsity (short, gentle L1 + entropy)
     """
     from kan import KAN
-
-    width = [n_features, KAN_HIDDEN, n_classes]
-    model = KAN(width=width, grid=PYKAN_GRID_INIT, k=KAN_K, seed=42)
 
     X_t = dataset["train_input"]
     y_t = dataset["train_label"].long()
     X_val_t = dataset["test_input"]
     y_val_t = dataset["test_label"].long()
+    n_train = X_t.shape[0]
+
+    # ── Data-aware architecture ───────────────────────────────────────
+    # Each edge has ~(grid + k) parameters. With grid=3, k=3, that's ~6
+    # params per edge. We want n_train / total_params >= 5.
+    params_per_edge = PYKAN_GRID_INIT + KAN_K
+    max_edges = n_train // PYKAN_MIN_SAMPLES_PER_PARAM
+
+    # Architecture [n_features, h, n_classes] has n_features*h + h*n_classes edges
+    # Solve for h: h * (n_features + n_classes) <= max_edges / params_per_edge
+    max_hidden = max_edges // (params_per_edge * (n_features + n_classes))
+    max_hidden = max(2, min(max_hidden, KAN_HIDDEN))  # clamp to [2, KAN_HIDDEN]
+
+    hidden = max_hidden
+    width = [n_features, hidden, n_classes]
+    total_edges = n_features * hidden + hidden * n_classes
+    total_params_est = total_edges * params_per_edge
+
+    print(
+        f"    Data-aware architecture: {width} "
+        f"({total_edges} edges, ~{total_params_est} params for {n_train} samples, "
+        f"ratio={n_train/max(total_params_est,1):.1f}x)"
+    )
+
+    if n_train / max(total_params_est, 1) < 2:
+        print(
+            f"    ⚠ WARNING: samples/params ratio < 2. "
+            f"Memorization is very likely."
+        )
+
+    model = KAN(width=width, grid=PYKAN_GRID_INIT, k=KAN_K, seed=42)
 
     criterion = nn.CrossEntropyLoss()
 
-    # ── Phase 1: Adam (no regularization) ─────────────────────────────
-    logger.info("Extraction Phase 1: Adam (%d steps, no regularization)", PYKAN_ADAM_STEPS)
-    print(f"    Phase 1: Adam ({PYKAN_ADAM_STEPS} steps, lamb=0)...")
-    optimizer_adam = torch.optim.Adam(model.parameters(), lr=PYKAN_ADAM_LR)
+    # ── Phase 1: Adam with weight decay + noise injection ─────────────
+    logger.info(
+        "Extraction Phase 1: Adam (%d steps, wd=%.4f, noise=%.3f)",
+        PYKAN_ADAM_STEPS, PYKAN_ADAM_WEIGHT_DECAY, PYKAN_NOISE_STD,
+    )
+    print(
+        f"    Phase 1: Adam ({PYKAN_ADAM_STEPS} steps, "
+        f"wd={PYKAN_ADAM_WEIGHT_DECAY}, noise_std={PYKAN_NOISE_STD})..."
+    )
+    optimizer_adam = torch.optim.Adam(
+        model.parameters(), lr=PYKAN_ADAM_LR,
+        weight_decay=PYKAN_ADAM_WEIGHT_DECAY,
+    )
 
     best_val_loss = float("inf")
     best_state = None
@@ -292,7 +339,12 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
     for step in range(PYKAN_ADAM_STEPS):
         model.train()
         optimizer_adam.zero_grad()
-        logits = model(X_t)
+
+        # noise injection: perturb inputs to prevent memorization
+        X_noisy = X_t + PYKAN_NOISE_STD * torch.randn_like(X_t)
+        X_noisy = X_noisy.clamp(-1, 1)  # keep within tanh-normalized range
+
+        logits = model(X_noisy)
         loss = criterion(logits, y_t)
         loss.backward()
         optimizer_adam.step()
@@ -324,33 +376,39 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
             f"Continuing, but symbolic extraction may yield constants."
         )
 
-    # ── Grid extension ────────────────────────────────────────────────
-    try:
-        model = model.refine(KAN_GRID)
-        logger.info("Grid extended: %d → %d", PYKAN_GRID_INIT, KAN_GRID)
-        print(f"    Grid extended: {PYKAN_GRID_INIT} → {KAN_GRID}")
-    except (AttributeError, TypeError, Exception) as e:
-        logger.warning("Grid extension failed (%s). Continuing with grid=%d.", e, PYKAN_GRID_INIT)
-        print(f"    Grid extension failed: {e}")
+    # ── Grid extension (conditional) ──────────────────────────────────
+    if PYKAN_GRID_EXTEND and n_train > 1000:
+        try:
+            model = model.refine(KAN_GRID)
+            logger.info("Grid extended: %d → %d", PYKAN_GRID_INIT, KAN_GRID)
+            print(f"    Grid extended: {PYKAN_GRID_INIT} → {KAN_GRID}")
+            _log_diagnostic("After grid extend", model, X_t, y_t, X_val_t, y_val_t)
+        except (AttributeError, TypeError, Exception) as e:
+            logger.warning("Grid extension failed (%s).", e)
+            print(f"    Grid extension failed: {e}")
+    else:
+        print(
+            f"    Grid extension SKIPPED (n_train={n_train}, "
+            f"grid stays at {PYKAN_GRID_INIT}). "
+            f"Too few samples for finer grid."
+        )
 
-    # ── Diagnostic after grid extension ───────────────────────────────
-    _log_diagnostic("After grid extend", model, X_t, y_t, X_val_t, y_val_t)
-
-    # ── Phase 2: LBFGS (split into warmup + sparsity) ─────────────────
+    # ── Phase 2: LBFGS (short, to refine not memorize) ────────────────
     lbfgs_warmup_steps = int(PYKAN_LBFGS_STEPS * PYKAN_LBFGS_WARMUP_FRAC)
     lbfgs_sparse_steps = PYKAN_LBFGS_STEPS - lbfgs_warmup_steps
 
     # ── Phase 2a: LBFGS warmup (no regularization) ────────────────────
-    logger.info("Extraction Phase 2a: LBFGS warmup (%d steps, no regularization)", lbfgs_warmup_steps)
+    logger.info("Extraction Phase 2a: LBFGS warmup (%d steps, no reg)", lbfgs_warmup_steps)
     print(f"    Phase 2a: LBFGS warmup ({lbfgs_warmup_steps} steps, lamb=0)...")
 
     optimizer_lbfgs = torch.optim.LBFGS(
-        model.parameters(), lr=PYKAN_LBFGS_LR, max_iter=20,
+        model.parameters(), lr=PYKAN_LBFGS_LR, max_iter=10,
         line_search_fn="strong_wolfe",
     )
 
+    # track best val from Adam phase as starting point
     best_val_loss = float("inf")
-    best_state = None
+    best_state = copy.deepcopy(model.state_dict())
     patience_counter = 0
 
     for step in range(lbfgs_warmup_steps):
@@ -379,8 +437,7 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
                 logger.info("LBFGS warmup early stop at step %d", step + 1)
                 break
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
+    model.load_state_dict(best_state)
 
     # ── Diagnostic after LBFGS warmup ─────────────────────────────────
     _log_diagnostic("After LBFGS warmup", model, X_t, y_t, X_val_t, y_val_t)
@@ -392,14 +449,13 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
     )
     print(f"    Phase 2b: LBFGS sparsity ({lbfgs_sparse_steps} steps, lamb={PYKAN_LAMB})...")
 
-    # re-initialize LBFGS optimizer for clean state
     optimizer_lbfgs2 = torch.optim.LBFGS(
-        model.parameters(), lr=PYKAN_LBFGS_LR, max_iter=20,
+        model.parameters(), lr=PYKAN_LBFGS_LR, max_iter=10,
         line_search_fn="strong_wolfe",
     )
 
     best_val_loss_sparse = float("inf")
-    best_state_sparse = copy.deepcopy(model.state_dict())  # fallback to pre-sparsity
+    best_state_sparse = copy.deepcopy(model.state_dict())
     patience_counter = 0
 
     for step in range(lbfgs_sparse_steps):
@@ -409,7 +465,6 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
             optimizer_lbfgs2.zero_grad()
             logits = model(X_t)
             loss = criterion(logits, y_t)
-            # L1 + entropy regularization (now safe to apply)
             try:
                 reg_l1 = model.regularization_loss(
                     regularize_activation=1.0, regularize_entropy=0.0
@@ -449,7 +504,6 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
         "After LBFGS sparsity (final)", model, X_t, y_t, X_val_t, y_val_t
     )
 
-    # store pre-symbolic accuracy
     model._pre_symbolic_accuracy = val_acc
     logger.info("PyKAN trained. Val accuracy: %.4f, width: %s", val_acc, width)
     return model
@@ -564,7 +618,26 @@ def prune_network(model, dataset: dict):
 # =====================================================================
 def symbolify_network(model, dataset: dict):
     """Replace B-spline activations with symbolic functions, then fine-tune."""
+    # ensure activations are cached from a clean forward pass
+    model.eval()
     _ = model(dataset["train_input"])
+
+    # ── Activation sanity check ───────────────────────────────────────
+    try:
+        with torch.no_grad():
+            out = model(dataset["train_input"])
+            if torch.isnan(out).any():
+                print("    ⚠ Model produces NaN outputs. Symbolification will fail.")
+            elif (out.std(dim=0) < 1e-6).all():
+                print("    ⚠ Model outputs are near-constant. Activations may be flat.")
+            else:
+                logit_diff = (out[:, 1] - out[:, 0]) if out.shape[1] > 1 else out[:, 0]
+                print(
+                    f"    Activation check: logit_diff std={logit_diff.std().item():.4f}, "
+                    f"range=[{logit_diff.min().item():.3f}, {logit_diff.max().item():.3f}]"
+                )
+    except Exception as e:
+        print(f"    Activation check failed: {e}")
 
     with torch.no_grad():
         pre_pred = model(dataset["test_input"])
@@ -596,6 +669,12 @@ def symbolify_network(model, dataset: dict):
                         l, i, j, topk=SYMBOLIC_TOPK, lib=SYMBOLIC_LIBRARY,
                     )
                 except Exception as e:
+                    # PRINT first 5 errors to diagnose why all edges are skipped
+                    if skipped_edges < 5:
+                        print(
+                            f"    ⚠ suggest_symbolic({l},{i},{j}) error: "
+                            f"{type(e).__name__}: {e}"
+                        )
                     logger.debug("suggest_symbolic(%d,%d,%d) failed: %s", l, i, j, e)
                     skipped_edges += 1
                     continue
@@ -632,6 +711,11 @@ def symbolify_network(model, dataset: dict):
                         skipped_edges += 1
                         continue
                 except Exception as e:
+                    if skipped_edges < 5:
+                        print(
+                            f"    ⚠ Edge ({l},{i},{j}) parse error: "
+                            f"{type(e).__name__}: {e}"
+                        )
                     logger.debug(
                         "Edge (%d,%d,%d): failed to parse suggestions: %s",
                         l, i, j, e,

@@ -7,13 +7,17 @@ feature scaling, and feature selection (AFML Chapter 8).
 
 Each function takes train/test data and returns transformed data,
 ensuring zero leakage.
+
+Feature selection uses Mean Decrease Accuracy (MDA) with purged inner
+cross-validation (AFML §8.4). A feature is selected if permuting it
+decreases out-of-sample accuracy (MDA > 0). If the surviving pool
+exceeds a size cap, the top features by MDA value are kept.
 """
 
 import logging
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import RobustScaler
 from statsmodels.tsa.stattools import adfuller
@@ -26,15 +30,17 @@ logger = logging.getLogger(__name__)
 
 # FFD
 FFD_D_RANGE = (0.0, 1.0, 0.05)     # (start, stop, step) for d sweep
-FFD_THRESHOLD = 1e-4                 # weight truncation threshold τ (1e-4 keeps lookback manageable)
+FFD_THRESHOLD = 1e-4                 # weight truncation threshold τ
 FFD_ADF_SIGNIFICANCE = 0.05          # ADF rejection threshold
 FFD_MAX_LOOKBACK = 200               # hard cap on FFD lookback length
 
-# Feature selection (MDA + SFI composite scoring)
+# Feature selection (MDA with purged inner CV)
 MDA_N_ESTIMATORS = 500
 MDA_N_INNER_FOLDS = 3
-SFI_INNER_TRAIN_PCT = 0.6            # chronological split for SFI
-COMPOSITE_TOP_K_FRAC = 0.5           # select top 50% of features by composite score
+MDA_TOP_K_FRAC = 1.0               # 1.0 = select all with MDA > 0; float = cap at this fraction
+
+# Minimum features to keep (hard floor)
+MIN_FEATURES = 5
 
 
 # =====================================================================
@@ -88,7 +94,6 @@ def find_optimal_d(
     for d in d_values:
         d = round(d, 4)
         if d == 0.0:
-            # d=0 means no differentiation, skip
             sweep_results[d] = 1.0
             continue
 
@@ -104,7 +109,6 @@ def find_optimal_d(
         except (ValueError, np.linalg.LinAlgError):
             sweep_results[d] = 1.0
 
-    # find minimum d where p-value < significance
     d_star = None
     for d in sorted(sweep_results.keys()):
         if sweep_results[d] < significance:
@@ -195,17 +199,14 @@ def ffd_transform(
             logger.warning("FFD: column '%s' not found, skipping.", col)
             continue
 
-        # estimate d* from training data only
         train_series = X_full[col].iloc[train_idx]
         d_star = find_optimal_d(train_series)
         ffd_info[col] = d_star
 
-        # apply FFD to the FULL series (causal filter, no leakage)
         X_transformed[col] = apply_ffd(X_full[col], d_star)
         lookback = len(_compute_ffd_weights(d_star)) - 1
         logger.info("FFD: col='%s', d*=%.2f, lookback=%d obs.", col, d_star, lookback)
 
-    # extract train/test from the transformed full series
     X_train = X_transformed.iloc[train_idx].copy()
     X_test = X_transformed.iloc[test_idx].copy()
 
@@ -280,7 +281,7 @@ def scale_features(
 
 
 # =====================================================================
-# Feature Selection (AFML Chapter 8)
+# Feature Selection — MDA (AFML Chapter 8)
 # =====================================================================
 def compute_mda(
     X_train: pd.DataFrame,
@@ -291,7 +292,11 @@ def compute_mda(
     """Mean Decrease Accuracy (AFML Chapter 8.4).
 
     Uses internal purged K-fold CV on the training set to compute
-    out-of-sample permutation importance.
+    out-of-sample permutation importance. A feature's MDA is the
+    average drop in F1 when its values are randomly shuffled.
+
+    MDA > 0: permuting this feature hurts the model → it contributes.
+    MDA ≤ 0: permuting this feature doesn't hurt (or helps) → noise.
     """
     n_folds = MDA_N_INNER_FOLDS
     T = len(X_train)
@@ -301,7 +306,6 @@ def compute_mda(
     mda_scores = pd.DataFrame(index=X_train.columns)
 
     for fold_i in range(n_folds):
-        # define inner test range
         inner_test_start = fold_i * fold_size
         inner_test_end = (fold_i + 1) * fold_size if fold_i < n_folds - 1 else T
 
@@ -330,7 +334,6 @@ def compute_mda(
         if len(inner_train_idx) < 20 or len(inner_test_idx) < 10:
             continue
 
-        # positional to iloc
         X_tr = X_train.iloc[inner_train_idx]
         y_tr = y_train.iloc[inner_train_idx]
         w_tr = w_train.iloc[inner_train_idx]
@@ -345,10 +348,8 @@ def compute_mda(
         )
         clf.fit(X_tr, y_tr, sample_weight=w_tr)
 
-        # baseline F1
         baseline_f1 = f1_score(y_te, clf.predict(X_te), average="macro")
 
-        # permutation importance per feature
         fold_mda = {}
         for col in X_train.columns:
             X_te_perm = X_te.copy()
@@ -358,108 +359,8 @@ def compute_mda(
 
         mda_scores[f"fold_{fold_i}"] = pd.Series(fold_mda)
 
-    # average across folds
     avg_mda = mda_scores.mean(axis=1).rename("MDA")
     return avg_mda.sort_values(ascending=False)
-
-
-def compute_sfi(
-    X_train: pd.DataFrame, y_train: pd.Series, w_train: pd.Series
-) -> pd.Series:
-    """Single Feature Importance (AFML Chapter 8.4).
-
-    For each feature individually, fit a logistic regression on a
-    chronological inner split and measure F1 on the held-out portion.
-    """
-    split_point = int(len(X_train) * SFI_INNER_TRAIN_PCT)
-    sfi_scores = {}
-
-    X_inner_train = X_train.iloc[:split_point]
-    y_inner_train = y_train.iloc[:split_point]
-    w_inner_train = w_train.iloc[:split_point]
-    X_inner_val = X_train.iloc[split_point:]
-    y_inner_val = y_train.iloc[split_point:]
-
-    for col in X_train.columns:
-        X_tr_1d = X_inner_train[[col]]
-        X_val_1d = X_inner_val[[col]]
-
-        try:
-            clf = LogisticRegression(
-                class_weight="balanced", max_iter=1000, random_state=42
-            )
-            clf.fit(X_tr_1d, y_inner_train, sample_weight=w_inner_train)
-            preds = clf.predict(X_val_1d)
-            sfi_scores[col] = f1_score(y_inner_val, preds, average="macro")
-        except Exception as e:
-            logger.warning("SFI failed for '%s': %s", col, e)
-            sfi_scores[col] = 0.0
-
-    result = pd.Series(sfi_scores, name="SFI")
-    return result.sort_values(ascending=False)
-
-
-def compute_composite_score(
-    mda: pd.Series, sfi: pd.Series
-) -> pd.DataFrame:
-    """Combine MDA and SFI into a single composite score via percentile ranks.
-
-    Percentile ranks normalise the two methods to [0, 1] regardless of
-    their native scales (MDA can be negative, SFI is bounded in [0, 1]).
-    Equal weighting (0.5/0.5) treats both signals as equally informative.
-
-    Each feature is also assigned a *profile* that characterises the
-    nature of its predictive contribution:
-
-    - **consensus**: top half in both MDA and SFI. The feature is
-      individually predictive AND contributes unique information to the
-      ensemble. Strongest selection signal.
-    - **substitution**: top half in SFI but not MDA. The feature
-      predicts well alone, but permuting it in the RF barely hurts
-      because correlated features compensate (AFML §8.3 substitution
-      effect). Still selected, but its apparent importance may be
-      shared with neighbours.
-    - **joint**: top half in MDA but not SFI. The feature contributes
-      through interactions with other features in the ensemble but is
-      not predictive in isolation. Valuable for non-linear models.
-    - **weak**: bottom half in both. Little evidence of predictive
-      value under either criterion.
-
-    Parameters
-    ----------
-    mda : pd.Series
-        Mean Decrease Accuracy scores, indexed by feature name.
-    sfi : pd.Series
-        Single Feature Importance scores, indexed by feature name.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: MDA, SFI, MDA_rank, SFI_rank, composite, profile.
-        Sorted by composite descending.
-    """
-    rankings = pd.DataFrame({"MDA": mda, "SFI": sfi})
-
-    # percentile ranks (0 = worst, 1 = best)
-    rankings["MDA_rank"] = rankings["MDA"].rank(pct=True)
-    rankings["SFI_rank"] = rankings["SFI"].rank(pct=True)
-
-    # composite: equal-weighted average of percentile ranks
-    rankings["composite"] = 0.5 * rankings["MDA_rank"] + 0.5 * rankings["SFI_rank"]
-
-    # feature profile based on median split of each method's rank
-    mda_high = rankings["MDA_rank"] >= 0.5
-    sfi_high = rankings["SFI_rank"] >= 0.5
-
-    conditions = [
-        mda_high & sfi_high,       # consensus
-        ~mda_high & sfi_high,      # substitution (high SFI, low MDA)
-        mda_high & ~sfi_high,      # joint (high MDA, low SFI)
-    ]
-    choices = ["consensus", "substitution", "joint"]
-    rankings["profile"] = np.select(conditions, choices, default="weak")
-
-    return rankings.sort_values("composite", ascending=False)
 
 
 def select_features(
@@ -469,21 +370,20 @@ def select_features(
     t1_train: pd.Series,
     top_k_frac: float | None = None,
 ) -> list[str]:
-    """Select features via MDA + SFI composite scoring.
+    """Select features via MDA with purged inner CV (AFML §8.4).
 
-    Uses only MDA (permutation importance with purged inner CV) and SFI
-    (single-feature logistic regression). MDI is excluded to avoid
-    over-engineering from tree-based impurity bias (AFML §8.3).
+    Selection logic:
+      1. Compute MDA for all features.
+      2. Keep features with MDA > 0 (permuting them hurts the ensemble).
+      3. If top_k_frac is set and the pool exceeds that fraction of
+         total features, take the top K by MDA value.
+      4. Minimum floor of MIN_FEATURES enforced.
 
-    A feature is selected if its composite percentile-rank score places
-    it in the top ``top_k_frac`` of all features (default from module constant).
-    A minimum floor of 5 features is enforced.
-
-    Diagnostic profiles are logged for each feature:
-    - consensus:    high MDA + high SFI (individually and jointly useful)
-    - substitution: low MDA + high SFI  (predictive alone, redundant in ensemble)
-    - joint:        high MDA + low SFI  (useful only through interactions)
-    - weak:         low MDA + low SFI   (dropped)
+    Parameters
+    ----------
+    top_k_frac : float, optional
+        If set, cap selection at this fraction of total features.
+        None (default) = select all features with MDA > 0.
 
     Returns
     -------
@@ -491,46 +391,59 @@ def select_features(
         Sorted list of selected feature names.
     """
     if top_k_frac is None:
-        top_k_frac = COMPOSITE_TOP_K_FRAC
-    n_features = X_train.shape[1]
-    top_k = max(int(n_features * top_k_frac), 5)
+        top_k_frac = MDA_TOP_K_FRAC
 
+    n_total = X_train.shape[1]
+
+    # ── Compute MDA ───────────────────────────────────────────────────
     print("[preprocessing] Computing MDA...")
     mda = compute_mda(X_train, y_train, w_train, t1_train)
-    print("[preprocessing] Computing SFI...")
-    sfi = compute_sfi(X_train, y_train, w_train)
 
-    # composite scoring
-    rankings = compute_composite_score(mda, sfi)
+    # ── Select: all features with MDA > 0 ─────────────────────────────
+    mda_positive = mda[mda > 0]
+    mda_eliminated = mda[mda <= 0]
+    n_passed = len(mda_positive)
+    n_eliminated = len(mda_eliminated)
 
-    # select top-K by composite score
-    selected = sorted(rankings.head(top_k).index.tolist())
-
-    # fallback: ensure at least 5 features
-    if len(selected) < 5:
+    # fallback: if too few pass, take top MIN_FEATURES by MDA
+    if n_passed < MIN_FEATURES:
         logger.warning(
-            "Only %d features above composite threshold. "
-            "Taking top 5 by composite score.", len(selected),
+            "Only %d features with MDA > 0. Taking top %d by MDA value.",
+            n_passed, MIN_FEATURES,
         )
-        selected = sorted(rankings.head(5).index.tolist())
+        selected_series = mda.head(MIN_FEATURES)
+    else:
+        selected_series = mda_positive
 
+    # ── Optional cap via top_k_frac ───────────────────────────────────
+    if top_k_frac is not None:
+        max_features = max(int(n_total * top_k_frac), MIN_FEATURES)
+        if len(selected_series) > max_features:
+            selected_series = selected_series.head(max_features)
+            logger.info(
+                "MDA pool capped: %d → %d features (top_k_frac=%.2f).",
+                n_passed, max_features, top_k_frac,
+            )
+
+    selected = sorted(selected_series.index.tolist())
+
+    # ── Log full rankings ─────────────────────────────────────────────
+    rankings = pd.DataFrame({"MDA": mda})
     rankings["selected"] = rankings.index.isin(selected)
+    rankings = rankings.sort_values("MDA", ascending=False)
 
-    # log full rankings with profiles
     logger.info("Feature selection rankings:\n%s", rankings.to_string())
 
-    # profile summary
-    profile_counts = rankings.loc[rankings["selected"], "profile"].value_counts()
-
     print(
-        f"[preprocessing] Feature selection: {len(selected)}/{n_features} features kept "
-        f"(top {top_k} by MDA+SFI composite)"
+        f"[preprocessing] MDA feature selection: {n_passed}/{n_total} passed "
+        f"(MDA > 0), {n_eliminated} eliminated"
     )
-    print(f"  Selected: {selected}")
-    print(f"  Profiles: {profile_counts.to_dict()}")
+    if top_k_frac is not None and n_passed > len(selected):
+        print(f"  Capped at {len(selected)} features (top_k_frac={top_k_frac})")
+    print(f"  Selected ({len(selected)}): {selected}")
     dropped = sorted(set(X_train.columns) - set(selected))
     if dropped:
-        print(f"  Dropped:  {dropped}")
+        print(f"  Dropped  ({len(dropped)}): {dropped}")
 
     return selected
 
@@ -566,9 +479,10 @@ def preprocess_fold(
     ffd_columns : list[str]
         Columns requiring FFD transformation.
     top_k_frac : float, optional
-        Fraction of features to keep (overrides module constant).
+        Cap selection at this fraction of total features. None = select
+        all features with MDA > 0 (no cap).
     skip_selection : bool
-        If True, skip MDA+SFI feature selection and return all columns.
+        If True, skip feature selection and return all columns.
         Used when only AR Logistic is being evaluated.
 
     Returns
@@ -596,12 +510,18 @@ def preprocess_fold(
     # 3. Scale all features
     X_train, X_test, scaler = scale_features(X_train, X_test)
 
-    # 4. Select features (skip if only AR Logistic needs preprocessing)
+    # 4. Select features
     if skip_selection:
         selected = sorted(X_train.columns.tolist())
-        print(f"[preprocessing] Feature selection skipped (AR Logistic uses lagged returns only)")
+        print("[preprocessing] Feature selection skipped (AR Logistic uses lagged returns only)")
     else:
         selected = select_features(X_train, y_train, w_train, t1_train, top_k_frac)
+
+    n_cal = int(len(X_train) * 0.2)
+    print(
+        f"  Preprocessing: {len(selected)} features selected, "
+        f"train={len(X_train) - n_cal} + cal={n_cal}, test={len(X_test)}"
+    )
 
     info = {
         "ffd": ffd_info,
