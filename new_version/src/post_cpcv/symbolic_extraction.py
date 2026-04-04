@@ -37,16 +37,25 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # PyKAN-specific training constants (not used by efficient-kan)
 # ---------------------------------------------------------------------------
-PYKAN_ADAM_STEPS = 100
+# Phase 1: Adam (no regularization, pure accuracy)
+PYKAN_ADAM_STEPS = 400             # increased from 100 — needs comparable
+                                   # training to efficient-kan's 200 epochs
 PYKAN_ADAM_LR = 1e-3
+
+# Phase 2: LBFGS (split into accuracy-only + sparsity sub-phases)
 PYKAN_LBFGS_STEPS = 150
 PYKAN_LBFGS_LR = 0.02
-PYKAN_LAMB = 0.005                 # regularization during LBFGS
+PYKAN_LBFGS_WARMUP_FRAC = 0.5     # first 50% of LBFGS steps: no regularization
+PYKAN_LAMB = 0.005                 # regularization strength (applied after warmup)
 PYKAN_LAMB_L1 = 1.0
 PYKAN_LAMB_ENTROPY = 2.0
+
 PYKAN_PATIENCE = 15
 PYKAN_VAL_INTERVAL = 5
 PYKAN_GRID_INIT = 3               # start coarse, refine to KAN_GRID
+
+# Minimum accuracy gate — skip symbolification if PyKAN can't predict
+PYKAN_MIN_ACCURACY = 0.53          # must beat random (50%) by a margin
 
 # ---------------------------------------------------------------------------
 # Symbolic extraction constants
@@ -57,13 +66,71 @@ SYMBOLIC_LIBRARY = [
     "x", "x^2", "x^3", "exp", "log", "sqrt", "tanh", "sin", "abs",
     "sigmoid", "x*abs(x)", "1/x", "0",
 ]
-SYMBOLIC_R2_THRESHOLD = 0.5
+SYMBOLIC_R2_THRESHOLD = 0.3        # lowered from 0.5 to see what R² values
+                                   # actually exist before filtering too aggressively
 SYMBOLIC_TOPK = 5
 
 AFFINE_FINETUNE_STEPS = 30
 AFFINE_LR = 0.0004          # from VIX paper
 
 CACHE_DIR = "cache/"
+
+
+# =====================================================================
+# Diagnostic helpers
+# =====================================================================
+def _compute_accuracy(model, X: torch.Tensor, y: torch.Tensor) -> float:
+    """Compute classification accuracy (no grad)."""
+    model.eval()
+    with torch.no_grad():
+        pred = model(X)
+        acc = (pred.argmax(dim=1) == y).float().mean().item()
+    return acc
+
+
+def _count_active_edges(model, threshold: float) -> tuple[int, int]:
+    """Count total and active (above threshold) edges in the KAN.
+
+    Inspects activation magnitudes to determine which edges carry
+    meaningful signal vs. near-zero activations.
+    """
+    total = 0
+    active = 0
+    try:
+        for l in range(len(model.width) - 1):
+            n_in = model.width[l]
+            n_out = model.width[l + 1]
+            if isinstance(n_in, (list, tuple)):
+                n_in = n_in[0] if n_in else 0
+            if isinstance(n_out, (list, tuple)):
+                n_out = n_out[0] if n_out else 0
+            for i in range(n_in):
+                for j in range(n_out):
+                    total += 1
+                    try:
+                        # check activation magnitude via act_fun attribute
+                        act = model.act_fun[l]
+                        # different PyKAN versions store activations differently
+                        if hasattr(act, 'coef'):
+                            coef_norm = act.coef[j, i].abs().mean().item()
+                        else:
+                            coef_norm = 1.0  # assume active if we can't check
+                        if coef_norm > threshold:
+                            active += 1
+                    except (IndexError, AttributeError, RuntimeError):
+                        active += 1  # assume active if we can't check
+    except (AttributeError, TypeError):
+        return -1, -1  # can't inspect
+    return total, active
+
+
+def _log_diagnostic(label: str, model, X_train, y_train, X_val, y_val):
+    """Print a diagnostic checkpoint with train/val accuracy."""
+    train_acc = _compute_accuracy(model, X_train, y_train)
+    val_acc = _compute_accuracy(model, X_val, y_val)
+    print(f"    [{label}] train_acc={train_acc:.4f}, val_acc={val_acc:.4f}")
+    logger.info("%s: train_acc=%.4f, val_acc=%.4f", label, train_acc, val_acc)
+    return train_acc, val_acc
 
 
 # =====================================================================
@@ -197,9 +264,10 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
     Uses the same architecture as efficient-kan ([n_features, HIDDEN, n_classes])
     but with PyKAN's training API (needed for prune/symbolify/formula).
 
-    Phase 1: Adam (explore, no regularization)
+    Phase 1: Adam (explore, NO regularization — let it learn first)
     Grid extension: PYKAN_GRID_INIT → KAN_GRID
-    Phase 2: LBFGS (refine with L1 + entropy regularization)
+    Phase 2a: LBFGS warmup (refine accuracy, still no regularization)
+    Phase 2b: LBFGS sparsity (introduce L1 + entropy gradually)
     """
     from kan import KAN
 
@@ -213,8 +281,9 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
 
     criterion = nn.CrossEntropyLoss()
 
-    # ── Phase 1: Adam ─────────────────────────────────────────────────
-    logger.info("Extraction Phase 1: Adam (%d steps)", PYKAN_ADAM_STEPS)
+    # ── Phase 1: Adam (no regularization) ─────────────────────────────
+    logger.info("Extraction Phase 1: Adam (%d steps, no regularization)", PYKAN_ADAM_STEPS)
+    print(f"    Phase 1: Adam ({PYKAN_ADAM_STEPS} steps, lamb=0)...")
     optimizer_adam = torch.optim.Adam(model.parameters(), lr=PYKAN_ADAM_LR)
 
     best_val_loss = float("inf")
@@ -238,17 +307,43 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    logger.info("Phase 1 complete. Best val loss: %.4f", best_val_loss)
+
+    # ── Diagnostic: check if Adam learned anything ────────────────────
+    train_acc, val_acc = _log_diagnostic(
+        "After Adam", model, X_t, y_t, X_val_t, y_val_t
+    )
+
+    if val_acc < PYKAN_MIN_ACCURACY:
+        logger.warning(
+            "Adam phase val_acc=%.4f < %.2f minimum. "
+            "PyKAN may not have learned meaningful patterns.",
+            val_acc, PYKAN_MIN_ACCURACY,
+        )
+        print(
+            f"    ⚠ WARNING: val_acc={val_acc:.4f} barely above random. "
+            f"Continuing, but symbolic extraction may yield constants."
+        )
 
     # ── Grid extension ────────────────────────────────────────────────
     try:
         model = model.refine(KAN_GRID)
         logger.info("Grid extended: %d → %d", PYKAN_GRID_INIT, KAN_GRID)
+        print(f"    Grid extended: {PYKAN_GRID_INIT} → {KAN_GRID}")
     except (AttributeError, TypeError, Exception) as e:
         logger.warning("Grid extension failed (%s). Continuing with grid=%d.", e, PYKAN_GRID_INIT)
+        print(f"    Grid extension failed: {e}")
 
-    # ── Phase 2: LBFGS ────────────────────────────────────────────────
-    logger.info("Extraction Phase 2: LBFGS (%d steps)", PYKAN_LBFGS_STEPS)
+    # ── Diagnostic after grid extension ───────────────────────────────
+    _log_diagnostic("After grid extend", model, X_t, y_t, X_val_t, y_val_t)
+
+    # ── Phase 2: LBFGS (split into warmup + sparsity) ─────────────────
+    lbfgs_warmup_steps = int(PYKAN_LBFGS_STEPS * PYKAN_LBFGS_WARMUP_FRAC)
+    lbfgs_sparse_steps = PYKAN_LBFGS_STEPS - lbfgs_warmup_steps
+
+    # ── Phase 2a: LBFGS warmup (no regularization) ────────────────────
+    logger.info("Extraction Phase 2a: LBFGS warmup (%d steps, no regularization)", lbfgs_warmup_steps)
+    print(f"    Phase 2a: LBFGS warmup ({lbfgs_warmup_steps} steps, lamb=0)...")
+
     optimizer_lbfgs = torch.optim.LBFGS(
         model.parameters(), lr=PYKAN_LBFGS_LR, max_iter=20,
         line_search_fn="strong_wolfe",
@@ -258,14 +353,63 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
     best_state = None
     patience_counter = 0
 
-    for step in range(PYKAN_LBFGS_STEPS):
+    for step in range(lbfgs_warmup_steps):
         model.train()
 
-        def closure():
+        def closure_warmup():
             optimizer_lbfgs.zero_grad()
             logits = model(X_t)
             loss = criterion(logits, y_t)
-            # regularization
+            loss.backward()
+            return loss
+
+        optimizer_lbfgs.step(closure_warmup)
+
+        if (step + 1) % PYKAN_VAL_INTERVAL == 0:
+            model.eval()
+            with torch.no_grad():
+                val_loss = criterion(model(X_val_t), y_val_t).item()
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = copy.deepcopy(model.state_dict())
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            if patience_counter >= PYKAN_PATIENCE:
+                logger.info("LBFGS warmup early stop at step %d", step + 1)
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    # ── Diagnostic after LBFGS warmup ─────────────────────────────────
+    _log_diagnostic("After LBFGS warmup", model, X_t, y_t, X_val_t, y_val_t)
+
+    # ── Phase 2b: LBFGS with sparsity regularization ──────────────────
+    logger.info(
+        "Extraction Phase 2b: LBFGS sparsity (%d steps, lamb=%.4f)",
+        lbfgs_sparse_steps, PYKAN_LAMB,
+    )
+    print(f"    Phase 2b: LBFGS sparsity ({lbfgs_sparse_steps} steps, lamb={PYKAN_LAMB})...")
+
+    # re-initialize LBFGS optimizer for clean state
+    optimizer_lbfgs2 = torch.optim.LBFGS(
+        model.parameters(), lr=PYKAN_LBFGS_LR, max_iter=20,
+        line_search_fn="strong_wolfe",
+    )
+
+    best_val_loss_sparse = float("inf")
+    best_state_sparse = copy.deepcopy(model.state_dict())  # fallback to pre-sparsity
+    patience_counter = 0
+
+    for step in range(lbfgs_sparse_steps):
+        model.train()
+
+        def closure_sparse():
+            optimizer_lbfgs2.zero_grad()
+            logits = model(X_t)
+            loss = criterion(logits, y_t)
+            # L1 + entropy regularization (now safe to apply)
             try:
                 reg_l1 = model.regularization_loss(
                     regularize_activation=1.0, regularize_entropy=0.0
@@ -281,33 +425,31 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
             loss.backward()
             return loss
 
-        optimizer_lbfgs.step(closure)
+        optimizer_lbfgs2.step(closure_sparse)
 
         if (step + 1) % PYKAN_VAL_INTERVAL == 0:
             model.eval()
             with torch.no_grad():
                 val_loss = criterion(model(X_val_t), y_val_t).item()
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_state = copy.deepcopy(model.state_dict())
+            if val_loss < best_val_loss_sparse:
+                best_val_loss_sparse = val_loss
+                best_state_sparse = copy.deepcopy(model.state_dict())
                 patience_counter = 0
             else:
                 patience_counter += 1
             if patience_counter >= PYKAN_PATIENCE:
-                logger.info("LBFGS early stop at step %d (val=%.4f)", step + 1, best_val_loss)
+                logger.info("LBFGS sparsity early stop at step %d", step + 1)
                 break
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
-
+    model.load_state_dict(best_state_sparse)
     model.eval()
-    logger.info("Phase 2 complete. Best val loss: %.4f", best_val_loss)
+
+    # ── Final diagnostic ──────────────────────────────────────────────
+    train_acc, val_acc = _log_diagnostic(
+        "After LBFGS sparsity (final)", model, X_t, y_t, X_val_t, y_val_t
+    )
 
     # store pre-symbolic accuracy
-    with torch.no_grad():
-        pred = model(dataset["test_input"])
-        val_acc = (pred.argmax(dim=1) == dataset["test_label"].long()).float().mean().item()
-
     model._pre_symbolic_accuracy = val_acc
     logger.info("PyKAN trained. Val accuracy: %.4f, width: %s", val_acc, width)
     return model
@@ -317,13 +459,46 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
 # 4. Prune (Algorithm 1, Step 2)
 # =====================================================================
 def prune_network(model, dataset: dict):
-    """Prune dead edges and nodes."""
+    """Prune dead edges and nodes.
+
+    Includes diagnostic logging of edge survival counts to identify
+    whether regularization is too aggressive.
+    """
     _ = model(dataset["train_input"])
 
     try:
         original_width = list(model.width)
     except AttributeError:
         original_width = ["unknown"]
+
+    # ── Diagnostic: edge survival before pruning ──────────────────────
+    total_edges, active_edges = _count_active_edges(model, PRUNE_THRESHOLD)
+    if total_edges > 0:
+        print(
+            f"    Edge analysis (threshold={PRUNE_THRESHOLD}): "
+            f"{active_edges}/{total_edges} edges active "
+            f"({active_edges/total_edges:.0%} survival rate)"
+        )
+        logger.info(
+            "Pre-prune edge analysis: %d/%d active (%.1f%%)",
+            active_edges, total_edges, 100 * active_edges / max(total_edges, 1),
+        )
+
+        if active_edges < 3:
+            print(
+                "    ⚠ WARNING: Very few active edges. Regularization may have "
+                "been too aggressive. Symbolic extraction will likely yield constants."
+            )
+
+    # ── Accuracy gate ─────────────────────────────────────────────────
+    val_acc = _compute_accuracy(
+        model, dataset["test_input"], dataset["test_label"].long()
+    )
+    if val_acc < PYKAN_MIN_ACCURACY:
+        print(
+            f"    ⚠ WARNING: Pre-prune val_acc={val_acc:.4f} < {PYKAN_MIN_ACCURACY}. "
+            f"Model hasn't learned meaningful patterns."
+        )
 
     try:
         model.attribute()
@@ -367,8 +542,18 @@ def prune_network(model, dataset: dict):
     except AttributeError:
         pruned_width = ["unknown"]
 
+    # ── Diagnostic: post-prune edge count ─────────────────────────────
+    post_total, post_active = _count_active_edges(model, PRUNE_THRESHOLD)
+    print(f"    Pruned: {original_width} → {pruned_width}")
+    if post_total > 0:
+        print(f"    Post-prune edges: {post_total} remaining")
     logger.info("Pruned: %s → %s", original_width, pruned_width)
-    print(f"  Architecture: {original_width} → {pruned_width}")
+
+    # ── Post-prune accuracy ───────────────────────────────────────────
+    post_acc = _compute_accuracy(
+        model, dataset["test_input"], dataset["test_label"].long()
+    )
+    print(f"    Post-prune val_acc: {post_acc:.4f}")
 
     _save_plot(model, "kan_pruned_network.png")
     return model
@@ -390,6 +575,7 @@ def symbolify_network(model, dataset: dict):
     total_edges = 0
     symbolified_edges = 0
     skipped_edges = 0
+    r2_values = []               # collect all R² values for diagnostics
 
     for l in range(len(model.width) - 1):
         n_in = model.width[l]
@@ -457,6 +643,9 @@ def symbolify_network(model, dataset: dict):
                     skipped_edges += 1
                     continue
 
+                # ── collect R² for diagnostics ────────────────────
+                r2_values.append((l, i, j, best_fn, best_r2))
+
                 # ── apply symbolic replacement if R² is good enough ──
                 if best_r2 >= SYMBOLIC_R2_THRESHOLD:
                     try:
@@ -483,43 +672,64 @@ def symbolify_network(model, dataset: dict):
         f"  [skipped: {skipped_edges}]"
     )
 
-    # ── Step 4: fine-tune affine parameters ───────────────────────────
-    print(f"  Fine-tuning affine parameters ({AFFINE_FINETUNE_STEPS} steps)...")
-    try:
-        dataset_fit = {
-            "train_input": dataset["train_input"],
-            "train_label": dataset["train_label"].long(),
-            "test_input": dataset["test_input"],
-            "test_label": dataset["test_label"].long(),
-        }
-        model.fit(
-            dataset_fit, opt="LBFGS", lr=AFFINE_LR,
-            steps=AFFINE_FINETUNE_STEPS,
-            loss_fn=nn.CrossEntropyLoss(),
-            update_grid=False,
+    # ── R² diagnostic summary ─────────────────────────────────────────
+    if r2_values:
+        r2_scores = [v[4] for v in r2_values]
+        print(
+            f"  R² distribution: min={min(r2_scores):.4f}, "
+            f"median={np.median(r2_scores):.4f}, "
+            f"max={max(r2_scores):.4f}, "
+            f"above threshold ({SYMBOLIC_R2_THRESHOLD}): "
+            f"{sum(1 for r in r2_scores if r >= SYMBOLIC_R2_THRESHOLD)}/{len(r2_scores)}"
         )
-    except (TypeError, AttributeError, RuntimeError):
+        # show top 5 edges by R²
+        top5 = sorted(r2_values, key=lambda x: x[4], reverse=True)[:5]
+        print("  Top 5 edges by R²:")
+        for l, i, j, fn, r2 in top5:
+            print(f"    Edge ({l},{i},{j}): {fn} (R²={r2:.4f})")
+    else:
+        print("  ⚠ No R² values collected — all edges were skipped.")
+
+    # ── Step 4: fine-tune affine parameters ───────────────────────────
+    if symbolified_edges > 0:
+        print(f"  Fine-tuning affine parameters ({AFFINE_FINETUNE_STEPS} steps)...")
         try:
-            optimizer = torch.optim.LBFGS(model.parameters(), lr=AFFINE_LR, max_iter=10)
-            loss_fn = nn.CrossEntropyLoss()
-            for step in range(AFFINE_FINETUNE_STEPS):
-                def closure():
-                    optimizer.zero_grad()
-                    pred = model(dataset["train_input"])
-                    loss = loss_fn(pred, dataset["train_label"].long())
-                    if torch.isnan(loss):
-                        raise ValueError("NaN loss")
-                    loss.backward()
-                    return loss
-                try:
-                    optimizer.step(closure)
-                except ValueError:
-                    logger.warning("NaN at affine step %d. Reverting.", step)
-                    model.load_state_dict(pre_state)
-                    break
-        except Exception as e:
-            logger.warning("Affine fine-tuning failed: %s. Reverting.", e)
-            model.load_state_dict(pre_state)
+            dataset_fit = {
+                "train_input": dataset["train_input"],
+                "train_label": dataset["train_label"].long(),
+                "test_input": dataset["test_input"],
+                "test_label": dataset["test_label"].long(),
+            }
+            model.fit(
+                dataset_fit, opt="LBFGS", lr=AFFINE_LR,
+                steps=AFFINE_FINETUNE_STEPS,
+                loss_fn=nn.CrossEntropyLoss(),
+                update_grid=False,
+            )
+        except (TypeError, AttributeError, RuntimeError):
+            try:
+                optimizer = torch.optim.LBFGS(model.parameters(), lr=AFFINE_LR, max_iter=10)
+                loss_fn = nn.CrossEntropyLoss()
+                for step in range(AFFINE_FINETUNE_STEPS):
+                    def closure():
+                        optimizer.zero_grad()
+                        pred = model(dataset["train_input"])
+                        loss = loss_fn(pred, dataset["train_label"].long())
+                        if torch.isnan(loss):
+                            raise ValueError("NaN loss")
+                        loss.backward()
+                        return loss
+                    try:
+                        optimizer.step(closure)
+                    except ValueError:
+                        logger.warning("NaN at affine step %d. Reverting.", step)
+                        model.load_state_dict(pre_state)
+                        break
+            except Exception as e:
+                logger.warning("Affine fine-tuning failed: %s. Reverting.", e)
+                model.load_state_dict(pre_state)
+    else:
+        print("  Skipping affine fine-tuning (no edges were symbolified).")
 
     _save_plot(model, "kan_symbolified_network.png")
 
