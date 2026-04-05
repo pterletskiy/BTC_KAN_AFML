@@ -8,16 +8,20 @@ feature scaling, and feature selection (AFML Chapter 8).
 Each function takes train/test data and returns transformed data,
 ensuring zero leakage.
 
-Feature selection uses Mean Decrease Accuracy (MDA) with purged inner
-cross-validation (AFML §8.4). A feature is selected if permuting it
-decreases out-of-sample accuracy (MDA > 0). If the surviving pool
-exceeds a size cap, the top features by MDA value are kept.
+Feature selection uses Multi-Model Mean Decrease Accuracy (MDA) with
+purged inner cross-validation (AFML §8.4). Permutation importance is
+computed using both a Random Forest (captures nonlinear interactions)
+and a Logistic Regression (captures linear effects), then averaged.
+This prevents selection bias toward any single model architecture.
+A feature is selected if its averaged MDA > 0 and it ranks in the
+top K by averaged MDA value.
 """
 
 import logging
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import RobustScaler
 from statsmodels.tsa.stattools import adfuller
@@ -34,10 +38,10 @@ FFD_THRESHOLD = 1e-4                 # weight truncation threshold τ
 FFD_ADF_SIGNIFICANCE = 0.05          # ADF rejection threshold
 FFD_MAX_LOOKBACK = 200               # hard cap on FFD lookback length
 
-# Feature selection (MDA with purged inner CV)
+# Feature selection (multi-model MDA with purged inner CV)
 MDA_N_ESTIMATORS = 500
 MDA_N_INNER_FOLDS = 3
-MDA_TOP_K_FRAC = 1.0               # 1.0 = select all with MDA > 0; float = cap at this fraction
+MDA_TOP_K_FRAC = 0.4                 # cap at top 40% of total features
 
 # Minimum features to keep (hard floor)
 MIN_FEATURES = 5
@@ -281,22 +285,31 @@ def scale_features(
 
 
 # =====================================================================
-# Feature Selection — MDA (AFML Chapter 8)
+# Feature Selection — Multi-Model MDA (AFML Chapter 8)
 # =====================================================================
-def compute_mda(
+def _compute_mda_single_model(
+    clf,
     X_train: pd.DataFrame,
     y_train: pd.Series,
     w_train: pd.Series,
     t1_train: pd.Series,
 ) -> pd.Series:
-    """Mean Decrease Accuracy (AFML Chapter 8.4).
+    """Compute MDA using a single classifier via purged inner CV.
 
-    Uses internal purged K-fold CV on the training set to compute
-    out-of-sample permutation importance. A feature's MDA is the
-    average drop in F1 when its values are randomly shuffled.
+    This is the core permutation importance loop. Called once per
+    inner model (RF and Logistic Regression).
 
-    MDA > 0: permuting this feature hurts the model → it contributes.
-    MDA ≤ 0: permuting this feature doesn't hurt (or helps) → noise.
+    Parameters
+    ----------
+    clf : sklearn estimator (unfitted)
+        Classifier to use. Will be cloned/refitted per inner fold.
+    X_train, y_train, w_train, t1_train : pd.DataFrame / pd.Series
+        Training data for the current outer CPCV fold.
+
+    Returns
+    -------
+    pd.Series
+        Mean MDA per feature, sorted descending.
     """
     n_folds = MDA_N_INNER_FOLDS
     T = len(X_train)
@@ -340,27 +353,76 @@ def compute_mda(
         X_te = X_train.iloc[inner_test_idx]
         y_te = y_train.iloc[inner_test_idx]
 
-        clf = RandomForestClassifier(
-            n_estimators=MDA_N_ESTIMATORS,
-            class_weight="balanced",
-            random_state=42,
-            n_jobs=-1,
-        )
-        clf.fit(X_tr, y_tr, sample_weight=w_tr)
+        # clone and fit the classifier
+        from sklearn.base import clone
+        model = clone(clf)
+        model.fit(X_tr, y_tr, sample_weight=w_tr)
 
-        baseline_f1 = f1_score(y_te, clf.predict(X_te), average="macro")
+        baseline_f1 = f1_score(y_te, model.predict(X_te), average="macro")
 
         fold_mda = {}
         for col in X_train.columns:
             X_te_perm = X_te.copy()
             X_te_perm[col] = rng.permutation(X_te_perm[col].values)
-            perm_f1 = f1_score(y_te, clf.predict(X_te_perm), average="macro")
+            perm_f1 = f1_score(y_te, model.predict(X_te_perm), average="macro")
             fold_mda[col] = baseline_f1 - perm_f1
 
         mda_scores[f"fold_{fold_i}"] = pd.Series(fold_mda)
 
-    avg_mda = mda_scores.mean(axis=1).rename("MDA")
-    return avg_mda.sort_values(ascending=False)
+    avg_mda = mda_scores.mean(axis=1)
+    return avg_mda
+
+
+def compute_multi_model_mda(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    w_train: pd.Series,
+    t1_train: pd.Series,
+) -> pd.DataFrame:
+    """Multi-Model MDA: average permutation importance from RF and LR.
+
+    Computes MDA separately using a Random Forest (captures nonlinear
+    interactions and ensemble effects) and a Logistic Regression
+    (captures linear relationships). The final MDA is the average of
+    both, ensuring no single model architecture dominates feature
+    selection.
+
+    A feature ranks high only if it demonstrably contributes to BOTH
+    a linear and nonlinear classifier, or contributes very strongly
+    to one of them.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: MDA_RF, MDA_LR, MDA (average). Sorted by MDA descending.
+    """
+    # ── Random Forest MDA ─────────────────────────────────────────────
+    rf_clf = RandomForestClassifier(
+        n_estimators=MDA_N_ESTIMATORS,
+        class_weight="balanced",
+        random_state=42,
+        n_jobs=-1,
+    )
+    print("[preprocessing] Computing MDA (Random Forest)...")
+    mda_rf = _compute_mda_single_model(rf_clf, X_train, y_train, w_train, t1_train)
+
+    # ── Logistic Regression MDA ───────────────────────────────────────
+    lr_clf = LogisticRegression(
+        class_weight="balanced",
+        max_iter=1000,
+        random_state=42,
+    )
+    print("[preprocessing] Computing MDA (Logistic Regression)...")
+    mda_lr = _compute_mda_single_model(lr_clf, X_train, y_train, w_train, t1_train)
+
+    # ── Average ───────────────────────────────────────────────────────
+    results = pd.DataFrame({
+        "MDA_RF": mda_rf,
+        "MDA_LR": mda_lr,
+    })
+    results["MDA"] = results[["MDA_RF", "MDA_LR"]].mean(axis=1)
+
+    return results.sort_values("MDA", ascending=False)
 
 
 def select_features(
@@ -370,20 +432,24 @@ def select_features(
     t1_train: pd.Series,
     top_k_frac: float | None = None,
 ) -> list[str]:
-    """Select features via MDA with purged inner CV (AFML §8.4).
+    """Select features via multi-model MDA (AFML §8.4).
 
-    Selection logic:
-      1. Compute MDA for all features.
-      2. Keep features with MDA > 0 (permuting them hurts the ensemble).
-      3. If top_k_frac is set and the pool exceeds that fraction of
-         total features, take the top K by MDA value.
-      4. Minimum floor of MIN_FEATURES enforced.
+    Two-stage selection:
+      1. Compute averaged MDA (RF + Logistic Regression).
+         Keep features with MDA > 0 (permuting them hurts at least
+         one model type on average).
+      2. Cap at top_k_frac of total features (by MDA rank).
+         Minimum floor of MIN_FEATURES enforced.
+
+    Using both a linear and nonlinear model for permutation importance
+    prevents selection bias toward any single architecture. Features
+    must demonstrate value across model families to rank high.
 
     Parameters
     ----------
     top_k_frac : float, optional
-        If set, cap selection at this fraction of total features.
-        None (default) = select all features with MDA > 0.
+        Cap selection at this fraction of total features.
+        Default from MDA_TOP_K_FRAC module constant.
 
     Returns
     -------
@@ -395,13 +461,12 @@ def select_features(
 
     n_total = X_train.shape[1]
 
-    # ── Compute MDA ───────────────────────────────────────────────────
-    print("[preprocessing] Computing MDA...")
-    mda = compute_mda(X_train, y_train, w_train, t1_train)
+    # ── Compute multi-model MDA ───────────────────────────────────────
+    mda_results = compute_multi_model_mda(X_train, y_train, w_train, t1_train)
 
-    # ── Select: all features with MDA > 0 ─────────────────────────────
-    mda_positive = mda[mda > 0]
-    mda_eliminated = mda[mda <= 0]
+    # ── Select: all features with averaged MDA > 0 ────────────────────
+    mda_positive = mda_results[mda_results["MDA"] > 0]
+    mda_eliminated = mda_results[mda_results["MDA"] <= 0]
     n_passed = len(mda_positive)
     n_eliminated = len(mda_eliminated)
 
@@ -411,34 +476,34 @@ def select_features(
             "Only %d features with MDA > 0. Taking top %d by MDA value.",
             n_passed, MIN_FEATURES,
         )
-        selected_series = mda.head(MIN_FEATURES)
+        selected_df = mda_results.head(MIN_FEATURES)
     else:
-        selected_series = mda_positive
+        selected_df = mda_positive
 
-    # ── Optional cap via top_k_frac ───────────────────────────────────
+    # ── Cap via top_k_frac ────────────────────────────────────────────
     if top_k_frac is not None:
         max_features = max(int(n_total * top_k_frac), MIN_FEATURES)
-        if len(selected_series) > max_features:
-            selected_series = selected_series.head(max_features)
+        if len(selected_df) > max_features:
+            selected_df = selected_df.head(max_features)
             logger.info(
                 "MDA pool capped: %d → %d features (top_k_frac=%.2f).",
                 n_passed, max_features, top_k_frac,
             )
 
-    selected = sorted(selected_series.index.tolist())
+    selected = sorted(selected_df.index.tolist())
 
     # ── Log full rankings ─────────────────────────────────────────────
-    rankings = pd.DataFrame({"MDA": mda})
-    rankings["selected"] = rankings.index.isin(selected)
-    rankings = rankings.sort_values("MDA", ascending=False)
+    mda_results["selected"] = mda_results.index.isin(selected)
 
-    logger.info("Feature selection rankings:\n%s", rankings.to_string())
+    logger.info(
+        "Feature selection rankings:\n%s", mda_results.to_string()
+    )
 
     print(
-        f"[preprocessing] MDA feature selection: {n_passed}/{n_total} passed "
+        f"[preprocessing] Multi-model MDA: {n_passed}/{n_total} passed "
         f"(MDA > 0), {n_eliminated} eliminated"
     )
-    if top_k_frac is not None and n_passed > len(selected):
+    if n_passed > len(selected):
         print(f"  Capped at {len(selected)} features (top_k_frac={top_k_frac})")
     print(f"  Selected ({len(selected)}): {selected}")
     dropped = sorted(set(X_train.columns) - set(selected))
@@ -479,8 +544,8 @@ def preprocess_fold(
     ffd_columns : list[str]
         Columns requiring FFD transformation.
     top_k_frac : float, optional
-        Cap selection at this fraction of total features. None = select
-        all features with MDA > 0 (no cap).
+        Cap selection at this fraction of total features. Default from
+        MDA_TOP_K_FRAC module constant.
     skip_selection : bool
         If True, skip feature selection and return all columns.
         Used when only AR Logistic is being evaluated.

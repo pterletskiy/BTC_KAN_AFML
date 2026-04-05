@@ -17,8 +17,12 @@ and B-spline basis.
 """
 
 import copy
+import io
 import logging
 import os
+import re
+import sys
+import threading
 
 import numpy as np
 import pandas as pd
@@ -72,9 +76,16 @@ PYKAN_MIN_ACCURACY = 0.53          # must beat random (50%) by a margin
 PRUNE_THRESHOLD = 0.01
 
 SYMBOLIC_LIBRARY = [
-    "x", "x^2", "x^3", "exp", "log", "sqrt", "tanh", "sin", "abs",
-    "sigmoid", "x*abs(x)", "1/x", "0",
+    "x", "x^2", "x^3", "x^4",     # polynomials
+    "exp", "log", "sqrt",           # standard transforms
+    "tanh", "sin", "cos",           # bounded nonlinearities
+    "abs", "sgn",                   # piecewise
+    "arctan",                       # bounded monotonic
+    "0",                            # constant (zero)
 ]
+# NOTE: 'sigmoid' and 'x*abs(x)' are NOT in PyKAN's internal
+# SYMBOLIC_LIB and cause KeyError. '1/x' can cause division-by-zero
+# issues. Only use names that PyKAN recognizes natively.
 SYMBOLIC_R2_THRESHOLD = 0.3        # lowered from 0.5 to see what R² values
                                    # actually exist before filtering too aggressively
 SYMBOLIC_TOPK = 5
@@ -188,7 +199,46 @@ def select_extraction_fold(cpcv_results: dict) -> tuple[int, dict]:
 
 
 # =====================================================================
-# 2. Prepare extraction data
+# 2. Rank features by CPCV selection frequency
+# =====================================================================
+def rank_features_by_stability(cpcv_results: dict) -> list[tuple[str, float]]:
+    """Rank features by how often they were selected across CPCV folds.
+
+    Returns a list of (feature_name, selection_frequency) sorted descending.
+    Features selected in more folds are more stable/important.
+    """
+    predictions = cpcv_results["predictions"]
+    feature_counts = {}
+    total_folds = 0
+
+    for key, pred in predictions.items():
+        model_name = key[0]
+        if model_name != "kan":
+            continue
+
+        prep_info = pred.get("prep_info", {})
+        selected = prep_info.get("selected_features", [])
+        if not selected:
+            continue
+
+        total_folds += 1
+        for feat in selected:
+            feature_counts[feat] = feature_counts.get(feat, 0) + 1
+
+    if total_folds == 0:
+        logger.warning("No KAN folds found for feature ranking.")
+        return []
+
+    ranked = [
+        (feat, count / total_folds)
+        for feat, count in feature_counts.items()
+    ]
+    ranked.sort(key=lambda x: x[1], reverse=True)
+    return ranked
+
+
+# =====================================================================
+# 3. Prepare extraction data
 # =====================================================================
 def prepare_extraction_data(
     X: pd.DataFrame,
@@ -198,11 +248,19 @@ def prepare_extraction_data(
     cpcv_results: dict,
     best_split_idx: int,
     prep_info: dict,
+    feature_subset: list[str] | None = None,
 ) -> tuple[dict, list[str]]:
     """Reconstruct preprocessed data for the extraction fold.
 
     Applies tanh normalization to match both efficient-kan and PyKAN
     input preprocessing.
+
+    Parameters
+    ----------
+    feature_subset : list of str, optional
+        If provided, only these features are used for symbolic extraction.
+        This allows extracting simpler formulas with fewer variables,
+        independent of the CPCV feature selection.
     """
     splits = generate_cpcv_splits(X, t1)
     train_idx, _ = splits[best_split_idx]
@@ -231,6 +289,23 @@ def prepare_extraction_data(
         )
 
     X_train = X_train[selected_features]
+
+    # override with explicit feature subset for symbolic extraction
+    if feature_subset is not None:
+        # only keep features that exist in the data
+        valid_subset = [f for f in feature_subset if f in X_train.columns]
+        if len(valid_subset) < len(feature_subset):
+            missing = set(feature_subset) - set(valid_subset)
+            logger.warning("Feature subset: %d missing features: %s", len(missing), missing)
+        if valid_subset:
+            X_train = X_train[valid_subset]
+            selected_features = valid_subset
+            logger.info(
+                "Feature subset applied: %d → %d features.",
+                len(selected_features), len(valid_subset),
+            )
+        else:
+            logger.warning("No valid features in subset. Using all selected features.")
 
     # 80/20 split (same as pipeline)
     cal_boundary = int(len(X_train) * 0.8)
@@ -648,6 +723,7 @@ def symbolify_network(model, dataset: dict):
     total_edges = 0
     symbolified_edges = 0
     skipped_edges = 0
+    fallback_count = 0               # count edges that needed PyKAN default lib
     r2_values = []               # collect all R² values for diagnostics
 
     for l in range(len(model.width) - 1):
@@ -668,45 +744,188 @@ def symbolify_network(model, dataset: dict):
                     suggestions = model.suggest_symbolic(
                         l, i, j, topk=SYMBOLIC_TOPK, lib=SYMBOLIC_LIBRARY,
                     )
-                except Exception as e:
-                    # PRINT first 5 errors to diagnose why all edges are skipped
-                    if skipped_edges < 5:
-                        print(
-                            f"    ⚠ suggest_symbolic({l},{i},{j}) error: "
-                            f"{type(e).__name__}: {e}"
+                except (KeyError, Exception) as e:
+                    # custom library may contain names PyKAN doesn't know;
+                    # fall back to PyKAN's built-in default library
+                    try:
+                        suggestions = model.suggest_symbolic(
+                            l, i, j, topk=SYMBOLIC_TOPK,
                         )
-                    logger.debug("suggest_symbolic(%d,%d,%d) failed: %s", l, i, j, e)
-                    skipped_edges += 1
-                    continue
+                        if fallback_count < 3:
+                            print(
+                                f"    ℹ Edge ({l},{i},{j}): custom lib failed "
+                                f"({type(e).__name__}), used PyKAN defaults."
+                            )
+                        fallback_count += 1
+                    except Exception as e2:
+                        if skipped_edges < 5:
+                            print(
+                                f"    ⚠ suggest_symbolic({l},{i},{j}) error: "
+                                f"{type(e2).__name__}: {e2}"
+                            )
+                        logger.debug("suggest_symbolic(%d,%d,%d) failed: %s", l, i, j, e2)
+                        skipped_edges += 1
+                        continue
 
                 if suggestions is None:
                     skipped_edges += 1
                     continue
 
                 # ── safe parsing of suggestions ───────────────────
+                # PyKAN's suggest_symbolic() return type varies by version:
+                #   - Some versions: DataFrame (rows = candidates)
+                #   - Some versions: flat tuple (fn_name, r2, r2_loss, ...)
+                #   - Some versions: nested tuple of tuples
+                # We handle all cases and always skip the constant "0".
                 best_fn = None
                 best_r2 = 0.0
 
                 try:
-                    if hasattr(suggestions, "iloc"):
+                    # debug: dump full structure for first 2 edges
+                    if total_edges <= 2:
+                        print(
+                            f"    [DEBUG] Edge ({l},{i},{j}): "
+                            f"type={type(suggestions).__name__}, "
+                            f"repr={repr(suggestions)[:200]}"
+                        )
+
+                    # ── CASE 1: DataFrame ──────────────────────────────
+                    if hasattr(suggestions, "to_dict"):
+                        records = suggestions.to_dict("records")
+                        if not records:
+                            skipped_edges += 1
+                            continue
+
+                        sample_keys = list(records[0].keys())
+                        fn_key = sample_keys[0]
+                        r2_key = None
+                        for k in sample_keys:
+                            if "r2" in str(k).lower() and "loss" not in str(k).lower():
+                                r2_key = k
+                                break
+
+                        for rec in records:
+                            fn_name = str(rec.get(fn_key, ""))
+                            if fn_name == "0":
+                                continue
+                            if r2_key is not None:
+                                try:
+                                    r2_val = float(rec[r2_key])
+                                except (ValueError, TypeError):
+                                    r2_val = 0.0
+                                r2_val = max(0.0, min(1.0, r2_val))
+                            else:
+                                r2_val = 0.0
+                            if r2_val > best_r2:
+                                best_r2 = r2_val
+                                best_fn = fn_name
+
+                    # ── CASE 2: flat tuple (fn_name, r2, ...) ─────────
+                    elif isinstance(suggestions, (tuple, list)):
                         if len(suggestions) == 0:
                             skipped_edges += 1
                             continue
-                        best_fn = str(suggestions.iloc[0, 0])
-                        r2_col = [
-                            c for c in suggestions.columns
-                            if "r2" in c.lower() and "loss" not in c.lower()
-                        ]
-                        if r2_col:
-                            raw_r2 = suggestions.iloc[0][r2_col[0]]
-                            best_r2 = _safe_float(raw_r2, default=0.0)
-                    elif isinstance(suggestions, (list, tuple)):
-                        if len(suggestions) == 0:
+
+                        first = suggestions[0]
+
+                        if isinstance(first, str):
+                            # flat tuple: ('cos', <fitted_lambdas>, R², complexity)
+                            # index: [0]=name, [1]=lambdas, [2]=R², [3]=complexity
+                            fn_name = first
+                            if fn_name != "0" and len(suggestions) > 2:
+                                try:
+                                    r2_val = float(suggestions[2])
+                                except (ValueError, TypeError):
+                                    r2_val = 0.0
+                                r2_val = max(0.0, min(1.0, r2_val))
+                                best_fn = fn_name
+                                best_r2 = r2_val
+                            elif fn_name == "0":
+                                # "0" won by total_loss due to zero complexity,
+                                # but non-constant functions may have excellent R².
+                                # Brute-force: try each candidate via fix_symbolic,
+                                # capture the R² PyKAN prints, keep the best.
+                                original_state = copy.deepcopy(model.state_dict())
+                                best_direct_fn = None
+                                best_direct_r2 = 0.0
+
+                                for candidate in SYMBOLIC_LIBRARY:
+                                    if candidate == "0":
+                                        continue
+                                    try:
+                                        # capture stdout to extract R²
+                                        old_stdout = sys.stdout
+                                        sys.stdout = buffer = io.StringIO()
+                                        try:
+                                            model.fix_symbolic(l, i, j, candidate)
+                                            output = buffer.getvalue()
+                                        finally:
+                                            sys.stdout = old_stdout
+
+                                        # parse "r2 is 0.XXXX" from PyKAN's output
+                                        r2_match = re.search(r"r2 is ([\d.eE+-]+)", output)
+                                        if r2_match:
+                                            cand_r2 = float(r2_match.group(1))
+                                            cand_r2 = max(0.0, min(1.0, cand_r2))
+                                            if cand_r2 > best_direct_r2:
+                                                best_direct_r2 = cand_r2
+                                                best_direct_fn = candidate
+
+                                        # restore original state for next candidate
+                                        model.load_state_dict(original_state)
+                                    except Exception:
+                                        model.load_state_dict(original_state)
+                                        continue
+
+                                if best_direct_fn is not None and best_direct_r2 >= SYMBOLIC_R2_THRESHOLD:
+                                    best_fn = best_direct_fn
+                                    best_r2 = best_direct_r2
+
+                        elif isinstance(first, (tuple, list)):
+                            # nested: (('cos', lambdas, R², complexity), ...)
+                            for entry in suggestions:
+                                if not isinstance(entry, (tuple, list)) or len(entry) < 3:
+                                    continue
+                                fn_name = str(entry[0])
+                                if fn_name == "0":
+                                    continue
+                                try:
+                                    r2_val = float(entry[2])
+                                except (ValueError, TypeError):
+                                    r2_val = 0.0
+                                r2_val = max(0.0, min(1.0, r2_val))
+                                if r2_val > best_r2:
+                                    best_r2 = r2_val
+                                    best_fn = fn_name
+
+                        elif hasattr(first, "to_dict"):
+                            # tuple containing a DataFrame as first element
+                            records = first.to_dict("records")
+                            sample_keys = list(records[0].keys())
+                            fn_key = sample_keys[0]
+                            r2_key = None
+                            for k in sample_keys:
+                                if "r2" in str(k).lower() and "loss" not in str(k).lower():
+                                    r2_key = k
+                                    break
+                            for rec in records:
+                                fn_name = str(rec.get(fn_key, ""))
+                                if fn_name == "0":
+                                    continue
+                                if r2_key:
+                                    try:
+                                        r2_val = float(rec[r2_key])
+                                    except (ValueError, TypeError):
+                                        r2_val = 0.0
+                                    r2_val = max(0.0, min(1.0, r2_val))
+                                else:
+                                    r2_val = 0.0
+                                if r2_val > best_r2:
+                                    best_r2 = r2_val
+                                    best_fn = fn_name
+                        else:
                             skipped_edges += 1
                             continue
-                        best_fn = str(suggestions[0][0])
-                        if len(suggestions[0]) > 2:
-                            best_r2 = _safe_float(suggestions[0][2], default=0.0)
                     else:
                         skipped_edges += 1
                         continue
@@ -753,7 +972,7 @@ def symbolify_network(model, dataset: dict):
     sym_rate = symbolified_edges / max(total_edges, 1)
     print(
         f"  Symbolified: {symbolified_edges}/{total_edges} edges ({sym_rate:.0%})"
-        f"  [skipped: {skipped_edges}]"
+        f"  [skipped: {skipped_edges}, fallback to defaults: {fallback_count}]"
     )
 
     # ── R² diagnostic summary ─────────────────────────────────────────
@@ -844,9 +1063,26 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
         logger.error("Formula parsing failed: %s", e)
         return _empty_result(model, feature_names)
 
-    # substitute x_0, x_1, ... with actual feature names
+    # substitute x_0, x_1, ... (or x_1, x_2, ...) with actual feature names.
+    # PyKAN uses 1-based indexing in some versions (x_1 through x_n)
+    # while others use 0-based (x_0 through x_{n-1}).
+    # Detect which convention by checking if x_0 or x_{n} exists in the formula.
+    all_symbols = set()
+    for expr in [logit_bearish, logit_bullish]:
+        if hasattr(expr, "free_symbols"):
+            all_symbols |= expr.free_symbols
+
+    symbol_names = {str(s) for s in all_symbols}
+    has_x0 = "x_0" in symbol_names
+    has_xn = f"x_{len(feature_names)}" in symbol_names
+
+    # if x_{n} exists but x_0 doesn't → 1-based indexing
+    offset = 1 if (has_xn and not has_x0) else 0
+    if offset == 1:
+        logger.info("Detected PyKAN 1-based variable naming (x_1..x_%d).", len(feature_names))
+
     for i, name in enumerate(feature_names):
-        old = sympy.Symbol(f"x_{i}")
+        old = sympy.Symbol(f"x_{i + offset}")
         new = sympy.Symbol(name)
         try:
             logit_bearish = logit_bearish.subs(old, new)
@@ -854,15 +1090,33 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
         except (AttributeError, TypeError):
             pass
 
-    try:
-        decision = sympy.simplify(logit_bullish - logit_bearish)
-    except Exception:
-        decision = logit_bullish - logit_bearish
+    # ── simplification with timeout (sympy can hang on complex expressions) ──
+    def _simplify_with_timeout(expr, timeout_sec=30):
+        """Run sympy.simplify with a timeout. Returns original expr if timeout."""
+        result = [expr]  # mutable container for thread result
 
+        def _worker():
+            try:
+                result[0] = sympy.simplify(expr)
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(timeout=timeout_sec)
+        if t.is_alive():
+            logger.warning("sympy.simplify timed out after %ds. Using unsimplified.", timeout_sec)
+            print(f"    ⚠ sympy.simplify timed out after {timeout_sec}s. Skipping.")
+        return result[0]
+
+    decision = logit_bullish - logit_bearish
+    decision = _simplify_with_timeout(decision, timeout_sec=30)
+
+    # nsimplify for cleaner rational numbers (also with timeout protection)
     try:
-        logit_bearish = sympy.nsimplify(logit_bearish, tolerance=1e-4)
-        logit_bullish = sympy.nsimplify(logit_bullish, tolerance=1e-4)
-        decision = sympy.nsimplify(decision, tolerance=1e-4)
+        logit_bearish = sympy.nsimplify(logit_bearish, tolerance=1e-3, rational=False)
+        logit_bullish = sympy.nsimplify(logit_bullish, tolerance=1e-3, rational=False)
+        decision = sympy.nsimplify(decision, tolerance=1e-3, rational=False)
     except Exception:
         pass
 
@@ -916,12 +1170,21 @@ def run_symbolic_extraction(
     y: pd.Series,
     w: pd.Series,
     t1: pd.Series,
+    n_top_features: int | None = None,
 ) -> dict:
     """Run the full symbolic extraction pipeline (Algorithm 1).
 
     Called from the notebook after CPCV results are available.
     The CPCV pipeline used efficient-kan; this retrains a fresh PyKAN
     on the best fold for symbolic analysis.
+
+    Parameters
+    ----------
+    n_top_features : int, optional
+        If provided, only the top N most stable features (by CPCV selection
+        frequency) are used for symbolic extraction. Recommended values:
+        5-7 for interpretable formulas, 10 for moderate complexity.
+        If None, all features selected by the best fold are used.
     """
     print("=" * 60)
     print("Symbolic Extraction (VIX KAN Paper, Algorithm 1)")
@@ -932,9 +1195,24 @@ def run_symbolic_extraction(
     best_split, prep_info = select_extraction_fold(cpcv_results)
     print(f"  Best fold: split {best_split}")
 
-    # 2. prepare data
+    # 2. rank features and select top N if requested
+    feature_subset = None
+    if n_top_features is not None:
+        ranked = rank_features_by_stability(cpcv_results)
+        if ranked:
+            feature_subset = [f for f, _ in ranked[:n_top_features]]
+            print(f"\n  Feature ranking (top {n_top_features} of {len(ranked)}):")
+            for i, (feat, freq) in enumerate(ranked[:n_top_features]):
+                print(f"    {i+1}. {feat} ({freq:.0%} selection frequency)")
+            if len(ranked) > n_top_features:
+                print(f"    ... ({len(ranked) - n_top_features} features excluded)")
+        else:
+            print("  ⚠ Could not rank features. Using all selected features.")
+
+    # 3. prepare data
     dataset, feature_names = prepare_extraction_data(
         X, y, w, t1, cpcv_results, best_split, prep_info,
+        feature_subset=feature_subset,
     )
     print(
         f"  Data: {dataset['train_input'].shape[0]} train, "
@@ -962,6 +1240,11 @@ def run_symbolic_extraction(
     print(f"\n{'='*60}")
     print("Results")
     print(f"{'='*60}")
+    if n_top_features is not None:
+        print(f"  Features used:          {n_top_features} (top by CPCV stability)")
+    else:
+        print(f"  Features used:          {len(feature_names)} (all selected)")
+    print(f"  Feature names:          {feature_names}")
     print(f"  Pre-symbolic accuracy:  {result['pre_symbolic_accuracy']:.4f}")
     print(f"  Post-symbolic accuracy: {result['post_symbolic_accuracy']:.4f}")
     print(f"  Symbolification rate:   {result['symbolification_rate']:.0%}")
