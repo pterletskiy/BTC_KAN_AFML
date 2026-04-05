@@ -156,8 +156,19 @@ def _log_diagnostic(label: str, model, X_train, y_train, X_val, y_val):
 # =====================================================================
 # 1. Select best extraction fold
 # =====================================================================
-def select_extraction_fold(cpcv_results: dict) -> tuple[int, dict]:
-    """Identify the CPCV fold where KAN achieved best F1 macro."""
+def select_extraction_fold(
+    cpcv_results: dict,
+    fold_selection: str | int = "best",
+) -> tuple[int, dict]:
+    """Select which CPCV fold to use for symbolic extraction.
+
+    Parameters
+    ----------
+    fold_selection : str or int
+        - "best": fold with highest KAN F1 macro (default)
+        - "last": last fold (most recent data, closest to rolling window)
+        - int: specific fold index
+    """
     predictions = cpcv_results["predictions"]
     n_splits = cpcv_results["n_splits"]
     n_seeds = cpcv_results["n_seeds"]
@@ -188,14 +199,32 @@ def select_extraction_fold(cpcv_results: dict) -> tuple[int, dict]:
         for key, pred in predictions.items():
             return key[1], pred.get("prep_info", {})
 
-    best_split = max(split_f1s, key=split_f1s.get)
+    # log all fold F1s for reference
     logger.info(
-        "Best KAN fold: split %d (F1=%.4f). All: %s",
-        best_split, split_f1s[best_split],
+        "Fold F1 scores: %s",
         {k: f"{v:.4f}" for k, v in split_f1s.items()},
     )
 
-    return best_split, split_prep[best_split]
+    # select fold based on strategy
+    if isinstance(fold_selection, int):
+        selected = fold_selection
+        if selected not in split_f1s:
+            logger.warning("Fold %d not found. Falling back to best fold.", selected)
+            selected = max(split_f1s, key=split_f1s.get)
+        reason = f"manual (F1={split_f1s.get(selected, np.nan):.4f})"
+
+    elif fold_selection == "last":
+        selected = max(split_f1s.keys())
+        reason = f"last/most recent (F1={split_f1s[selected]:.4f})"
+
+    else:  # "best"
+        selected = max(split_f1s, key=split_f1s.get)
+        reason = f"best F1 (F1={split_f1s[selected]:.4f})"
+
+    logger.info("Selected fold: split %d — %s", selected, reason)
+    print(f"  Fold selection: split {selected} — {reason}")
+
+    return selected, split_prep[selected]
 
 
 # =====================================================================
@@ -342,19 +371,33 @@ def prepare_extraction_data(
 # =====================================================================
 # 3. Train PyKAN (same architecture, staged training)
 # =====================================================================
-def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
+def train_pykan(dataset: dict, n_features: int, n_classes: int = 2, use_multkan: bool = False):
     """Train a fresh PyKAN model for symbolic extraction.
 
     Uses a data-aware architecture: hidden width is chosen so that the
     total parameter count stays well below the number of training samples,
     preventing LBFGS memorization.
 
+    Parameters
+    ----------
+    use_multkan : bool
+        If True, use MultKAN (KAN 2.0) with multiplication nodes instead
+        of standard additive KAN. MultKAN can discover multiplicative
+        relationships (e.g., rsi * stoch_k) that standard KAN cannot
+        represent without fragile log/exp decomposition. Same symbolic
+        extraction pipeline works for both.
+
     Phase 1: Adam with weight decay + input noise (generalization)
     Grid extension: only if dataset is large enough
     Phase 2a: LBFGS warmup (short, no regularization)
     Phase 2b: LBFGS sparsity (short, gentle L1 + entropy)
     """
-    from kan import KAN
+    if use_multkan:
+        from kan import MultKAN as KANClass
+        model_type = "MultKAN"
+    else:
+        from kan import KAN as KANClass
+        model_type = "KAN"
 
     X_t = dataset["train_input"]
     y_t = dataset["train_label"].long()
@@ -379,7 +422,7 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
     total_params_est = total_edges * params_per_edge
 
     print(
-        f"    Data-aware architecture: {width} "
+        f"    {model_type} data-aware architecture: {width} "
         f"({total_edges} edges, ~{total_params_est} params for {n_train} samples, "
         f"ratio={n_train/max(total_params_est,1):.1f}x)"
     )
@@ -390,7 +433,10 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
             f"Memorization is very likely."
         )
 
-    model = KAN(width=width, grid=PYKAN_GRID_INIT, k=KAN_K, seed=42)
+    if use_multkan:
+        model = KANClass(width=width, grid=PYKAN_GRID_INIT, k=KAN_K, seed=42, mult_arity=2)
+    else:
+        model = KANClass(width=width, grid=PYKAN_GRID_INIT, k=KAN_K, seed=42)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -580,7 +626,7 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2):
     )
 
     model._pre_symbolic_accuracy = val_acc
-    logger.info("PyKAN trained. Val accuracy: %.4f, width: %s", val_acc, width)
+    logger.info("%s trained. Val accuracy: %.4f, width: %s", model_type, val_acc, width)
     return model
 
 
@@ -1171,6 +1217,8 @@ def run_symbolic_extraction(
     w: pd.Series,
     t1: pd.Series,
     n_top_features: int | None = None,
+    use_multkan: bool = False,
+    fold_selection: str | int = "best",
 ) -> dict:
     """Run the full symbolic extraction pipeline (Algorithm 1).
 
@@ -1185,15 +1233,26 @@ def run_symbolic_extraction(
         frequency) are used for symbolic extraction. Recommended values:
         5-7 for interpretable formulas, 10 for moderate complexity.
         If None, all features selected by the best fold are used.
+    use_multkan : bool
+        If True, use MultKAN (KAN 2.0) with multiplication nodes.
+        MultKAN can discover multiplicative feature interactions
+        (e.g., rsi * stoch_k) that standard KAN cannot represent
+        efficiently. Default: False (standard additive KAN).
+    fold_selection : str or int
+        Which CPCV fold to use for extraction:
+        - "best": fold with highest KAN F1 macro (default)
+        - "last": last fold (most recent data, rolling-window style)
+        - int: specific fold index (e.g., 0, 5, 14)
     """
+    model_label = "MultKAN" if use_multkan else "PyKAN"
     print("=" * 60)
     print("Symbolic Extraction (VIX KAN Paper, Algorithm 1)")
-    print("  CPCV model: efficient-kan | Extraction model: PyKAN")
+    print(f"  CPCV model: efficient-kan | Extraction model: {model_label}")
     print("=" * 60)
 
     # 1. select best fold
-    best_split, prep_info = select_extraction_fold(cpcv_results)
-    print(f"  Best fold: split {best_split}")
+    # 1. select fold
+    best_split, prep_info = select_extraction_fold(cpcv_results, fold_selection=fold_selection)
 
     # 2. rank features and select top N if requested
     feature_subset = None
@@ -1220,9 +1279,9 @@ def run_symbolic_extraction(
         f"{len(feature_names)} features: {feature_names}"
     )
 
-    # 3. train PyKAN from scratch
-    print("\n  Step 1: Training PyKAN (Adam → grid extend → LBFGS)...")
-    model = train_pykan(dataset, n_features=len(feature_names))
+    # 3. train model from scratch
+    print(f"\n  Step 1: Training {model_label} (Adam → grid extend → LBFGS)...")
+    model = train_pykan(dataset, n_features=len(feature_names), use_multkan=use_multkan)
 
     # 4. prune
     print("\n  Step 2: Pruning...")
@@ -1240,6 +1299,8 @@ def run_symbolic_extraction(
     print(f"\n{'='*60}")
     print("Results")
     print(f"{'='*60}")
+    print(f"  Model:                  {model_label}")
+    print(f"  Fold:                   split {best_split} (selection='{fold_selection}')")
     if n_top_features is not None:
         print(f"  Features used:          {n_top_features} (top by CPCV stability)")
     else:
