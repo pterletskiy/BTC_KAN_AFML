@@ -1092,11 +1092,38 @@ def symbolify_network(model, dataset: dict):
 # =====================================================================
 def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
     """Extract closed-form expressions from the symbolified PyKAN model."""
-    try:
-        formulas = model.symbolic_formula()
-    except Exception as e:
-        logger.error("model.symbolic_formula() failed: %s", e)
-        return _empty_result(model, feature_names)
+    # ── Build explicit sympy variable list for symbolic_formula() ──────
+    # PyKAN internally evaluates expressions containing variable names
+    # (e.g. x1, x2, ...) via sympy.  Without passing a `var=` list,
+    # those names are undefined in its namespace, causing:
+    #   NameError: name 'x1' is not defined
+    n_inputs = len(feature_names)
+    # Try multiple naming conventions that PyKAN might expect internally
+    # Convention 1: x1, x2, ... (no underscore, 1-based)
+    var_symbols_x = [sympy.Symbol(f"x{i+1}") for i in range(n_inputs)]
+    # Convention 2: x_1, x_2, ... (underscore, 1-based)
+    var_symbols_x_ = [sympy.Symbol(f"x_{i+1}") for i in range(n_inputs)]
+    # Convention 3: x_0, x_1, ... (underscore, 0-based)
+    var_symbols_x0 = [sympy.Symbol(f"x_{i}") for i in range(n_inputs)]
+
+    formulas = None
+    used_vars = None
+    for var_candidate in [var_symbols_x, var_symbols_x_, var_symbols_x0]:
+        try:
+            formulas = model.symbolic_formula(var=var_candidate)
+            used_vars = var_candidate
+            break
+        except Exception:
+            continue
+
+    # last resort: try without var= (may work on some PyKAN versions)
+    if formulas is None:
+        try:
+            formulas = model.symbolic_formula()
+            used_vars = None
+        except Exception as e:
+            logger.error("model.symbolic_formula() failed: %s", e)
+            return _empty_result(model, feature_names)
 
     try:
         if isinstance(formulas, (list, tuple)) and len(formulas) > 0:
@@ -1109,32 +1136,41 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
         logger.error("Formula parsing failed: %s", e)
         return _empty_result(model, feature_names)
 
-    # substitute x_0, x_1, ... (or x_1, x_2, ...) with actual feature names.
-    # PyKAN uses 1-based indexing in some versions (x_1 through x_n)
-    # while others use 0-based (x_0 through x_{n-1}).
-    # Detect which convention by checking if x_0 or x_{n} exists in the formula.
-    all_symbols = set()
-    for expr in [logit_bearish, logit_bullish]:
-        if hasattr(expr, "free_symbols"):
-            all_symbols |= expr.free_symbols
+    # ── Substitute placeholder variables with feature names ───────────
+    # If we passed var= explicitly, we know exactly which symbols to sub.
+    # Otherwise, detect the naming convention from the formula.
+    if used_vars is not None:
+        for old_sym, name in zip(used_vars, feature_names):
+            new_sym = sympy.Symbol(name)
+            try:
+                logit_bearish = logit_bearish.subs(old_sym, new_sym)
+                logit_bullish = logit_bullish.subs(old_sym, new_sym)
+            except (AttributeError, TypeError):
+                pass
+    else:
+        # Fallback: detect convention from free symbols
+        all_symbols = set()
+        for expr in [logit_bearish, logit_bullish]:
+            if hasattr(expr, "free_symbols"):
+                all_symbols |= expr.free_symbols
 
-    symbol_names = {str(s) for s in all_symbols}
-    has_x0 = "x_0" in symbol_names
-    has_xn = f"x_{len(feature_names)}" in symbol_names
+        symbol_names = {str(s) for s in all_symbols}
+        has_x0 = "x_0" in symbol_names
+        has_xn = f"x_{len(feature_names)}" in symbol_names
 
-    # if x_{n} exists but x_0 doesn't → 1-based indexing
-    offset = 1 if (has_xn and not has_x0) else 0
-    if offset == 1:
-        logger.info("Detected PyKAN 1-based variable naming (x_1..x_%d).", len(feature_names))
+        # if x_{n} exists but x_0 doesn't → 1-based indexing
+        offset = 1 if (has_xn and not has_x0) else 0
+        if offset == 1:
+            logger.info("Detected PyKAN 1-based variable naming (x_1..x_%d).", len(feature_names))
 
-    for i, name in enumerate(feature_names):
-        old = sympy.Symbol(f"x_{i + offset}")
-        new = sympy.Symbol(name)
-        try:
-            logit_bearish = logit_bearish.subs(old, new)
-            logit_bullish = logit_bullish.subs(old, new)
-        except (AttributeError, TypeError):
-            pass
+        for i, name in enumerate(feature_names):
+            old = sympy.Symbol(f"x_{i + offset}")
+            new = sympy.Symbol(name)
+            try:
+                logit_bearish = logit_bearish.subs(old, new)
+                logit_bullish = logit_bullish.subs(old, new)
+            except (AttributeError, TypeError):
+                pass
 
     # ── simplification with timeout (sympy can hang on complex expressions) ──
     def _simplify_with_timeout(expr, timeout_sec=30):
