@@ -4,7 +4,8 @@ new_version/cache/
 new_version/model/
 backup_old_version/model/
 backup_old_version/PREPROCESSING_COMPARISON.md
-written_report/
+presentation_report/
+test.ipynb
 
 # Cache Files
 __pycache__/
