@@ -1,0 +1,254 @@
+/* ── Feature Universe Table ─────────────────────────────── */
+.feature-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.52em;
+  line-height: 1.35;
+}
+
+.feature-table thead th {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #eee8d5;
+  padding: 0.4em 0.5em;
+  text-align: left;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.15);
+  font-weight: 600;
+}
+
+.feature-table thead tr:first-child th {
+  text-align: center;
+  font-size: 1.15em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.5em;
+}
+
+.feature-table tbody tr:nth-child(odd) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.feature-table tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.feature-table td {
+  padding: 0.2em 0.5em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.feat-name code {
+  color: #f2a900;
+  font-size: 0.95em;
+  background: rgba(242, 169, 0, 0.08);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}
+
+.feat-desc {
+  color: #b0b0b0;
+}
+
+/* ── Info Table (CPCV params) ──────────────────────────── */
+.info-table {
+  border-collapse: collapse;
+  font-size: 0.75em;
+  width: 100%;
+}
+
+.info-table td {
+  padding: 0.35em 0.6em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.info-table td:first-child {
+  color: #b0b0b0;
+  width: 40%;
+}
+
+.info-table td:last-child {
+  color: #eee8d5;
+}
+
+/* ── CPCV Grid ─────────────────────────────────────────── */
+.cpcv-grid {
+  border-collapse: collapse;
+  font-size: 0.6em;
+  width: 100%;
+  text-align: center;
+}
+
+.cpcv-grid th {
+  padding: 0.35em 0.5em;
+  color: #eee8d5;
+  background-color: rgba(255, 255, 255, 0.06);
+  font-weight: 600;
+}
+
+.cpcv-grid td {
+  padding: 0.25em 0.4em;
+  font-size: 0.85em;
+  font-weight: 500;
+}
+
+.cpcv-test {
+  background-color: rgba(242, 169, 0, 0.3);
+  color: #f2a900;
+  border: 1px solid rgba(242, 169, 0, 0.15);
+}
+
+.cpcv-train {
+  background-color: rgba(88, 166, 255, 0.1);
+  color: #7eafc9;
+  border: 1px solid rgba(88, 166, 255, 0.05);
+}
+
+/* ── CPCV Step Cards ───────────────────────────────────── */
+.cpcv-step-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 1em 1.2em;
+  flex: 1;
+}
+
+.cpcv-step-card h3 {
+  color: #f2a900;
+  font-size: 0.85em;
+  margin-top: 0;
+  margin-bottom: 0.5em;
+}
+
+.cpcv-step-card p {
+  font-size: 0.68em;
+  color: #b0b0b0;
+  margin: 0.3em 0;
+}
+
+.cpcv-step-card ul {
+  font-size: 0.65em;
+  color: #d0d0d0;
+  margin: 0.4em 0;
+  padding-left: 1.2em;
+}
+
+.cpcv-step-card li {
+  margin-bottom: 0.2em;
+}
+
+.cpcv-step-card .detail {
+  font-size: 0.6em;
+  color: #888;
+  margin-top: 0.6em;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 0.4em;
+}
+
+/* ── Model Cards ───────────────────────────────────────── */
+.model-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 0.8em 1em;
+  position: relative;
+}
+
+.model-card h3 {
+  color: #eee8d5;
+  font-size: 0.85em;
+  margin: 0.3em 0 0.3em 0;
+}
+
+.model-card p {
+  font-size: 0.62em;
+  color: #b0b0b0;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.model-tag {
+  font-size: 0.5em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.15em 0.5em;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.model-card.baseline .model-tag {
+  background: rgba(150, 150, 150, 0.2);
+  color: #aaa;
+}
+
+.model-card.ensemble .model-tag {
+  background: rgba(46, 204, 113, 0.15);
+  color: #2ecc71;
+}
+
+.model-card.deeplearning .model-tag {
+  background: rgba(242, 169, 0, 0.15);
+  color: #f2a900;
+}
+
+.model-specs {
+  font-size: 0.55em;
+  color: #888;
+  margin-top: 0.5em;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 0.4em;
+  font-family: monospace;
+}
+
+/* ── Pipeline END Slide ────────────────────────────────── */
+.pipe-node {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.8em 1em;
+  min-width: 280px;
+  text-align: center;
+}
+
+.pipe-phase1 { background: rgba(231, 76, 60, 0.05); border-color: rgba(231, 76, 60, 0.2); }
+.pipe-phase2 { background: rgba(88, 166, 255, 0.05); border-color: rgba(88, 166, 255, 0.2); }
+.pipe-phase3 { background: rgba(46, 204, 113, 0.05); border-color: rgba(46, 204, 113, 0.2); }
+
+.pipe-label {
+  font-size: 0.65em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #eee8d5;
+  margin-bottom: 0.6em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pipe-step {
+  font-size: 0.62em;
+  color: #d0d0d0;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: 0.4em 0.6em;
+  margin: 0.2em 0;
+}
+
+.pipe-detail {
+  font-size: 0.8em;
+  color: #888;
+  display: block;
+  margin-top: 0.15em;
+}
+
+.pipe-arrow {
+  font-size: 0.7em;
+  color: #666;
+  line-height: 1;
+  margin: 0.1em 0;
+}
+
+.pipe-connector {
+  font-size: 2em;
+  color: #555;
+  padding: 0 0.4em;
+  align-self: center;
+}

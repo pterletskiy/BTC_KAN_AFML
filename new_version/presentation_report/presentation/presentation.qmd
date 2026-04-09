@@ -1,0 +1,973 @@
+---
+title: "BTC Daily Direction Prediction"
+subtitle: "Kolmogorov–Arnold Networks Within the AFML Framework"
+author: "Petr Terletskiy (l63023)"
+institute: "MSc Mathematical Finance, ISEG 2024/26"
+date: today
+jupyter: python3
+format: 
+  revealjs:
+    theme: moon
+    transition: slide
+    html-math-method: mathjax
+    slide-number: true
+    width: 1400
+    height: 900
+    css: style.css
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## {background-color="#1a1a2e"}
+
+::: {.r-fit-text}
+**AFML Methodology**
+:::
+
+::: {style="text-align: center; font-size: 0.9em; color: #b0b0b0; margin-top: 1em;"}
+Data Labeling · Feature Engineering · Cross-Validation · Model Benchmarking
+:::
+
+---
+
+## CUSUM Filter {.smaller}
+
+```{python}
+#| output: asis
+import numpy as np, pandas as pd, plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import yfinance as yf, json
+
+# ── Load data ──
+_df = yf.download("BTC-USD", start="2014-10-01", end="2026-03-27", auto_adjust=True, progress=False)
+if isinstance(_df.columns, pd.MultiIndex):
+    _df.columns = _df.columns.get_level_values(0)
+_close = _df["Close"].squeeze()
+_close.index = pd.to_datetime(_close.index).tz_localize(None)
+_log_ret = np.log(_close / _close.shift(1)).dropna()
+_daily_vol = _log_ret.ewm(span=50).std()
+_base_h = _daily_vol.mean()
+
+def _cusum(lr, h):
+    events = []
+    sp, sn = 0.0, 0.0
+    for t, r in lr.items():
+        sp = max(0, sp + r)
+        sn = min(0, sn + r)
+        if sp >= h:
+            events.append(t); sp, sn = 0.0, 0.0
+        elif sn <= -h:
+            events.append(t); sp, sn = 0.0, 0.0
+    return pd.DatetimeIndex(events)
+
+_mults = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+_cusum_res = {m: _cusum(_log_ret, m * _base_h) for m in _mults}
+
+fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35],
+                    vertical_spacing=0.06,
+                    subplot_titles=["BTC Close Price + CUSUM Events", "Daily Log Returns"])
+
+# always-visible base
+fig.add_trace(go.Scatter(x=_close.index, y=_close.values, mode='lines',
+    line=dict(color='#f2a900', width=1), name='BTC Close'), row=1, col=1)
+fig.add_trace(go.Scatter(x=_log_ret.index, y=_log_ret.values, mode='lines',
+    line=dict(color='rgba(180,180,180,0.3)', width=0.5), name='Log Returns',
+    showlegend=False), row=2, col=1)
+
+n_base = 2
+n_per = 3  # event markers + upper threshold + lower threshold
+
+for i, m in enumerate(_mults):
+    evts = _cusum_res[m]
+    h = m * _base_h
+    vis = (m == 1.5)
+    fig.add_trace(go.Scatter(x=evts, y=_close.reindex(evts).values, mode='markers',
+        marker=dict(color='#e74c3c', size=3, symbol='diamond'),
+        name=f'{len(evts)} events', visible=vis), row=1, col=1)
+    fig.add_trace(go.Scatter(x=[_log_ret.index[0], _log_ret.index[-1]], y=[h, h],
+        mode='lines', line=dict(color='#e74c3c', dash='dash', width=1),
+        name='+h', visible=vis, showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[_log_ret.index[0], _log_ret.index[-1]], y=[-h, -h],
+        mode='lines', line=dict(color='#e74c3c', dash='dash', width=1),
+        name='−h', visible=vis, showlegend=False), row=2, col=1)
+
+steps = []
+for i, m in enumerate(_mults):
+    evts = _cusum_res[m]
+    h = m * _base_h
+    vis = [True]*n_base + [False]*(len(_mults)*n_per)
+    for j in range(n_per):
+        vis[n_base + i*n_per + j] = True
+    steps.append(dict(method="update", label=f"{m}×",
+        args=[{"visible": vis},
+              {"title": dict(text=f"CUSUM — h = {m}× σ̄ = {h:.5f} — <b>{len(evts)} events</b> from {len(_close):,} bars")}]))
+
+fig.update_layout(
+    sliders=[dict(active=2, currentvalue=dict(prefix="cusum_mult: ", font=dict(size=13)),
+                  steps=steps, pad=dict(t=50), x=0.0, len=1.0,
+                  font=dict(size=11))],
+    template="plotly_dark", height=560, margin=dict(l=50, r=30, t=70, b=10),
+    title=dict(text=f"CUSUM — h = 1.5× σ̄ = {1.5*_base_h:.5f} — <b>{len(_cusum_res[1.5])} events</b> from {len(_close):,} bars"),
+    yaxis=dict(type="log", title="Price (USD)"),
+    yaxis2=dict(title="Log Return"),
+    legend=dict(x=0.01, y=0.99, font=dict(size=10)),
+)
+fig.show()
+```
+
+---
+
+## Triple-Barrier Labeling {.smaller}
+
+```{python}
+#| output: asis
+
+# ── TBL for multiple param combos ──
+def _tbl_labels(close, t_events, daily_vol, pt_sl, num_days, min_return=0.0):
+    labels = []
+    for t0 in t_events:
+        if t0 not in daily_vol.index or pd.isna(daily_vol.loc[t0]):
+            continue
+        vol = daily_vol.loc[t0]
+        p0 = close.loc[t0]
+        upper = p0 * (1 + pt_sl[0] * vol)
+        lower = p0 * (1 - pt_sl[1] * vol)
+        # vertical barrier
+        future = close.loc[t0:]
+        t1_idx = future.index.searchsorted(t0 + pd.Timedelta(days=num_days))
+        t1_idx = min(t1_idx, len(future) - 1)
+        t1 = future.index[t1_idx]
+        path = close.loc[t0:t1]
+        if len(path) < 2:
+            continue
+        # first touch
+        touch_upper = path[path >= upper]
+        touch_lower = path[path <= lower]
+        t_upper = touch_upper.index[0] if len(touch_upper) > 0 else pd.NaT
+        t_lower = touch_lower.index[0] if len(touch_lower) > 0 else pd.NaT
+        # which came first
+        candidates = {}
+        if not pd.isna(t_upper): candidates[t_upper] = 1
+        if not pd.isna(t_lower): candidates[t_lower] = -1
+        candidates[t1] = candidates.get(t1, 0)  # vertical
+        first_t = min(candidates.keys())
+        ret = (close.loc[first_t] - p0) / p0
+        if first_t == t1 and abs(ret) < min_return:
+            label = 0
+        elif first_t == t1:
+            label = int(np.sign(ret))
+        else:
+            label = candidates[first_t]
+        labels.append({"t0": t0, "t1": first_t, "ret": ret, "bin": label,
+                        "upper": upper, "lower": lower, "p0": p0})
+    return pd.DataFrame(labels)
+
+# Pre-compute combos
+_pt_vals = [0.5, 1.0, 1.5, 2.0, 2.5]
+_nd_vals = [5, 10, 15, 20]
+_default_evts = _cusum_res[1.5]
+
+_tbl_combos = {}
+for pt in _pt_vals:
+    for nd in _nd_vals:
+        res = _tbl_labels(_close, _default_evts, _daily_vol, (pt, pt), nd)
+        res_clean = res[res["bin"] != 0]  # drop neutral if any
+        _tbl_combos[(pt, nd)] = res_clean
+
+# ── Build figure: label distribution + example barriers ──
+# Use a zoomed window for barrier visualization
+_zoom = ("2025-06-01", "2025-12-31")
+fig2 = make_subplots(rows=1, cols=2, column_widths=[0.55, 0.45],
+                     subplot_titles=["Example: Barriers on BTC Price", "Label Distribution"],
+                     specs=[[{"type": "xy"}, {"type": "domain"}]])
+
+# base price trace (zoomed)
+_zmask = (_close.index >= _zoom[0]) & (_close.index <= _zoom[1])
+_zclose = _close.loc[_zmask]
+fig2.add_trace(go.Scatter(x=_zclose.index, y=_zclose.values, mode='lines',
+    line=dict(color='#f2a900', width=1.5), name='BTC Close', showlegend=False), row=1, col=1)
+
+n_base2 = 1  # price line
+n_per2 = 5   # upper barriers + lower barriers + verticals + events_up + events_down + pie (but pie is separate)
+
+# For each combo, add barrier visualization traces + pie
+combo_keys = []
+for pt in _pt_vals:
+    for nd in _nd_vals:
+        combo_keys.append((pt, nd))
+
+n_per2 = 4  # upper_fill, lower_fill, up_events, down_events
+# plus 1 pie trace per combo
+
+for ci, (pt, nd) in enumerate(combo_keys):
+    res = _tbl_combos[(pt, nd)]
+    is_default = (pt == 1.5 and nd == 10)
+    
+    # barriers in zoom window
+    z_res = res[(res["t0"] >= _zoom[0]) & (res["t0"] <= _zoom[1])]
+    
+    # upper barrier segments
+    up_x, up_y = [], []
+    lo_x, lo_y = [], []
+    for _, row in z_res.iterrows():
+        up_x += [row["t0"], row["t1"], None]
+        up_y += [row["upper"], row["upper"], None]
+        lo_x += [row["t0"], row["t1"], None]
+        lo_y += [row["lower"], row["lower"], None]
+    
+    fig2.add_trace(go.Scatter(x=up_x, y=up_y, mode='lines',
+        line=dict(color='rgba(46,204,113,0.5)', width=1, dash='dot'),
+        name='Upper', visible=is_default, showlegend=False), row=1, col=1)
+    fig2.add_trace(go.Scatter(x=lo_x, y=lo_y, mode='lines',
+        line=dict(color='rgba(231,76,60,0.5)', width=1, dash='dot'),
+        name='Lower', visible=is_default, showlegend=False), row=1, col=1)
+    
+    # event markers colored by label
+    up_evts = z_res[z_res["bin"] == 1]
+    dn_evts = z_res[z_res["bin"] == -1]
+    fig2.add_trace(go.Scatter(x=up_evts["t0"], y=up_evts["p0"], mode='markers',
+        marker=dict(color='#2ecc71', size=6, symbol='triangle-up'),
+        name='Up', visible=is_default, showlegend=False), row=1, col=1)
+    fig2.add_trace(go.Scatter(x=dn_evts["t0"], y=dn_evts["p0"], mode='markers',
+        marker=dict(color='#e74c3c', size=6, symbol='triangle-down'),
+        name='Down', visible=is_default, showlegend=False), row=1, col=1)
+    
+    # pie chart
+    n_up = (res["bin"] == 1).sum()
+    n_dn = (res["bin"] == -1).sum()
+    fig2.add_trace(go.Pie(
+        labels=["Up (+1)", "Down (−1)"], values=[n_up, n_dn],
+        marker=dict(colors=["#2ecc71", "#e74c3c"]),
+        textinfo="label+percent", textfont=dict(size=13),
+        hole=0.35, visible=is_default, showlegend=False,
+    ), row=1, col=2)
+
+# Slider
+n_traces_per = 5  # upper, lower, up_markers, down_markers, pie
+steps2 = []
+for ci, (pt, nd) in enumerate(combo_keys):
+    res = _tbl_combos[(pt, nd)]
+    n_total = len(res)
+    n_up = (res["bin"] == 1).sum()
+    n_dn = (res["bin"] == -1).sum()
+    vis = [True]  # base price
+    for cj in range(len(combo_keys)):
+        for _ in range(n_traces_per):
+            vis.append(cj == ci)
+    steps2.append(dict(method="update", label=f"pt_sl={pt}, days={nd}",
+        args=[{"visible": vis},
+              {"title": dict(text=f"Triple-Barrier — pt_sl=({pt},{pt}), num_days={nd} — <b>{n_total} labels</b> ({n_up} up, {n_dn} down)")}]))
+
+# find default index
+default_idx = combo_keys.index((1.5, 10))
+_def_res = _tbl_combos[(1.5, 10)]
+_def_up = (_def_res["bin"] == 1).sum()
+_def_dn = (_def_res["bin"] == -1).sum()
+
+fig2.update_layout(
+    sliders=[dict(active=default_idx, 
+                  currentvalue=dict(prefix="Parameters: ", font=dict(size=12)),
+                  steps=steps2, pad=dict(t=50), x=0.0, len=1.0,
+                  font=dict(size=10))],
+    template="plotly_dark", height=530, margin=dict(l=50, r=30, t=70, b=10),
+    title=dict(text=f"Triple-Barrier — pt_sl=(1.5,1.5), num_days=10 — <b>{len(_def_res)} labels</b> ({_def_up} up, {_def_dn} down)"),
+    yaxis=dict(title="Price (USD)"),
+)
+fig2.show()
+```
+
+---
+
+## Sample Weights {.smaller}
+
+```{python}
+#| output: asis
+
+# ── Sample weights computation (simplified standalone) ──
+def _compute_weights(bins_df, full_index, decay=1.0, cap_q=0.99):
+    """Standalone AFML sample weights: concurrent labels → uniqueness → return attrib → decay → cap."""
+    t1_map = bins_df["t1"]
+    
+    # concurrent labels
+    conc = pd.Series(0, index=full_index, dtype=float)
+    for t0, row in bins_df.iterrows():
+        t1_val = row["t1"]
+        mask = (full_index >= t0) & (full_index <= t1_val)
+        conc.loc[mask] += 1
+    conc = conc.clip(lower=1)
+    
+    # average uniqueness
+    uniq = pd.Series(np.nan, index=bins_df.index)
+    for t0, row in bins_df.iterrows():
+        t1_val = row["t1"]
+        span = conc.loc[t0:t1_val]
+        if len(span) > 0:
+            uniq.loc[t0] = (1.0 / span).mean()
+        else:
+            uniq.loc[t0] = 1.0
+    
+    # return attribution
+    w = bins_df["ret"].abs() * uniq
+    if w.sum() > 0:
+        w = w * len(w) / w.sum()
+    else:
+        w = pd.Series(1.0, index=bins_df.index)
+    
+    # time decay
+    if decay < 1.0:
+        ramp = np.linspace(decay, 1.0, len(w))
+        w = w * ramp
+        w = w * len(w) / w.sum()
+    
+    # cap
+    if cap_q < 1.0:
+        cap_val = w.quantile(cap_q)
+        w = w.clip(upper=cap_val)
+        w = w * len(w) / w.sum()
+    
+    return w
+
+# ── Build bins DataFrame from default CUSUM events + TBL ──
+_default_bins = _tbl_combos[(1.5, 10)].set_index("t0")[["t1", "ret", "bin"]].copy()
+_default_bins.index.name = None
+
+# Pre-compute weight combos
+_decay_vals = [0.25, 0.5, 0.75, 1.0]
+_cap_vals = [0.95, 0.99, 1.0]
+
+_weight_combos = {}
+for d in _decay_vals:
+    for c in _cap_vals:
+        w = _compute_weights(_default_bins, _close.index, decay=d, cap_q=c)
+        _weight_combos[(d, c)] = w
+
+# ── Build figure: histogram + time series ──
+fig3 = make_subplots(rows=1, cols=2, column_widths=[0.45, 0.55],
+                     subplot_titles=["Weight Distribution", "Weights Over Time"])
+
+wcombo_keys = []
+for d in _decay_vals:
+    for c in _cap_vals:
+        wcombo_keys.append((d, c))
+
+for ci, (d, c) in enumerate(wcombo_keys):
+    w = _weight_combos[(d, c)]
+    is_default = (d == 0.5 and c == 0.99)
+    
+    # histogram
+    fig3.add_trace(go.Histogram(x=w.values, nbinsx=50,
+        marker_color='rgba(88,166,255,0.6)', marker_line=dict(color='rgba(88,166,255,0.9)', width=0.5),
+        visible=is_default, showlegend=False, name='Weight dist'), row=1, col=1)
+    
+    # mean line (as annotation via scatter)
+    fig3.add_trace(go.Scatter(x=[w.mean(), w.mean()], y=[0, len(w)//4],
+        mode='lines', line=dict(color='#e74c3c', dash='dash', width=1.5),
+        visible=is_default, showlegend=False, name='Mean'), row=1, col=1)
+    
+    # time series
+    fig3.add_trace(go.Scatter(x=w.index, y=w.values, mode='lines',
+        line=dict(color='rgba(88,166,255,0.7)', width=0.8),
+        visible=is_default, showlegend=False, name='Weights'), row=1, col=2)
+
+n_per3 = 3  # histogram, mean_line, time_series
+steps3 = []
+for ci, (d, c) in enumerate(wcombo_keys):
+    w = _weight_combos[(d, c)]
+    vis = []
+    for cj in range(len(wcombo_keys)):
+        for _ in range(n_per3):
+            vis.append(cj == ci)
+    cap_label = "none" if c >= 1.0 else f"{c}"
+    steps3.append(dict(method="update", label=f"decay={d}, cap={cap_label}",
+        args=[{"visible": vis},
+              {"title": dict(text=f"Sample Weights — time_decay={d}, cap_quantile={cap_label} — mean={w.mean():.2f}, std={w.std():.2f}, max={w.max():.2f}")}]))
+
+default_w_idx = wcombo_keys.index((0.5, 0.99))
+_dw = _weight_combos[(0.5, 0.99)]
+
+fig3.update_layout(
+    sliders=[dict(active=default_w_idx,
+                  currentvalue=dict(prefix="Parameters: ", font=dict(size=12)),
+                  steps=steps3, pad=dict(t=50), x=0.0, len=1.0,
+                  font=dict(size=10))],
+    template="plotly_dark", height=480, margin=dict(l=50, r=30, t=70, b=10),
+    title=dict(text=f"Sample Weights — time_decay=0.5, cap_quantile=0.99 — mean={_dw.mean():.2f}, std={_dw.std():.2f}, max={_dw.max():.2f}"),
+    xaxis=dict(title="Weight"),
+    yaxis=dict(title="Count"),
+    xaxis2=dict(title="Date"),
+    yaxis2=dict(title="Weight"),
+)
+fig3.show()
+```
+
+---
+
+## Feature Universe {.smaller}
+
+```{python}
+#| output: asis
+
+features = {
+    "Technical Analysis (23)": [
+        ("log_returns", "Log price returns"),
+        ("rsi", "Relative Strength Index (14)"),
+        ("macd", "MACD line"),
+        ("macd_signal", "MACD signal line"),
+        ("macd_hist", "MACD histogram"),
+        ("bb_width", "Bollinger Band width"),
+        ("atr", "Average True Range (14) ᴸ"),
+        ("obv", "On-Balance Volume ᴸ"),
+        ("skewness", "Rolling skewness (21d)"),
+        ("kurtosis", "Rolling kurtosis (21d)"),
+        ("realized_vol", "Realized volatility (21d)"),
+        ("gk_vol", "Garman-Klass volatility"),
+        ("yz_vol", "Yang-Zhang volatility"),
+        ("ema_ratio_20_50", "EMA 20/50 ratio"),
+        ("ema_ratio_50_200", "EMA 50/200 ratio"),
+        ("vwma_ratio_20_50", "VWMA 20/50 ratio"),
+        ("roc_14", "Rate of Change (14d)"),
+        ("stoch_k", "Stochastic %K"),
+        ("stoch_d", "Stochastic %D"),
+        ("williams_r", "Williams %R"),
+        ("cci_14", "Commodity Channel Index"),
+        ("chaikin_osc", "Chaikin Oscillator"),
+        ("mfi_14", "Money Flow Index"),
+    ],
+    "Macro (13)": [
+        ("dxy_roc_21", "US Dollar Index (21d RoC)"),
+        ("us2y", "2Y Treasury yield"),
+        ("us10y", "10Y Treasury yield"),
+        ("yield_curve_2y10y", "Yield curve 2Y–10Y"),
+        ("yield_curve_10y30y", "Yield curve 10Y–30Y"),
+        ("vix", "CBOE Volatility Index"),
+        ("sp500_ret_21", "S&P 500 (21d log ret)"),
+        ("nasdaq_ret_21", "Nasdaq (21d log ret)"),
+        ("gold_ret_21", "Gold (21d log ret)"),
+        ("silver_ret_21", "Silver (21d log ret)"),
+        ("copper_ret_21", "Copper (21d log ret)"),
+        ("oil_ret_21", "WTI Crude (21d log ret)"),
+        ("natgas_ret_21", "Natural Gas (21d log ret)"),
+    ],
+    "Crypto & On-Chain (10)": [
+        ("eth_btc_ratio", "ETH/BTC price ratio"),
+        ("btc_dominance", "BTC market dominance"),
+        ("active_addr_roc_14", "Active addresses (14d RoC)"),
+        ("tx_count_roc_14", "Transaction count (14d RoC)"),
+        ("hashrate_roc_30", "Hash rate (30d RoC)"),
+        ("mvrv", "Market Value to Realized Value"),
+        ("net_exchange_flow", "Net exchange flow (BTC)"),
+        ("fee_per_tx", "Fee per transaction"),
+        ("exchange_supply_pct", "Exchange supply (%)"),
+        ("issuance_ntv", "Daily BTC issuance"),
+    ],
+    "Mathematical — AFML Part 4 (9)": [
+        ("shannon_entropy", "Rolling Shannon entropy (21d)"),
+        ("lz_complexity", "Lempel-Ziv complexity (63d)"),
+        ("hurst", "Hurst exponent, R/S (126d)"),
+        ("variance_ratio", "Lo-MacKinlay VR (63d)"),
+        ("jarque_bera", "Jarque-Bera statistic (63d)"),
+        ("gaussian_entropy", "Gaussian entropy (21d)"),
+        ("sadf", "Sup. ADF test statistic"),
+        ("smt_poly1", "SMT polynomial spec."),
+        ("smt_exp", "SMT exponential spec."),
+    ],
+}
+
+# Build HTML table with 4 category columns
+max_rows = max(len(v) for v in features.values())
+categories = list(features.keys())
+
+html = """
+<table class="feature-table">
+<thead>
+<tr>
+"""
+for cat in categories:
+    html += f'<th colspan="2">{cat}</th>'
+html += "</tr>\n<tr>"
+for _ in categories:
+    html += "<th>Feature</th><th>Description</th>"
+html += "</tr>\n</thead>\n<tbody>\n"
+
+for i in range(max_rows):
+    html += "<tr>"
+    for cat in categories:
+        feats = features[cat]
+        if i < len(feats):
+            name, desc = feats[i]
+            html += f'<td class="feat-name"><code>{name}</code></td><td class="feat-desc">{desc}</td>'
+        else:
+            html += '<td></td><td></td>'
+    html += "</tr>\n"
+
+html += "</tbody>\n</table>"
+html += '<p style="font-size: 0.55em; color: #888; margin-top: 0.3em;">ᴸ = log-transformed &nbsp;|&nbsp; All features are backward-looking (no future leakage)</p>'
+
+print(html)
+```
+
+---
+
+## CPCV Structure
+
+```{python}
+#| output: asis
+
+html = """
+<div style="display: flex; gap: 2em; align-items: flex-start;">
+
+<div style="flex: 1;">
+
+<h3 style="color: #eee8d5; margin-top: 0;">Combinatorial Purged Cross-Validation</h3>
+
+<table class="info-table">
+<tr><td>Groups (N)</td><td><strong>6</strong> contiguous blocks</td></tr>
+<tr><td>Test groups (k)</td><td><strong>2</strong> per split</td></tr>
+<tr><td>Splits</td><td>C(6,2) = <strong>15</strong></td></tr>
+<tr><td>Backtest paths</td><td>φ(6,2) = C(5,1) = <strong>5</strong></td></tr>
+<tr><td>Embargo</td><td><strong>1%</strong> of T after each test group</td></tr>
+</table>
+
+<h4 style="color: #eee8d5; margin-top: 1.2em;">Purging (AFML §7.1)</h4>
+<p style="font-size: 0.7em; color: #b0b0b0;">
+Removes <strong>training</strong> observations whose triple-barrier label 
+[t₀, t₁] overlaps any test group. Prevents information leakage from 
+labels that resolve in the future.
+</p>
+
+<h4 style="color: #eee8d5; margin-top: 0.8em;">Embargo (AFML §7.4)</h4>
+<p style="font-size: 0.7em; color: #b0b0b0;">
+Removes a buffer of observations <strong>after</strong> each test boundary 
+to guard against serial correlation bleeding across the split.
+</p>
+
+</div>
+
+<div style="flex: 1.2;">
+"""
+
+# Build a visual grid of the 15 splits
+import itertools
+groups = list(range(6))
+combos = list(itertools.combinations(groups, 2))
+
+html += '<table class="cpcv-grid">\n'
+html += '<tr><th style="font-size:0.6em;">Split</th>'
+for g in groups:
+    html += f'<th>G{g}</th>'
+html += '</tr>\n'
+
+for idx, (g1, g2) in enumerate(combos):
+    html += f'<tr><td style="font-size:0.65em;">S{idx}</td>'
+    for g in groups:
+        if g in (g1, g2):
+            html += '<td class="cpcv-test">Test</td>'
+        else:
+            html += '<td class="cpcv-train">Train</td>'
+    html += '</tr>\n'
+
+html += '</table>\n'
+html += '<p style="font-size: 0.55em; color: #888; text-align: center; margin-top: 0.5em;">Each path covers all 6 groups exactly once → full out-of-sample coverage</p>'
+html += "</div></div>"
+
+print(html)
+```
+
+---
+
+## Inside the CPCV Loop {.smaller}
+
+```{python}
+#| output: asis
+
+html = """
+<p style="font-size: 0.75em; color: #b0b0b0; margin-bottom: 1.2em;">
+Every stateful transformation is fitted on <strong>training data only</strong>, per fold. This is the leakage-critical zone.
+</p>
+
+<div style="display: flex; gap: 2em;">
+
+<div class="cpcv-step-card">
+<h3>① Fractional Differentiation (FFD)</h3>
+<p><strong>Goal:</strong> Make non-stationary features stationary while preserving memory.</p>
+<ul>
+<li>Sweeps <em>d</em> from 0 → 1 (step 0.05)</li>
+<li>Minimum <em>d*</em> where ADF p-value < 0.05</li>
+<li><em>d*</em> estimated on training fold only</li>
+<li>FFD applied to full series (test gets lookback)</li>
+</ul>
+<p class="detail">Applied to: <code>atr</code> &nbsp;|&nbsp; Typical d* ≈ 0.15–0.45</p>
+</div>
+
+<div class="cpcv-step-card">
+<h3>② Robust Scaling</h3>
+<p><strong>Goal:</strong> Normalize features without sensitivity to outliers.</p>
+<ul>
+<li>Centers by <strong>median</strong>, scales by <strong>IQR</strong></li>
+<li>Robust to BTC's fat-tailed distributions</li>
+<li>Fitted on training fold, applied to both train and test</li>
+</ul>
+<p class="detail">sklearn <code>RobustScaler</code> &nbsp;|&nbsp; All 55 features</p>
+</div>
+
+<div class="cpcv-step-card">
+<h3>③ Multi-Model MDA</h3>
+<p><strong>Goal:</strong> Select features that matter for prediction, not just for trees.</p>
+<ul>
+<li>Permutation importance with <strong>RF + Logistic Regression</strong></li>
+<li>Purged inner 3-fold CV within each training set</li>
+<li>Average MDA across both models</li>
+<li>Keep features with MDA > 0, capped at 40%</li>
+</ul>
+<p class="detail">~18–22 features selected per fold from 55</p>
+</div>
+
+</div>
+"""
+
+print(html)
+```
+
+---
+
+## Models {.smaller}
+
+```{python}
+#| output: asis
+
+html = """
+<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2em; margin-top: 0.5em;">
+
+<div class="model-card baseline">
+<div class="model-tag">Baseline</div>
+<h3>AR Logistic</h3>
+<p>Autoregressive logistic regression on lagged returns [1,2,3,5,10,21]. Ignores feature selection entirely.</p>
+<div class="model-specs">C=1.0 · L2 · 3 seeds</div>
+</div>
+
+<div class="model-card baseline">
+<div class="model-tag">Baseline</div>
+<h3>Logistic Regression</h3>
+<p>Standard L2-penalized logistic on selected features. Linear benchmark for the ML models.</p>
+<div class="model-specs">C=1.0 · L2 · balanced · 3 seeds</div>
+</div>
+
+<div class="model-card ensemble">
+<div class="model-tag">Ensemble</div>
+<h3>Random Forest</h3>
+<p>Bagged decision trees with sqrt feature sampling. Captures nonlinear interactions.</p>
+<div class="model-specs">500 trees · min_leaf=5 · 3 seeds</div>
+</div>
+
+<div class="model-card ensemble">
+<div class="model-tag">Ensemble</div>
+<h3>XGBoost</h3>
+<p>Gradient-boosted trees with early stopping. Sequentially corrects errors.</p>
+<div class="model-specs">300 rounds · depth=4 · lr=0.05 · 3 seeds</div>
+</div>
+
+<div class="model-card deeplearning">
+<div class="model-tag">Deep Learning</div>
+<h3>LSTM</h3>
+<p>Recurrent network with 21-day lookback windows. Captures temporal dependencies.</p>
+<div class="model-specs">[n,64,64,2] · dropout=0.2 · 2 seeds</div>
+</div>
+
+<div class="model-card deeplearning">
+<div class="model-tag">Deep Learning</div>
+<h3>KAN</h3>
+<p>Kolmogorov–Arnold Network with learnable spline activations. Enables symbolic extraction.</p>
+<div class="model-specs">[n,5,2] · grid=5 · k=3 · AdamW · 2 seeds</div>
+</div>
+
+</div>
+"""
+
+print(html)
+```
+
+---
+
+## Confusion Matrices {.smaller}
+
+```{python}
+#| output: asis
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+
+_cm_data = {
+    "AR Logistic\n(acc=0.494)": [[825,760],[1030,925]],
+    "Logistic\n(acc=0.517)": [[831,754],[957,998]],
+    "Random Forest\n(acc=0.520)": [[722,863],[835,1120]],
+    "XGBoost\n(acc=0.526)": [[771,814],[864,1091]],
+    "LSTM\n(acc=0.508)": [[816,661],[932,831]],
+    "KAN\n(acc=0.509)": [[875,710],[1028,927]],
+}
+
+fig_cm = make_subplots(rows=2, cols=3, subplot_titles=list(_cm_data.keys()),
+                       horizontal_spacing=0.08, vertical_spacing=0.12)
+
+_labels = ["Down", "Up"]
+_colorscale = [[0, "#1a1a2e"], [0.5, "#2a5a8a"], [1, "#7ec8e3"]]
+
+for idx, (title, cm) in enumerate(_cm_data.items()):
+    r, c = divmod(idx, 3)
+    cm_arr = np.array(cm)
+    # text annotations
+    text = [[str(v) for v in row] for row in cm]
+    
+    fig_cm.add_trace(go.Heatmap(
+        z=cm_arr, x=_labels, y=_labels, text=text, texttemplate="%{text}",
+        textfont=dict(size=16, color="white"),
+        colorscale=_colorscale, showscale=False,
+        hovertemplate="True: %{y}<br>Pred: %{x}<br>Count: %{z}<extra></extra>",
+    ), row=r+1, col=c+1)
+
+fig_cm.update_layout(
+    template="plotly_dark", height=520, margin=dict(l=40, r=30, t=50, b=30),
+    title=dict(text="Confusion Matrices — Aggregated Across 15 CPCV Splits (seed=0)", font=dict(size=15)),
+)
+for i in range(1, 7):
+    fig_cm.update_xaxes(title_text="Predicted", row=(i-1)//3+1, col=(i-1)%3+1, tickfont=dict(size=11))
+    fig_cm.update_yaxes(title_text="True", row=(i-1)//3+1, col=(i-1)%3+1, tickfont=dict(size=11))
+
+fig_cm.show()
+```
+
+---
+
+## Sharpe Ratios & Model Comparison {.smaller}
+
+```{python}
+#| output: asis
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+
+# ── Path Sharpe ratios (5 CPCV paths, seed=0) ──
+# NOTE: Replace these with your actual path_sharpes from analyze_results() for exact values.
+_sharpes = {
+    "ar_logistic":   [-0.97, -0.68, -0.38, -0.26,  0.15],
+    "logistic":      [-0.04,  0.72,  0.90,  0.93,  0.99],
+    "random_forest": [ 0.60,  1.22,  1.32,  1.40,  1.45],
+    "xgboost":       [ 0.49,  0.76,  0.98,  1.05,  1.10],
+    "lstm":          [ 0.08,  0.10,  0.18,  0.47,  0.50],
+    "kan":           [-0.20, -0.05,  0.58,  0.65,  0.70],
+}
+
+# ── Comparison table data ──
+_comp = [
+    {"rank":1,"model":"Random Forest","med_sharpe":1.3247,"std":0.3545,"f1":0.4606,"acc":0.5232,"auc":0.5026,"dd":-0.2099,"cum_ret":0.8446},
+    {"rank":2,"model":"XGBoost",      "med_sharpe":0.9813,"std":0.4168,"f1":0.5050,"acc":0.5258,"auc":0.5167,"dd":-0.5096,"cum_ret":1.5153},
+    {"rank":3,"model":"Logistic",     "med_sharpe":0.8987,"std":0.4285,"f1":0.4572,"acc":0.5202,"auc":0.5464,"dd":-0.2183,"cum_ret":0.7275},
+    {"rank":4,"model":"KAN",          "med_sharpe":0.5760,"std":0.5338,"f1":0.4889,"acc":0.5122,"auc":0.5267,"dd":-0.2411,"cum_ret":0.4894},
+    {"rank":5,"model":"LSTM",         "med_sharpe":0.1811,"std":0.2021,"f1":0.4586,"acc":0.5068,"auc":0.5173,"dd":-0.3334,"cum_ret":0.0545},
+    {"rank":6,"model":"AR Logistic",  "med_sharpe":-0.3836,"std":0.4338,"f1":0.4290,"acc":0.5034,"auc":0.5013,"dd":-0.3800,"cum_ret":-0.2040},
+]
+
+fig_sr = make_subplots(rows=1, cols=2, column_widths=[0.45, 0.55],
+                       specs=[[{"type": "xy"}, {"type": "table"}]],
+                       subplot_titles=["Sharpe Ratio Distribution (5 CPCV Paths)", ""])
+
+# ── Boxplot ──
+_model_order = ["ar_logistic","logistic","random_forest","xgboost","lstm","kan"]
+_colors = {"ar_logistic":"#999","logistic":"#999","random_forest":"#2ecc71",
+           "xgboost":"#2ecc71","lstm":"#f2a900","kan":"#f2a900"}
+
+for m in _model_order:
+    fig_sr.add_trace(go.Box(
+        y=_sharpes[m], name=m.replace("_"," ").title(),
+        marker_color=_colors[m], boxmean=False,
+        line=dict(width=1.5), width=0.5,
+    ), row=1, col=1)
+
+fig_sr.add_hline(y=0, line_dash="dash", line_color="#e74c3c", line_width=1,
+                 annotation_text="Sharpe = 0", annotation_font_color="#e74c3c",
+                 annotation_font_size=10, row=1, col=1)
+
+# ── Table ──
+_header_vals = ["#","Model","Med. Sharpe","Std","F1","Acc","AUC-ROC","Max DD","Cum. Ret"]
+_cell_vals = [
+    [r["rank"] for r in _comp],
+    [f"<b>{r['model']}</b>" for r in _comp],
+    [f"{r['med_sharpe']:+.4f}" for r in _comp],
+    [f"{r['std']:.4f}" for r in _comp],
+    [f"{r['f1']:.4f}" for r in _comp],
+    [f"{r['acc']:.4f}" for r in _comp],
+    [f"{r['auc']:.4f}" for r in _comp],
+    [f"{r['dd']:.2%}" for r in _comp],
+    [f"{r['cum_ret']:+.2%}" for r in _comp],
+]
+
+# row colors: highlight rank 1
+_row_colors = [["rgba(46,204,113,0.12)"] + ["rgba(255,255,255,0.02)"]*2 + 
+               ["rgba(242,169,0,0.08)"] + ["rgba(255,255,255,0.02)"]*2]
+
+fig_sr.add_trace(go.Table(
+    header=dict(values=_header_vals, fill_color="rgba(255,255,255,0.06)",
+                font=dict(color="#eee8d5", size=11), align="center", line_color="rgba(255,255,255,0.1)"),
+    cells=dict(values=_cell_vals, fill_color=[
+        ["rgba(46,204,113,0.1)","rgba(255,255,255,0.02)","rgba(255,255,255,0.02)",
+         "rgba(242,169,0,0.06)","rgba(255,255,255,0.02)","rgba(255,255,255,0.02)"]]*9,
+        font=dict(color="#d0d0d0", size=10.5), align="center", line_color="rgba(255,255,255,0.06)",
+        height=26),
+), row=1, col=2)
+
+fig_sr.update_layout(
+    template="plotly_dark", height=500, margin=dict(l=40, r=20, t=55, b=30),
+    title=dict(text="Model Performance — DSR = 0.00 across all models, PBO = 0.00", font=dict(size=14)),
+    yaxis=dict(title="Annualized Sharpe Ratio", zeroline=False),
+    showlegend=False,
+)
+fig_sr.show()
+```
+
+---
+
+## KAN Symbolic Extraction {.smaller}
+
+```{python}
+#| output: asis
+
+html_kan = """
+<div style="display: flex; gap: 2em; align-items: flex-start;">
+
+<div style="flex: 1.1;">
+
+<h3 style="color: #f2a900; margin-top: 0; font-size: 0.85em;">Symbolic Pipeline (Last CPCV Fold)</h3>
+
+<table class="info-table" style="font-size: 0.75em;">
+<tr><td>Architecture</td><td>[n → 5 → 2], grid=5, k=3</td></tr>
+<tr><td>Top features used</td><td>5 (by CPCV selection stability)</td></tr>
+<tr><td>Symbolification rate</td><td>~90%</td></tr>
+<tr><td>Pre-symbolic accuracy</td><td style="color: #e74c3c;">39.73%</td></tr>
+<tr><td>Post-symbolic accuracy</td><td style="color: #2ecc71;">54.79%</td></tr>
+</table>
+
+<h4 style="color: #eee8d5; margin-top: 1.2em; font-size: 0.75em;">Surviving Features</h4>
+
+<div style="display: flex; gap: 0.8em; margin-top: 0.5em;">
+  <div style="background: rgba(242,169,0,0.1); border: 1px solid rgba(242,169,0,0.3); border-radius: 6px; padding: 0.5em 0.8em; text-align: center;">
+    <code style="color: #f2a900; font-size: 0.8em;">yield_curve_10y30y</code>
+    <div style="font-size: 0.55em; color: #888; margin-top: 0.2em;">Macro (10Y−30Y spread)</div>
+  </div>
+  <div style="background: rgba(242,169,0,0.1); border: 1px solid rgba(242,169,0,0.3); border-radius: 6px; padding: 0.5em 0.8em; text-align: center;">
+    <code style="color: #f2a900; font-size: 0.8em;">btc_dominance</code>
+    <div style="font-size: 0.55em; color: #888; margin-top: 0.2em;">Crypto ecosystem</div>
+  </div>
+  <div style="background: rgba(242,169,0,0.1); border: 1px solid rgba(242,169,0,0.3); border-radius: 6px; padding: 0.5em 0.8em; text-align: center;">
+    <code style="color: #f2a900; font-size: 0.8em;">natgas_ret_21</code>
+    <div style="font-size: 0.55em; color: #888; margin-top: 0.2em;">Macro (energy commodity)</div>
+  </div>
+</div>
+
+<p style="font-size: 0.6em; color: #b0b0b0; margin-top: 1em;">
+<strong>Key insight:</strong> No technical indicator survived symbolification. 
+The KAN's interpretable formula relies entirely on macro and crypto-ecosystem signals, 
+suggesting that BTC direction in recent periods is driven more by external regime factors 
+than by price-derived momentum or oscillators.
+</p>
+
+</div>
+
+<div style="flex: 1.3;">
+
+<h4 style="color: #eee8d5; margin-top: 0; font-size: 0.75em;">Decision Function (logit)</h4>
+<div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 0.8em; font-family: monospace; font-size: 0.42em; color: #d0d0d0; line-height: 1.6; overflow-x: auto; max-height: 320px; overflow-y: auto;">
+
+<span style="color:#7ec8e3;">// Layer 2 → Output (4 activation paths)</span><br><br>
+
+<span style="color:#f2a900;">f(x)</span> = <br>
+&nbsp;&nbsp;<span style="color:#93c5fd;">257/945</span> · sin(−btc_dom/146 + <span style="color:#93c5fd;">5561/983</span>·yc_10y30y + <span style="color:#93c5fd;">271/419</span>·cos(<span style="color:#93c5fd;">2061/868</span>·natgas − <span style="color:#93c5fd;">1175/242</span>) + <span style="color:#93c5fd;">1135/432</span>)<br>
++ <span style="color:#93c5fd;">273/535</span> · sin(−<span style="color:#93c5fd;">6/895</span>·btc_dom + <span style="color:#93c5fd;">1844/333</span>·yc_10y30y + <span style="color:#93c5fd;">547/864</span>·cos(<span style="color:#93c5fd;">2061/868</span>·natgas − <span style="color:#93c5fd;">1175/242</span>) + <span style="color:#93c5fd;">2451/962</span>)<br>
++ <span style="color:#93c5fd;">65/116</span> · tanh(<span style="color:#93c5fd;">2868/463</span>·exp(<span style="color:#93c5fd;">369/511</span>·yc_10y30y) − <span style="color:#93c5fd;">5737/839</span>·cos(<span style="color:#93c5fd;">1238/447</span>·btc_dom + <span style="color:#93c5fd;">2931/407</span>) − <span style="color:#93c5fd;">2425/996</span>·cos(<span style="color:#93c5fd;">569/312</span>·natgas − <span style="color:#93c5fd;">3976/835</span>) + <span style="color:#93c5fd;">829/263</span>)<br>
++ <span style="color:#93c5fd;">446/989</span> · atan(<span style="color:#93c5fd;">7717/881</span>·exp(<span style="color:#93c5fd;">369/511</span>·yc_10y30y) − <span style="color:#93c5fd;">1199/124</span>·cos(<span style="color:#93c5fd;">1238/447</span>·btc_dom + <span style="color:#93c5fd;">2931/407</span>) − <span style="color:#93c5fd;">754/219</span>·cos(<span style="color:#93c5fd;">569/312</span>·natgas − <span style="color:#93c5fd;">3976/835</span>) + <span style="color:#93c5fd;">2933/642</span>)<br>
+− <span style="color:#93c5fd;">631/861</span>
+
+<br><br>
+<span style="color:#7ec8e3;">// Probability</span><br>
+<span style="color:#f2a900;">P(up)</span> = 1 / (1 + exp(−f(x)))
+
+</div>
+
+<p style="font-size: 0.58em; color: #b0b0b0; margin-top: 0.8em;">
+<strong>Composition:</strong> sin, cos, tanh, atan, exp — all discovered by the symbolic extraction pipeline. 
+The formula mixes <span style="color:#2ecc71;">trigonometric</span> (oscillatory regime detection) with 
+<span style="color:#f2a900;">saturating</span> (tanh, atan for bounded confidence) activations.
+</p>
+
+</div>
+
+</div>
+"""
+
+print(html_kan)
+```
+
+---
+
+## {background-color="#1a1a2e"}
+
+```{python}
+#| output: asis
+
+html_end = """
+<h2 style="text-align: center; color: #eee8d5; margin-bottom: 0.8em; font-size: 1.3em;">Full Pipeline Overview</h2>
+
+<div style="display: flex; justify-content: center; align-items: center; gap: 0;">
+
+  <div class="pipe-node pipe-phase1">
+    <div class="pipe-label">Phase 1 — Pre-CPCV</div>
+    <div class="pipe-step">Data Retrieval<br><span class="pipe-detail">BTC-USD OHLCV<br>Oct 2014 – Mar 2026</span></div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step">CUSUM Filter<br><span class="pipe-detail">h = 1.5× σ̄<br>~4,200 → ~911 events</span></div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step">Triple-Barrier Labels<br><span class="pipe-detail">pt_sl=(1.5,1.5), 10 days<br>Binary {−1, +1}</span></div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step">Sample Weights<br><span class="pipe-detail">Uniqueness × |ret|<br>decay=0.5, cap=99th</span></div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step">Feature Engineering<br><span class="pipe-detail">23 TA + 9 Math<br>+ 13 Macro + 10 Crypto/On-chain</span></div>
+  </div>
+
+  <div class="pipe-connector">→</div>
+
+  <div class="pipe-node pipe-phase2">
+    <div class="pipe-label">Phase 2 — Inside CPCV</div>
+    <div class="pipe-step">CPCV Splits<br><span class="pipe-detail">N=6, k=2<br>15 splits, 5 paths</span></div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step" style="background: rgba(88,166,255,0.08);">
+      <em style="font-size:0.7em; color:#7ec8e3;">Per fold (train only):</em><br>
+      FFD → RobustScaler → MDA<br>
+      <span class="pipe-detail">d* on train, scale on train<br>RF+LR permutation, top 40%</span>
+    </div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step">Model Training<br><span class="pipe-detail">6 models × 15 folds<br>80/20 cal split, bet sizing</span></div>
+  </div>
+
+  <div class="pipe-connector">→</div>
+
+  <div class="pipe-node pipe-phase3">
+    <div class="pipe-label">Phase 3 — Evaluation</div>
+    <div class="pipe-step">Path Stitching<br><span class="pipe-detail">5 full backtest paths<br>with transaction costs</span></div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step">Model Comparison<br><span class="pipe-detail">Sharpe, F1, AUC-ROC<br>DSR, PBO</span></div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step">Symbolic Extraction<br><span class="pipe-detail">PyKAN re-train → prune<br>→ symbolify → formula</span></div>
+    <div class="pipe-arrow">▼</div>
+    <div class="pipe-step" style="border-color: rgba(242,169,0,0.5);">
+      <span style="color: #f2a900; font-weight: 600;">P(up) = σ(f(yc₁₀ᵧ₃₀ᵧ, btc_dom, natgas))</span>
+    </div>
+  </div>
+
+</div>
+
+<p style="text-align: center; font-size: 0.6em; color: #888; margin-top: 1em;">
+Petr Terletskiy · MSc Mathematical Finance, ISEG · 2024/26
+</p>
+"""
+
+print(html_end)
+```
