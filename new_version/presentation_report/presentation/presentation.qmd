@@ -15,7 +15,7 @@ format:
     height: 900
     css: style.css
     mermaid:
-      theme: base
+      theme: dark
 execute:
   echo: false
   warning: false
@@ -254,7 +254,7 @@ for pt in _pt_vals:
                        args=[{"visible": _get_vis(pt, nd2)},
                              {"title": dict(text=_tbl_title(pt, nd2))}])
                        for nd2 in _nd_vals],
-                   pad=dict(t=60), x=0.0, len=1.0, font=dict(size=11))]}]))
+                   pad=dict(t=40, b=10), x=0.0, len=1.0, font=dict(size=11))]}]))
 
 default_slider_steps = [
     dict(method="update", label=str(nd),
@@ -264,12 +264,13 @@ default_slider_steps = [
 ]
 
 fig2.update_layout(
-    updatemenus=[dict(type="buttons", direction="right", x=0.0, y=1.18, xanchor="left",
-                      buttons=buttons_pt, font=dict(size=10),
-                      bgcolor="rgba(255,255,255,0.05)", bordercolor="rgba(255,255,255,0.1)")],
+    updatemenus=[dict(type="buttons", direction="right", x=0.0, y=-0.75, xanchor="left", yanchor="top",
+                      buttons=buttons_pt, font=dict(size=10, color="#d0d0d0"),
+                      bgcolor="rgba(30,60,110,0.7)", bordercolor="rgba(59,130,246,0.5)",
+                      active=-1)],
     sliders=[dict(active=1, currentvalue=dict(prefix="num_days: ", font=dict(size=12)),
-                  steps=default_slider_steps, pad=dict(t=60), x=0.0, len=1.0, font=dict(size=11))],
-    template="plotly_dark", height=500, margin=dict(l=50, r=30, t=90, b=10),
+                  steps=default_slider_steps, pad=dict(t=40, b=10), x=0.0, len=1.0, font=dict(size=11))],
+    template="plotly_dark", height=500, margin=dict(l=50, r=30, t=70, b=170),
     title=dict(text=_tbl_title(1.5, 10)),
     yaxis=dict(title="Price (USD)"),
 )
@@ -379,7 +380,7 @@ for c in _cap_vals:
                        args=[{"visible": _get_w_vis(d2, c)},
                              {"title": dict(text=_w_title(d2, c))}])
                        for d2 in _decay_vals],
-                   pad=dict(t=60), x=0.0, len=1.0, font=dict(size=11))]}]))
+                   pad=dict(t=40, b=10), x=0.0, len=1.0, font=dict(size=11))]}]))
 
 default_decay_steps = [
     dict(method="update", label=str(d),
@@ -389,12 +390,13 @@ default_decay_steps = [
 ]
 
 fig3.update_layout(
-    updatemenus=[dict(type="buttons", direction="right", x=0.0, y=1.2, xanchor="left",
-                      buttons=buttons_cap, font=dict(size=10),
-                      bgcolor="rgba(255,255,255,0.05)", bordercolor="rgba(255,255,255,0.1)")],
+    updatemenus=[dict(type="buttons", direction="right", x=0.0, y=-0.75, xanchor="left", yanchor="top",
+                      buttons=buttons_cap, font=dict(size=10, color="#d0d0d0"),
+                      bgcolor="rgba(30,60,110,0.7)", bordercolor="rgba(59,130,246,0.5)",
+                      active=-1)],
     sliders=[dict(active=1, currentvalue=dict(prefix="time_decay: ", font=dict(size=12)),
-                  steps=default_decay_steps, pad=dict(t=60), x=0.0, len=1.0, font=dict(size=11))],
-    template="plotly_dark", height=470, margin=dict(l=50, r=30, t=90, b=10),
+                  steps=default_decay_steps, pad=dict(t=40, b=10), x=0.0, len=1.0, font=dict(size=11))],
+    template="plotly_dark", height=470, margin=dict(l=50, r=30, t=70, b=170),
     title=dict(text=_w_title(0.5, 0.99)),
     xaxis=dict(title="Weight"), yaxis=dict(title="Count"),
     xaxis2=dict(title="Date"), yaxis2=dict(title="Weight"),
@@ -524,7 +526,7 @@ print(html)
 html = """
 <div style="display: flex; gap: 2em; align-items: flex-start;">
 
-<div style="flex: 1;">
+<div style="flex: 1; display: flex; flex-direction: column; gap: 0.8em;">
 <h3 style="color: #eee8d5; margin-top: 0;">Combinatorial Purged Cross-Validation</h3>
 
 <table class="info-table">
@@ -535,22 +537,23 @@ html = """
 <tr><td>Embargo</td><td><strong>1%</strong> of T after each test group</td></tr>
 </table>
 
-<h4 style="color: #eee8d5; margin-top: 1em;">Purging (AFML §7.1)</h4>
-<p style="font-size: 0.68em; color: #b0b0b0;">
+<img src="cpcv_paths.png" style="width: 100%; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);" />
+</div>
+
+<div style="flex: 1; display: flex; flex-direction: column; gap: 0.3em;">
+<h4 style="color: #eee8d5; margin: 0;">Purging (AFML §7.1)</h4>
+<p style="font-size: 0.68em; color: #b0b0b0; margin: 0;">
 Removes <strong>training</strong> observations whose triple-barrier label 
 [t₀, t₁] overlaps any test group — prevents leakage from labels that resolve in the future.
 </p>
 
-<h4 style="color: #eee8d5; margin-top: 0.6em;">Embargo (AFML §7.4)</h4>
-<p style="font-size: 0.68em; color: #b0b0b0;">
+<h4 style="color: #eee8d5; margin: 0.3em 0 0 0;">Embargo (AFML §7.4)</h4>
+<p style="font-size: 0.68em; color: #b0b0b0; margin: 0;">
 Removes a buffer of observations <strong>after</strong> each test boundary 
 to guard against serial correlation bleeding across the split.
 </p>
-</div>
 
-<div style="flex: 1.2; display: flex; flex-direction: column; gap: 0.8em;">
-<img src="cpcv_paths.png" style="width: 100%; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);" />
-<img src="cpcv_embargo.png" style="width: 100%; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);" />
+<img src="cpcv_embargo.png" style="width: 100%; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); margin-top: auto;" />
 </div>
 
 </div>
@@ -690,8 +693,9 @@ _cm_data = {
     "KAN (0.509)": [[875,710],[1028,927]],
 }
 
+_cm_names = list(_cm_data.keys())
 fig_cm = make_subplots(rows=2, cols=4,
-    subplot_titles=list(_cm_data.keys()) + ["Sharpe Ratio Distribution", ""],
+    subplot_titles=_cm_names[:3] + ["Sharpe Ratio Distribution"] + _cm_names[3:] + [""],
     horizontal_spacing=0.05, vertical_spacing=0.14,
     column_widths=[0.2, 0.2, 0.2, 0.4],
     specs=[[{"type":"heatmap"},{"type":"heatmap"},{"type":"heatmap"},{"type":"xy","rowspan":2}],
@@ -838,7 +842,7 @@ The KAN's formula relies entirely on macro and crypto-ecosystem signals.
 
 </div>
 
-<h4 style="color: #eee8d5; margin-top: 0.8em; font-size: 0.75em;">Decision Function &nbsp;→&nbsp; P(up) = σ(f(x))</h4>
+<h4 style="color: #eee8d5; margin-top: 0.8em; font-size: 0.75em;">Decision Function &nbsp;→&nbsp; P(up) = 1/(1+exp(−x))</h4>
 <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 0.7em 1em; font-family: monospace; font-size: 0.42em; color: #d0d0d0; line-height: 1.6; overflow-x: auto;">
 
 <span style="color:#f2a900;">f(x)</span> = 
@@ -856,37 +860,40 @@ print(html_kan)
 
 ---
 
-## {background-color="#f0f4f8"}
+##
 
 ```{mermaid}
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e293b', 'primaryBorderColor': '#3b82f6', 'lineColor': '#64748b', 'secondaryColor': '#dcfce7', 'tertiaryColor': '#fef9c3', 'fontFamily': 'system-ui', 'fontSize': '14px'}}}%%
+%%{init: {'theme': 'dark', 'flowchart': {'padding': 30, 'nodeSpacing': 50, 'rankSpacing': 50, 'useMaxWidth': true, 'htmlLabels': true, 'wrappingWidth': 200}, 'themeVariables': {'primaryColor': '#2a5a8a', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#3b82f6', 'lineColor': '#93c5fd', 'secondaryColor': '#1a4a3a', 'tertiaryColor': '#4a3a1a', 'fontFamily': 'system-ui', 'fontSize': '16px', 'mainBkg': '#2a5a8a', 'nodeBorder': '#3b82f6'}}}%%
 
-graph LR
-    subgraph P1["Phase 1 — Pre-CPCV"]
-        A["Data Retrieval\nBTC-USD OHLCV\nOct 2014 – Mar 2026"] --> B["CUSUM Filter\nh = 1.5× σ̄\n~4,200 → ~911"]
-        B --> C["Triple-Barrier\npt_sl=1.5, 10 days\nBinary labels"]
-        C --> D["Sample Weights\nUniqueness × |ret|\ndecay=0.5, cap=99th"]
-        D --> E["Feature Engineering\n23 TA + 9 Math\n13 Macro + 10 On-chain"]
+graph TD
+    subgraph P1[" Phase 1 : Pre-CPCV "]
+        direction LR
+        A[" Data Retrieval "] --> B[" CUSUM Filter "]
+        B --> C[" Triple Barrier "]
+        C --> D[" Sample Weights "]
+        D --> E[" Feature Eng "]
     end
 
-    subgraph P2["Phase 2 — CPCV"]
-        F["CPCV Splits\nN=6, k=2\n15 splits, 5 paths"] --> G["FFD → Scale → MDA\nper fold, train only\n~22 features"]
-        G --> H["Model Training\n6 models × 15 folds\nCalibration"]
+    subgraph P2[" Phase 2 : CPCV "]
+        direction LR
+        F[" CPCV Splits "] --> G[" FFD Scale MDA "]
+        G --> H[" Model Training "]
     end
 
-    subgraph P3["Phase 3 — Evaluation"]
-        I["Path Stitching\n5 backtest paths\nwith tx costs"] --> J["Comparison\nSharpe, F1, AUC\nDSR, PBO"]
-        J --> K["Symbolic\nPyKAN prune\n→ formula"]
-        K --> L["P up = σ f x"]
+    subgraph P3[" Phase 3 : Evaluation "]
+        direction LR
+        I[" Path Stitching "] --> J[" Comparison "]
+        J --> K[" Symbolic Extr "]
+        K --> L[" P = sigmoid "]
     end
 
-    E --> F
-    H --> I
+    P1 --> P2
+    P2 --> P3
 
-    style P1 fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
-    style P2 fill:#dcfce7,stroke:#10b981,stroke-width:2px
-    style P3 fill:#fef9c3,stroke:#f59e0b,stroke-width:2px
-    style L fill:#fde68a,stroke:#f59e0b,stroke-width:2px
+    style P1 fill:#1a3a5c,stroke:#3b82f6,stroke-width:2px,color:#e0e0e0
+    style P2 fill:#1a3a2a,stroke:#10b981,stroke-width:2px,color:#e0e0e0
+    style P3 fill:#3a3a1a,stroke:#f59e0b,stroke-width:2px,color:#e0e0e0
+    style L fill:#4a3a1a,stroke:#f59e0b,stroke-width:2px,color:#f2a900
 ```
 
 ::: {style="text-align: center; font-size: 0.65em; color: #666; margin-top: 0.5em;"}

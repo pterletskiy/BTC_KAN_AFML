@@ -4,6 +4,7 @@ new_version/cache/
 new_version/model/
 backup_old_version/model/
 backup_old_version/PREPROCESSING_COMPARISON.md
+new_version/presentation_report/presentation/presentation_files
 test.ipynb
 
 # Cache Files
