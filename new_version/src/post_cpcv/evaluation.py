@@ -335,11 +335,10 @@ def compute_deflated_sharpe(
     )
 
     # standard error of Sharpe accounting for non-normality
-    sr_std = np.sqrt(
-        (1 - skew * observed_sharpe
-         + (kurtosis - 1) / 4 * observed_sharpe ** 2)
-        / max(n_obs - 1, 1)
-    )
+    inner = (1 - skew * observed_sharpe
+             + (kurtosis - 1) / 4 * observed_sharpe ** 2)
+    inner = max(inner, 1e-10)  # clamp to prevent sqrt(negative) → NaN
+    sr_std = np.sqrt(inner / max(n_obs - 1, 1))
 
     if sr_std < 1e-10:
         return 0.0
@@ -395,8 +394,172 @@ def compute_pbo(path_sharpes_matrix: np.ndarray) -> float:
 
 
 # =====================================================================
-# Model summary
+# DeLong AUC Significance Test
 # =====================================================================
+def _delong_auc_variance(y_true: np.ndarray, y_score: np.ndarray):
+    """Compute AUC and its variance using the DeLong method.
+
+    Returns (auc, var_auc).
+    """
+    pos = y_score[y_true == 1]
+    neg = y_score[y_true == 0]
+    m = len(pos)
+    n = len(neg)
+
+    if m == 0 or n == 0:
+        return np.nan, np.nan
+
+    # structural components (placement values)
+    V_pos = np.array([np.mean(neg < p) + 0.5 * np.mean(neg == p) for p in pos])
+    V_neg = np.array([np.mean(pos > q) + 0.5 * np.mean(pos == q) for q in neg])
+
+    auc = np.mean(V_pos)
+    s10 = np.var(V_pos, ddof=1) if m > 1 else 0.0
+    s01 = np.var(V_neg, ddof=1) if n > 1 else 0.0
+
+    var_auc = s10 / m + s01 / n
+    return auc, var_auc
+
+
+def _delong_covariance(y_true, y_score_a, y_score_b):
+    """Compute covariance between two AUC estimates (DeLong method)."""
+    pos_mask = y_true == 1
+    neg_mask = y_true == 0
+    pos_a, neg_a = y_score_a[pos_mask], y_score_a[neg_mask]
+    pos_b, neg_b = y_score_b[pos_mask], y_score_b[neg_mask]
+    m = len(pos_a)
+    n = len(neg_a)
+
+    if m == 0 or n == 0:
+        return 0.0
+
+    V_pos_a = np.array([np.mean(neg_a < p) + 0.5 * np.mean(neg_a == p) for p in pos_a])
+    V_pos_b = np.array([np.mean(neg_b < p) + 0.5 * np.mean(neg_b == p) for p in pos_b])
+    V_neg_a = np.array([np.mean(pos_a > q) + 0.5 * np.mean(pos_a == q) for q in neg_a])
+    V_neg_b = np.array([np.mean(pos_b > q) + 0.5 * np.mean(pos_b == q) for q in neg_b])
+
+    cov10 = np.cov(V_pos_a, V_pos_b, ddof=1)[0, 1] if m > 1 else 0.0
+    cov01 = np.cov(V_neg_a, V_neg_b, ddof=1)[0, 1] if n > 1 else 0.0
+
+    return cov10 / m + cov01 / n
+
+
+def delong_test(
+    y_true: np.ndarray,
+    y_score_a: np.ndarray,
+    y_score_b: np.ndarray,
+) -> dict:
+    """Two-sided DeLong test for comparing two AUC values on the same sample.
+
+    Parameters
+    ----------
+    y_true : binary labels
+    y_score_a : predicted probabilities from model A (positive class)
+    y_score_b : predicted probabilities from model B (positive class)
+
+    Returns
+    -------
+    dict with keys: auc_a, auc_b, z_stat, p_value
+    """
+    auc_a, var_a = _delong_auc_variance(y_true, y_score_a)
+    auc_b, var_b = _delong_auc_variance(y_true, y_score_b)
+    cov_ab = _delong_covariance(y_true, y_score_a, y_score_b)
+
+    var_diff = var_a + var_b - 2 * cov_ab
+    var_diff = max(var_diff, 1e-15)  # prevent division by zero
+
+    z = (auc_a - auc_b) / np.sqrt(var_diff)
+    p = 2 * stats.norm.sf(abs(z))  # two-sided
+
+    return {
+        "auc_a": float(auc_a),
+        "auc_b": float(auc_b),
+        "delta_auc": float(auc_a - auc_b),
+        "z_stat": float(z),
+        "p_value": float(p),
+    }
+
+
+def compute_auc_significance(
+    predictions: dict,
+    models: list[str],
+    n_splits: int,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """Run pairwise DeLong AUC tests across all model pairs.
+
+    Pools predictions from all CPCV splits (for a given seed) so that
+    the test operates on the full sample. Since CPCV splits have
+    non-overlapping test sets, pooling is valid.
+
+    Parameters
+    ----------
+    predictions : dict from CPCV pipeline
+    models : list of model names to compare
+    n_splits : number of CPCV splits
+    seed : which seed to use (default 0)
+    alpha : significance level (default 0.05)
+
+    Returns
+    -------
+    DataFrame with columns: model_a, model_b, auc_a, auc_b, delta_auc,
+                            z_stat, p_value, significant
+    """
+    # pool predictions per model across splits
+    pooled = {}
+    for model_name in models:
+        y_trues, y_probas = [], []
+        for split_idx in range(n_splits):
+            key = (model_name, split_idx, seed)
+            if key not in predictions:
+                logger.warning(
+                    "Missing predictions for %s, split=%d, seed=%d. Skipping.",
+                    model_name, split_idx, seed,
+                )
+                continue
+            pred = predictions[key]
+            y_trues.append(pred["y_true"])
+            y_probas.append(pred["cal_proba"][:, 1])
+
+        if y_trues:
+            pooled[model_name] = {
+                "y_true": np.concatenate(y_trues),
+                "y_score": np.concatenate(y_probas),
+            }
+
+    # pairwise tests
+    results = []
+    tested_models = [m for m in models if m in pooled]
+    for i, model_a in enumerate(tested_models):
+        for model_b in tested_models[i + 1:]:
+            # align samples: both models must have same test observations
+            # (CPCV guarantees this for same split/seed)
+            a = pooled[model_a]
+            b = pooled[model_b]
+
+            # use shorter array if lengths differ (e.g., LSTM drops
+            # observations from sequencing)
+            n = min(len(a["y_true"]), len(b["y_true"]))
+            res = delong_test(
+                a["y_true"][:n],
+                a["y_score"][:n],
+                b["y_score"][:n],
+            )
+            res["model_a"] = model_a
+            res["model_b"] = model_b
+            res["significant"] = res["p_value"] < alpha
+            results.append(res)
+
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results)[
+        ["model_a", "model_b", "auc_a", "auc_b", "delta_auc",
+         "z_stat", "p_value", "significant"]
+    ]
+
+    return df
 def compute_model_summary(
     model_name: str,
     path_performances: list[dict],
@@ -462,7 +625,7 @@ def compare_models(all_summaries: list[dict]) -> pd.DataFrame:
 
     display_cols = [
         "rank", "model_name", "median_sharpe", "std_sharpe", "dsr",
-        "mean_f1", "mean_accuracy", "mean_log_loss", "mean_auc_roc",
+        "mean_f1", "mean_accuracy", "mean_auc_roc",
         "median_max_dd", "median_cum_return",
         "median_win_rate", "median_profit_factor",
     ]
@@ -634,6 +797,20 @@ def analyze_results(cpcv_results: dict) -> dict:
     # ── feature stability ─────────────────────────────────────────────
     feature_stability = compute_feature_stability(predictions, models)
 
+    # ── AUC significance (DeLong pairwise tests) ─────────────────────
+    auc_significance = compute_auc_significance(
+        predictions, models, cpcv_results["n_splits"], seed=0
+    )
+    if len(auc_significance):
+        print("\n" + "=" * 80)
+        print("AUC Significance Tests (DeLong, pooled across splits, seed=0)")
+        print("=" * 80)
+        print(auc_significance.to_string(index=False, float_format="{:.4f}".format))
+        n_sig = auc_significance["significant"].sum()
+        n_total = len(auc_significance)
+        print(f"\n  {n_sig}/{n_total} pairs significantly different (α=0.05)")
+        print("=" * 80)
+
     # ── FFD stability ─────────────────────────────────────────────────
     ffd_stability = compute_ffd_stability(predictions)
 
@@ -652,4 +829,5 @@ def analyze_results(cpcv_results: dict) -> dict:
         "path_results": all_path_results,
         "feature_stability": feature_stability,
         "ffd_stability": ffd_stability,
+        "auc_significance": auc_significance,
     }
