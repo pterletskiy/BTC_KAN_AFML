@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 # Module-level constants (shared with symbolic_extraction.py)
 # ---------------------------------------------------------------------------
 # Architecture
-KAN_HIDDEN = 5                     # narrow bottleneck
+KAN_HIDDEN = 5                     # 1st hidden layer width
+KAN_HIDDEN2 = 0                    # 2nd hidden layer (0 = single hidden layer)
 KAN_GRID = 5                      # grid size
 KAN_K = 3                         # B-spline order (cubic)
 
@@ -54,7 +55,10 @@ class KANModel(BaseModel):
 
     def __init__(self, n_features: int, n_classes: int = 2, seed: int = 42):
         super().__init__(n_features, n_classes, seed)
-        self.widths = [n_features, KAN_HIDDEN, n_classes]
+        if KAN_HIDDEN2 > 0:
+            self.widths = [n_features, KAN_HIDDEN, KAN_HIDDEN2, n_classes]
+        else:
+            self.widths = [n_features, KAN_HIDDEN, n_classes]
         self.kan_model = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # tanh normalization parameters (fitted on training data)
