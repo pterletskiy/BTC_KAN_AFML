@@ -175,12 +175,17 @@ def _apply_tuned_params(tuning_results: dict) -> dict:
             if "learning_rate" in params:
                 tree_mod.XGB_LEARNING_RATE = params["learning_rate"]
             if "min_child_weight" in params:
-                if not hasattr(tree_mod, "XGB_MIN_CHILD_WEIGHT"):
-                    tree_mod.XGB_MIN_CHILD_WEIGHT = params["min_child_weight"]
-                else:
-                    tree_mod.XGB_MIN_CHILD_WEIGHT = params["min_child_weight"]
+                tree_mod.XGB_MIN_CHILD_WEIGHT = int(params["min_child_weight"])
             if "subsample" in params:
                 tree_mod.XGB_SUBSAMPLE = params["subsample"]
+            if "colsample_bytree" in params:
+                tree_mod.XGB_COLSAMPLE_BYTREE = params["colsample_bytree"]
+            if "gamma" in params:
+                tree_mod.XGB_GAMMA = params["gamma"]
+            if "reg_alpha" in params:
+                tree_mod.XGB_REG_ALPHA = params["reg_alpha"]
+            if "reg_lambda" in params:
+                tree_mod.XGB_REG_LAMBDA = params["reg_lambda"]
             applied["xgboost"] = params
 
     # ── LSTM ──────────────────────────────────────────────────────────
@@ -247,7 +252,7 @@ def _run_tuning_phase(
     kan_tuned_widths = None
 
     print(f"\n{'='*60}")
-    print("Pre-Pipeline Hyperparameter Tuning")
+    print("Pre-Pipeline Hyperparameter Tuning (Optuna TPE + Purged K-Fold)")
     print(f"  Tuning folds: {[i+1 for i in TUNE_FOLD_INDICES]} "
           f"(of {len(splits)} total)")
     print(f"  Models: {tune_models}")
