@@ -1,5 +1,5 @@
 """
-8.3) Tree-Based Models
+8.3) Tree-Based
 ====================
 Random Forest and XGBoost classifiers wrapped in the BaseModel interface.
 """
@@ -26,6 +26,10 @@ XGB_MAX_DEPTH = 4
 XGB_LEARNING_RATE = 0.05
 XGB_SUBSAMPLE = 0.8
 XGB_COLSAMPLE_BYTREE = 0.8
+XGB_MIN_CHILD_WEIGHT = 1
+XGB_GAMMA = 0.0
+XGB_REG_ALPHA = 0.0
+XGB_REG_LAMBDA = 1.0
 XGB_EARLY_STOPPING_ROUNDS = 20
 
 
@@ -100,18 +104,16 @@ class XGBoostModel(BaseModel):
         y = y_train.values if hasattr(y_train, "values") else y_train
         w = sample_weight.values if hasattr(sample_weight, "values") else sample_weight
 
-        # compute scale_pos_weight from training class balance
-        n_neg = np.sum(y == 0)
-        n_pos = np.sum(y == 1)
-        spw = n_neg / max(n_pos, 1)
-
         init_params = {
             "n_estimators": XGB_N_ESTIMATORS,
             "max_depth": XGB_MAX_DEPTH,
             "learning_rate": XGB_LEARNING_RATE,
             "subsample": XGB_SUBSAMPLE,
             "colsample_bytree": XGB_COLSAMPLE_BYTREE,
-            "scale_pos_weight": spw,
+            "min_child_weight": XGB_MIN_CHILD_WEIGHT,
+            "gamma": XGB_GAMMA,
+            "reg_alpha": XGB_REG_ALPHA,
+            "reg_lambda": XGB_REG_LAMBDA,
             "objective": "binary:logistic",
             "eval_metric": "logloss",
             "random_state": self.seed,
@@ -133,14 +135,14 @@ class XGBoostModel(BaseModel):
 
             best_iter = self.model.best_iteration
             logger.info(
-                "XGBoost fitted: %d samples, early stopped at iteration %d/%d, scale_pos_weight=%.3f.",
-                X.shape[0], best_iter, XGB_N_ESTIMATORS, spw,
+                "XGBoost fitted: %d samples, early stopped at iteration %d/%d.",
+                X.shape[0], best_iter, XGB_N_ESTIMATORS,
             )
         else:
             self.model.fit(**fit_params)
             logger.info(
-                "XGBoost fitted: %d samples, %d rounds, scale_pos_weight=%.3f.",
-                X.shape[0], XGB_N_ESTIMATORS, spw,
+                "XGBoost fitted: %d samples, %d rounds (no early stopping).",
+                X.shape[0], XGB_N_ESTIMATORS,
             )
 
     def predict_proba(self, X) -> np.ndarray:
