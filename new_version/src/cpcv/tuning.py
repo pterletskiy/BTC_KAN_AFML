@@ -55,7 +55,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Purged K-Fold configuration
-N_INNER_FOLDS = 5               # number of inner CV folds
+N_INNER_FOLDS = 3               # number of inner CV folds
 PURGE_EMBARGO = 10              # observations to purge between train/val
                                 # (matches TBL num_days=10)
 
@@ -243,7 +243,7 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
     """Tune Random Forest via Optuna TPE + Purged K-Fold.
 
     Search space:
-        n_estimators:     int [100, 500] step 50
+        n_estimators:     int [100, 300] step 50
         max_depth:        int [3, 20]
         min_samples_leaf: int [1, 30]
         max_features:     categorical {sqrt, log2}
@@ -260,7 +260,7 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
     all_results = []
 
     def objective(trial):
-        n_estimators = trial.suggest_int("n_estimators", 100, 500, step=50)
+        n_estimators = trial.suggest_int("n_estimators", 100, 300, step=50)
         max_depth = trial.suggest_int("max_depth", 3, 20)
         min_samples_leaf = trial.suggest_int("min_samples_leaf", 1, 30)
         max_features = trial.suggest_categorical("max_features", ["sqrt", "log2"])
@@ -322,7 +322,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
     """Tune XGBoost via Optuna TPE + Purged K-Fold.
 
     Search space:
-        max_depth:        int [3, 10]
+        max_depth:        int [2, 6]
         learning_rate:    log-uniform [0.01, 0.3]
         min_child_weight: int [1, 30]
         subsample:        uniform [0.6, 1.0]
@@ -345,7 +345,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
     all_results = []
 
     def objective(trial):
-        max_depth = trial.suggest_int("max_depth", 3, 10)
+        max_depth = trial.suggest_int("max_depth", 2, 6)
         lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
         min_child_weight = trial.suggest_int("min_child_weight", 1, 30)
         subsample = trial.suggest_float("subsample", 0.6, 1.0)
@@ -449,9 +449,9 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     """Tune LSTM via Optuna TPE + Purged K-Fold.
 
     Search space:
-        hidden_size:   int [16, 128] step 16
+        hidden_size:   int [16, 64] step 16
         num_layers:    int [1, 3]
-        dropout:       uniform [0.0, 0.5]
+        dropout:       uniform [0.1, 0.5]
         learning_rate: log-uniform [1e-4, 5e-2]
     """
     from torch.utils.data import TensorDataset, DataLoader
@@ -506,9 +506,9 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        hidden_size = trial.suggest_int("hidden_size", 16, 128, step=16)
+        hidden_size = trial.suggest_int("hidden_size", 16, 64, step=16)
         num_layers = trial.suggest_int("num_layers", 1, 3)
-        dropout = trial.suggest_float("dropout", 0.0, 0.5)
+        dropout = trial.suggest_float("dropout", 0.1, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
 
         split_losses = []
@@ -653,11 +653,11 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     """Tune KAN via Optuna TPE + Purged K-Fold.
 
     Search space:
-        width1:       int [3, 20]          (1st hidden layer)
-        width2:       int [0, 15]          (2nd hidden; 0 = skip)
+        width1:       int [3, 12]          (1st hidden layer)
+        width2:       int [0, 10]          (2nd hidden; 0 = skip)
         lr:           log-uniform [1e-3, 0.1]
         weight_decay: log-uniform [1e-5, 1e-2]
-        grid:         categorical {3, 5, 8}
+        grid:         categorical {3, 5}
 
     Fixed: k=3, epochs=200, patience=20, full-batch, tanh normalization.
     """
@@ -686,11 +686,11 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        width1 = trial.suggest_int("width1", 3, 20)
-        width2 = trial.suggest_int("width2", 0, 15)
+        width1 = trial.suggest_int("width1", 3, 12)
+        width2 = trial.suggest_int("width2", 0, 10)
         lr = trial.suggest_float("lr", 1e-3, 0.1, log=True)
         wd = trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True)
-        grid = trial.suggest_categorical("grid", [3, 5, 8])
+        grid = trial.suggest_categorical("grid", [3, 5])
 
         if width2 == 0:
             widths = [n_features, width1, 2]
