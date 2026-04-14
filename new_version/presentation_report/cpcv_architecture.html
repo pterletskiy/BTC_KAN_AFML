@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CPCV Inner Architecture — Split, Tune, Train</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0f19;
+    --bg2: #111827;
+    --bg3: #1a2332;
+    --border: #1e2d3d;
+    --text: #e2e8f0;
+    --text-m: #94a3b8;
+    --text-d: #64748b;
+    --text-dd: #475569;
+    --blue: #3b82f6;
+    --blue-bg: rgba(59,130,246,0.10);
+    --blue-bd: rgba(59,130,246,0.30);
+    --amber: #f59e0b;
+    --amber-bg: rgba(245,158,11,0.10);
+    --amber-bd: rgba(245,158,11,0.30);
+    --green: #10b981;
+    --green-bg: rgba(16,185,129,0.10);
+    --green-bd: rgba(16,185,129,0.30);
+    --red: #ef4444;
+    --red-bg: rgba(239,68,68,0.08);
+    --red-bd: rgba(239,68,68,0.25);
+    --purple: #a78bfa;
+    --purple-bg: rgba(167,139,250,0.10);
+    --purple-bd: rgba(167,139,250,0.30);
+    --cyan: #22d3ee;
+    --cyan-bg: rgba(34,211,238,0.08);
+    --gray-bg: rgba(100,116,139,0.08);
+    --gray-bd: rgba(100,116,139,0.25);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  }
+  .wrap { max-width:1000px; margin:0 auto; padding:36px 24px 80px; position:relative; z-index:1; }
+
+  /* header */
+  .hdr { text-align:center; margin-bottom:44px; padding-bottom:32px; border-bottom:1px solid var(--border); }
+  .hdr h1 {
+    font-family:'JetBrains Mono',monospace; font-weight:700; font-size:1.4rem;
+    letter-spacing:-0.02em; margin-bottom:10px;
+    background:linear-gradient(135deg,#e2e8f0,#94a3b8); -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+  }
+  .hdr p { color:var(--text-d); font-size:0.85rem; max-width:600px; margin:0 auto; }
+
+  /* section */
+  .section { margin-bottom:48px; }
+  .sec-head {
+    display:flex; align-items:center; gap:12px; margin-bottom:20px;
+  }
+  .sec-num {
+    font-family:'JetBrains Mono',monospace; font-size:0.6rem; font-weight:700;
+    letter-spacing:0.1em; text-transform:uppercase; padding:4px 10px; border-radius:4px;
+    white-space:nowrap;
+  }
+  .sec-title { font-family:'JetBrains Mono',monospace; font-size:0.95rem; font-weight:600; }
+  .sec-line { flex:1; height:1px; background:var(--border); }
+  .sec-desc { color:var(--text-d); font-size:0.82rem; margin-bottom:20px; line-height:1.7; max-width:800px; }
+  .sec-desc strong { color:var(--text-m); font-weight:600; }
+
+  /* ═══ CPCV GRID ═══ */
+  .cpcv-controls {
+    display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;
+  }
+  .cpcv-controls label {
+    font-family:'JetBrains Mono',monospace; font-size:0.7rem; color:var(--text-d);
+    letter-spacing:0.04em;
+  }
+  .split-slider {
+    -webkit-appearance:none; width:200px; height:4px; border-radius:2px;
+    background:var(--border); outline:none;
+  }
+  .split-slider::-webkit-slider-thumb {
+    -webkit-appearance:none; width:16px; height:16px; border-radius:50%;
+    background:var(--blue); cursor:pointer; border:2px solid var(--bg);
+    box-shadow:0 0 8px rgba(59,130,246,0.4);
+  }
+  .split-label {
+    font-family:'JetBrains Mono',monospace; font-size:0.75rem; font-weight:600;
+    color:var(--blue); min-width:70px;
+  }
+
+  .cpcv-grid {
+    display:grid; grid-template-columns:auto repeat(6,1fr); gap:2px;
+    margin-bottom:12px; font-family:'JetBrains Mono',monospace; font-size:0.68rem;
+  }
+  .cpcv-grid .gh {
+    padding:6px 8px; text-align:center; color:var(--text-dd); font-weight:600;
+    letter-spacing:0.05em;
+  }
+  .cpcv-grid .rl {
+    padding:6px 8px; text-align:right; color:var(--text-dd); font-weight:500;
+    font-size:0.62rem; white-space:nowrap; display:flex; align-items:center; justify-content:flex-end;
+  }
+  .cpcv-grid .cell {
+    padding:8px 4px; text-align:center; border-radius:4px;
+    font-weight:600; font-size:0.62rem; letter-spacing:0.03em;
+    transition: all 0.2s;
+  }
+  .cell-train { background:var(--blue-bg); border:1px solid var(--blue-bd); color:var(--blue); }
+  .cell-test { background:var(--amber-bg); border:1px solid var(--amber-bd); color:var(--amber); }
+  .cell-purge { background:var(--red-bg); border:1px solid var(--red-bd); color:var(--red); opacity:0.7; }
+  .cell-embargo { background:var(--gray-bg); border:1px solid var(--gray-bd); color:var(--text-dd); opacity:0.6; }
+
+  .legend {
+    display:flex; gap:16px; flex-wrap:wrap; margin-top:8px;
+  }
+  .legend-item {
+    display:flex; align-items:center; gap:6px;
+    font-family:'JetBrains Mono',monospace; font-size:0.62rem; color:var(--text-d);
+  }
+  .legend-dot {
+    width:10px; height:10px; border-radius:3px;
+  }
+
+  .split-info {
+    margin-top:12px; padding:12px 16px; background:var(--bg2); border:1px solid var(--border);
+    border-radius:6px; font-family:'JetBrains Mono',monospace; font-size:0.7rem;
+    color:var(--text-d); line-height:1.8;
+  }
+  .split-info strong { color:var(--text-m); }
+
+  /* ═══ NESTED TUNING FLOW ═══ */
+  .flow-container {
+    position:relative;
+  }
+  .flow-row {
+    display:flex; gap:10px; align-items:stretch; margin-bottom:10px;
+  }
+  .flow-box {
+    flex:1; padding:16px 18px; background:var(--bg2); border:1px solid var(--border);
+    border-radius:8px; position:relative;
+  }
+  .flow-box-title {
+    font-family:'JetBrains Mono',monospace; font-size:0.72rem; font-weight:700;
+    margin-bottom:8px; display:flex; align-items:center; gap:8px;
+  }
+  .flow-box-body {
+    font-size:0.78rem; color:var(--text-d); line-height:1.65;
+  }
+  .flow-box-body strong { color:var(--text-m); font-weight:600; }
+
+  .flow-badge {
+    font-size:0.55rem; font-weight:700; padding:2px 7px; border-radius:3px;
+    letter-spacing:0.08em; text-transform:uppercase;
+  }
+
+  .flow-arrow {
+    display:flex; justify-content:center; padding:4px 0;
+    color:var(--text-dd); font-size:1.2rem;
+  }
+
+  /* inner folds mini grid */
+  .inner-folds {
+    display:grid; grid-template-columns:repeat(3,1fr); gap:4px; margin:10px 0 6px;
+  }
+  .inner-fold {
+    padding:6px 4px; text-align:center; border-radius:4px;
+    font-family:'JetBrains Mono',monospace; font-size:0.58rem; font-weight:600;
+  }
+  .if-train { background:var(--blue-bg); border:1px solid var(--blue-bd); color:var(--blue); }
+  .if-val { background:var(--green-bg); border:1px solid var(--green-bd); color:var(--green); }
+  .if-purge { background:var(--red-bg); border:1px solid var(--red-bd); color:var(--red); opacity:0.6; font-size:0.5rem; }
+
+  .inner-fold-label {
+    font-family:'JetBrains Mono',monospace; font-size:0.58rem; color:var(--text-dd);
+    text-align:center; margin-bottom:6px;
+  }
+
+  /* ═══ MODEL TRAINING ═══ */
+  .models-grid {
+    display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0;
+  }
+  .model-card {
+    padding:12px 14px; background:var(--bg2); border:1px solid var(--border);
+    border-radius:6px; transition:all 0.15s;
+  }
+  .model-card:hover { border-color:var(--blue-bd); background:var(--bg3); }
+  .model-name {
+    font-family:'JetBrains Mono',monospace; font-size:0.72rem; font-weight:700;
+    margin-bottom:4px; color:var(--text);
+  }
+  .model-detail {
+    font-size:0.68rem; color:var(--text-dd); line-height:1.5;
+  }
+  .model-type {
+    font-family:'JetBrains Mono',monospace; font-size:0.52rem; font-weight:600;
+    padding:2px 6px; border-radius:3px; display:inline-block; margin-bottom:6px;
+  }
+
+  .train-split-viz {
+    display:flex; gap:2px; margin:12px 0; border-radius:6px; overflow:hidden; height:28px;
+  }
+  .tsv-block {
+    display:flex; align-items:center; justify-content:center;
+    font-family:'JetBrains Mono',monospace; font-size:0.58rem; font-weight:600;
+  }
+
+  /* tip boxes */
+  .tip {
+    margin-top:12px; padding:10px 14px; border-radius:6px;
+    font-size:0.75rem; line-height:1.6;
+  }
+  .tip-blue { background:var(--blue-bg); border:1px solid var(--blue-bd); color:var(--blue); }
+  .tip-amber { background:var(--amber-bg); border:1px solid var(--amber-bd); color:var(--amber); }
+  .tip-green { background:var(--green-bg); border:1px solid var(--green-bd); color:var(--green); }
+
+  @media(max-width:700px) {
+    .flow-row { flex-direction:column; }
+    .models-grid { grid-template-columns:1fr; }
+    .cpcv-grid { font-size:0.55rem; }
+    .cpcv-grid .cell { padding:5px 2px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hdr">
+    <h1>CPCV Inner Architecture</h1>
+    <p>How Combinatorial Purged Cross-Validation, nested hyperparameter tuning, and model training work together inside the pipeline.</p>
+  </div>
+
+  <!-- ═══════════ SECTION 1: CPCV SPLITS ═══════════ -->
+  <div class="section">
+    <div class="sec-head">
+      <span class="sec-num" style="background:var(--blue-bg);border:1px solid var(--blue-bd);color:var(--blue);">Part 1</span>
+      <span class="sec-title">CPCV Split Structure</span>
+      <div class="sec-line"></div>
+    </div>
+    <div class="sec-desc">
+      The dataset is divided into <strong>N=6 time-ordered groups</strong>. For each split, <strong>k=2 groups</strong> are held out as the test set, producing <strong>C(6,2) = 15 unique splits</strong> and <strong>5 backtest paths</strong>. Training samples whose Triple Barrier labels overlap with the test period are <strong>purged</strong>, and an <strong>embargo</strong> buffer adds additional protection.
+    </div>
+
+    <div class="cpcv-controls">
+      <label>SPLIT</label>
+      <input type="range" class="split-slider" id="splitSlider" min="0" max="14" value="0">
+      <span class="split-label" id="splitLabel">Split 1/15</span>
+    </div>
+
+    <div class="cpcv-grid" id="cpcvGrid"></div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--blue);"></div>Train</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--amber);"></div>Test</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--red);opacity:0.6;"></div>Purged</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--text-dd);opacity:0.5;"></div>Embargo</div>
+    </div>
+
+    <div class="split-info" id="splitInfo"></div>
+  </div>
+
+  <!-- ═══════════ SECTION 2: NESTED TUNING ═══════════ -->
+  <div class="section">
+    <div class="sec-head">
+      <span class="sec-num" style="background:var(--amber-bg);border:1px solid var(--amber-bd);color:var(--amber);">Part 2</span>
+      <span class="sec-title">Nested Hyperparameter Tuning</span>
+      <div class="sec-line"></div>
+    </div>
+    <div class="sec-desc">
+      Inside each of the 15 splits, tuning runs on the <strong>4 training groups only</strong>. The training fold is subdivided into <strong>3 inner Purged K-Folds</strong> with a 10-observation embargo. Optuna's <strong>TPE sampler</strong> explores the hyperparameter space, and the <strong>Median Pruner</strong> kills underperforming trials after each inner fold. Each split gets its own optimal parameters.
+    </div>
+
+    <div class="flow-container">
+
+      <!-- Step 1: Training fold → inner K-Fold -->
+      <div class="flow-box" style="border-color:var(--blue-bd);">
+        <div class="flow-box-title" style="color:var(--blue);">
+          <span class="flow-badge" style="background:var(--blue-bg);border:1px solid var(--blue-bd);color:var(--blue);">Step 1</span>
+          Training Fold → Inner Purged K-Fold
+        </div>
+        <div class="flow-box-body">
+          The 4 training groups are split into <strong>3 contiguous time blocks</strong>. For each inner fold, one block is validation and the rest are training, with <strong>10 observations purged</strong> around boundaries.
+        </div>
+
+        <!-- Visual: 3 inner folds cycling -->
+        <div style="margin-top:14px;">
+          <div class="inner-fold-label">Inner Fold 1 of 3:</div>
+          <div class="inner-folds">
+            <div class="inner-fold if-val">VAL</div>
+            <div class="inner-fold if-purge">⌀</div>
+            <div class="inner-fold if-train">TRAIN</div>
+          </div>
+          <div class="inner-fold-label" style="margin-top:8px;">Inner Fold 2 of 3:</div>
+          <div class="inner-folds">
+            <div class="inner-fold if-train">TRAIN</div>
+            <div class="inner-fold if-val">VAL</div>
+            <div class="inner-fold if-train">TRAIN</div>
+          </div>
+          <div class="inner-fold-label" style="margin-top:8px;">Inner Fold 3 of 3:</div>
+          <div class="inner-folds">
+            <div class="inner-fold if-train">TRAIN</div>
+            <div class="inner-fold if-purge">⌀</div>
+            <div class="inner-fold if-val">VAL</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-arrow">↓</div>
+
+      <!-- Step 2: Optuna TPE -->
+      <div class="flow-row">
+        <div class="flow-box" style="border-color:var(--amber-bd);">
+          <div class="flow-box-title" style="color:var(--amber);">
+            <span class="flow-badge" style="background:var(--amber-bg);border:1px solid var(--amber-bd);color:var(--amber);">Step 2</span>
+            Optuna TPE Sampler
+          </div>
+          <div class="flow-box-body">
+            The <strong>Tree-structured Parzen Estimator</strong> models the hyperparameter space as two distributions: parameters that produced good results (l) and bad results (g). Each trial samples from l/g to maximize the Expected Improvement, concentrating exploration in promising regions rather than exhaustive grid search.
+            <div class="tip tip-amber" style="margin-top:10px;">
+              <strong>20–30 trials</strong> per model (configurable via n_trials parameter). Search spaces capped to prevent overfitting on small samples.
+            </div>
+          </div>
+        </div>
+
+        <div class="flow-box" style="border-color:var(--red-bd);">
+          <div class="flow-box-title" style="color:var(--red);">
+            <span class="flow-badge" style="background:var(--red-bg);border:1px solid var(--red-bd);color:var(--red);">Step 2b</span>
+            Median Pruner
+          </div>
+          <div class="flow-box-body">
+            After evaluating each inner fold, the <strong>running mean log loss</strong> is reported. If a trial's intermediate result falls below the <strong>median of all completed trials</strong>, it is terminated early. This cuts wasted compute on clearly bad hyperparameter regions.
+            <div class="tip tip-blue" style="margin-top:10px;">
+              <strong>3 startup trials</strong> run without pruning to establish the median baseline.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-arrow">↓</div>
+
+      <!-- Step 3: Best params -->
+      <div class="flow-box" style="border-color:var(--green-bd);">
+        <div class="flow-box-title" style="color:var(--green);">
+          <span class="flow-badge" style="background:var(--green-bg);border:1px solid var(--green-bd);color:var(--green);">Output</span>
+          Per-Split Optimal Parameters
+        </div>
+        <div class="flow-box-body">
+          The trial with the <strong>lowest mean log loss</strong> across all 3 inner folds wins. Its parameters are applied to the module-level constants before model training begins for this split. Parameters <strong>may differ across splits</strong>, correctly simulating dynamic adaptation to changing market regimes.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════ SECTION 3: MODEL TRAINING ═══════════ -->
+  <div class="section">
+    <div class="sec-head">
+      <span class="sec-num" style="background:var(--green-bg);border:1px solid var(--green-bd);color:var(--green);">Part 3</span>
+      <span class="sec-title">Model Training & Prediction</span>
+      <div class="sec-line"></div>
+    </div>
+    <div class="sec-desc">
+      After tuning, the training fold is split <strong>80/20</strong> for model fitting and probability calibration. All 6 models are trained with the tuned parameters, calibrated via temperature scaling, then predict on the held-out test fold. Each model runs with <strong>multiple seeds</strong> to assess initialization sensitivity.
+    </div>
+
+    <!-- Calibration split viz -->
+    <div style="margin-bottom:16px;">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:var(--text-dd);margin-bottom:6px;letter-spacing:0.05em;">
+        TRAINING FOLD ALLOCATION
+      </div>
+      <div class="train-split-viz">
+        <div class="tsv-block" style="flex:4;background:var(--blue-bg);border:1px solid var(--blue-bd);color:var(--blue);">
+          MODEL TRAINING (80%)
+        </div>
+        <div class="tsv-block" style="flex:1;background:var(--purple-bg);border:1px solid var(--purple-bd);color:var(--purple);">
+          CAL (20%)
+        </div>
+      </div>
+    </div>
+
+    <!-- Model cards -->
+    <div class="models-grid">
+      <div class="model-card">
+        <div class="model-type" style="background:var(--gray-bg);border:1px solid var(--gray-bd);color:var(--text-dd);">BASELINE</div>
+        <div class="model-name">AR Logistic</div>
+        <div class="model-detail">6 lagged returns, no tuning, deterministic. 3 seeds.</div>
+      </div>
+      <div class="model-card">
+        <div class="model-type" style="background:var(--blue-bg);border:1px solid var(--blue-bd);color:var(--blue);">LINEAR</div>
+        <div class="model-name">Logistic Regression</div>
+        <div class="model-detail">L1/L2 penalty, class-balanced, tuned C and penalty. 3 seeds.</div>
+      </div>
+      <div class="model-card">
+        <div class="model-type" style="background:var(--green-bg);border:1px solid var(--green-bd);color:var(--green);">ENSEMBLE</div>
+        <div class="model-name">Random Forest</div>
+        <div class="model-detail">Balanced subsampling, tuned depth, leaf size, n_estimators (≤ 300). 3 seeds.</div>
+      </div>
+      <div class="model-card">
+        <div class="model-type" style="background:var(--green-bg);border:1px solid var(--green-bd);color:var(--green);">ENSEMBLE</div>
+        <div class="model-name">XGBoost</div>
+        <div class="model-detail">Early stopping, 8 tuned params (depth ≤ 6, LR, subsample, regularization). 3 seeds.</div>
+      </div>
+      <div class="model-card">
+        <div class="model-type" style="background:var(--purple-bg);border:1px solid var(--purple-bd);color:var(--purple);">NEURAL</div>
+        <div class="model-name">LSTM</div>
+        <div class="model-detail">21-step lookback, batch training, tuned hidden (≤ 64)/layers/dropout (≥ 0.1)/LR. 2 seeds.</div>
+      </div>
+      <div class="model-card">
+        <div class="model-type" style="background:var(--amber-bg);border:1px solid var(--amber-bd);color:var(--amber);">NEURAL</div>
+        <div class="model-name">KAN</div>
+        <div class="model-detail">B-spline activations, tanh normalization, AdamW, tuned architecture (width ≤ 12)/LR/grid. 2 seeds.</div>
+      </div>
+    </div>
+
+    <!-- Calibration + Prediction flow -->
+    <div class="flow-arrow">↓</div>
+
+    <div class="flow-row">
+      <div class="flow-box" style="border-color:var(--purple-bd);">
+        <div class="flow-box-title" style="color:var(--purple);">
+          Temperature Scaling
+        </div>
+        <div class="flow-box-body">
+          A single parameter <strong>T</strong> is optimized on the 20% calibration set to minimize NLL: <strong>P = softmax(logits / T)</strong>. Corrects overconfident/underconfident probabilities without changing model rankings.
+        </div>
+      </div>
+      <div class="flow-box" style="border-color:var(--cyan-bg);">
+        <div class="flow-box-title" style="color:var(--cyan);">
+          Test Fold Prediction
+        </div>
+        <div class="flow-box-body">
+          Calibrated probabilities are used to predict on the <strong>2 test groups</strong> (never seen during tuning or training). Predictions are stored per <strong>(model, split, seed)</strong> for downstream evaluation, path stitching, DSR, and PBO computation.
+        </div>
+      </div>
+    </div>
+
+    <div class="tip tip-green" style="margin-top:12px;">
+      <strong>Total per split:</strong> 6 models × 2–3 seeds = 14 predictions. Across 15 splits: <strong>~210 prediction entries</strong> feeding into 5 backtest paths.
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ═══ CPCV Split Generator ═══════════════════════════════════════
+const N = 6, K = 2;
+
+// generate all C(6,2) = 15 splits
+function getCombinations(n, k) {
+  const result = [];
+  function combo(start, chosen) {
+    if (chosen.length === k) { result.push([...chosen]); return; }
+    for (let i = start; i < n; i++) combo(i + 1, [...chosen, i]);
+  }
+  combo(0, []);
+  return result;
+}
+
+const ALL_SPLITS = getCombinations(N, K);
+
+function renderGrid(splitIdx) {
+  const testGroups = ALL_SPLITS[splitIdx];
+  const grid = document.getElementById('cpcvGrid');
+  const info = document.getElementById('splitInfo');
+  document.getElementById('splitLabel').textContent = 'Split ' + (splitIdx + 1) + '/15';
+
+  // determine purge/embargo zones (groups adjacent to test groups)
+  const purgeGroups = new Set();
+  const embargoGroups = new Set();
+  testGroups.forEach(tg => {
+    if (tg > 0) purgeGroups.add(tg - 1);
+    if (tg < N - 1) embargoGroups.add(tg + 1);
+  });
+  // remove test groups from purge/embargo sets
+  testGroups.forEach(tg => { purgeGroups.delete(tg); embargoGroups.delete(tg); });
+  // remove purge groups from embargo
+  purgeGroups.forEach(pg => embargoGroups.delete(pg));
+
+  const trainGroups = [];
+  for (let g = 0; g < N; g++) {
+    if (!testGroups.includes(g) && !purgeGroups.has(g) && !embargoGroups.has(g)) {
+      trainGroups.push(g);
+    }
+  }
+
+  // header row
+  let html = '<div class="gh"></div>';
+  for (let g = 0; g < N; g++) html += '<div class="gh">G' + (g + 1) + '</div>';
+
+  // role row
+  html += '<div class="rl">Role</div>';
+  for (let g = 0; g < N; g++) {
+    if (testGroups.includes(g)) {
+      html += '<div class="cell cell-test">TEST</div>';
+    } else if (purgeGroups.has(g)) {
+      html += '<div class="cell cell-purge">PURGE</div>';
+    } else if (embargoGroups.has(g)) {
+      html += '<div class="cell cell-embargo">EMBARGO</div>';
+    } else {
+      html += '<div class="cell cell-train">TRAIN</div>';
+    }
+  }
+
+  grid.innerHTML = html;
+
+  // info box
+  const pureTrainCount = trainGroups.length;
+  info.innerHTML =
+    '<strong>Test groups:</strong> G' + testGroups.map(g => g+1).join(', G') +
+    '  |  <strong>Training groups:</strong> ' + pureTrainCount + ' of 6' +
+    '  |  <strong>Purged:</strong> ' + purgeGroups.size + ' group(s) adjacent to test' +
+    '  |  <strong>Embargo:</strong> ' + embargoGroups.size + ' group(s) buffer' +
+    '<br><strong>Inner tuning:</strong> ' + pureTrainCount + ' training groups → 3 Purged K-Folds → Optuna TPE (per model)' +
+    '  →  <strong>Unique params for this split</strong>';
+}
+
+document.getElementById('splitSlider').addEventListener('input', function() {
+  renderGrid(parseInt(this.value));
+});
+
+renderGrid(0);
+</script>
+</body>
+</html>
