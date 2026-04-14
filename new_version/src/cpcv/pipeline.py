@@ -158,6 +158,7 @@ def run_cpcv_pipeline(
     top_k_frac: float | None = None,
     tune: bool = False,
     tune_models: list[str] | None = None,
+    n_trials: int | None = None,
 ) -> dict:
     """Run the full CPCV evaluation across all models and all splits.
 
@@ -195,6 +196,10 @@ def run_cpcv_pipeline(
     tune_models : list[str], optional
         Which models to tune. Defaults to ["logistic", "random_forest",
         "xgboost"]. Add "lstm" and/or "kan" for full tuning (slower).
+    n_trials : int, optional
+        Number of Optuna trials per model per split. Overrides the
+        defaults in tuning.py (60 for classical, 40 for neural).
+        Lower values (e.g. 20–30) speed up tuning significantly.
 
     Returns
     -------
@@ -223,7 +228,7 @@ def run_cpcv_pipeline(
     print(f"  FFD columns:    {ffd_columns}")
     print(f"  Samples:        {len(X)}")
     print(f"  Features:       {X.shape[1]}")
-    print(f"  Tuning:         {'NESTED (per-split) — ' + str(tune_models) if tune else 'OFF'}")
+    print(f"  Tuning:         {'NESTED (per-split) — ' + str(tune_models) + (' [' + str(n_trials) + ' trials]' if n_trials else '') if tune else 'OFF'}")
     print("=" * 60)
 
     # ── map labels: {-1, +1} → {0, 1} ────────────────────────────────
@@ -319,6 +324,7 @@ def run_cpcv_pipeline(
                 models=[m for m in tune_models if m != "ar_logistic"],
                 seed=0,
                 verbose=True,
+                n_trials=n_trials,
             )
 
             # apply tuned params to module-level constants
