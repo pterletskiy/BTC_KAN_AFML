@@ -173,7 +173,7 @@ def _evaluate_on_splits(splits, model_fn, trial=None):
 # =====================================================================
 # Logistic Regression
 # =====================================================================
-def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True):
+def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
     """Tune Logistic Regression via Optuna TPE + Purged K-Fold.
 
     Search space:
@@ -181,11 +181,12 @@ def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True):
         penalty: categorical {l1, l2}
     """
     splits = _purged_kfold_splits(X_train, y_train, w_train)
+    _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
         print(
             f"    [tuning] logistic: {len(splits)} purged K-fold splits, "
-            f"{N_TRIALS_CLASSICAL} Optuna trials (TPE)"
+            f"{_n} Optuna trials (TPE)"
         )
 
     all_results = []
@@ -220,7 +221,7 @@ def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True):
         sampler=TPESampler(seed=OPTUNA_SEED),
         pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=1),
     )
-    study.optimize(objective, n_trials=N_TRIALS_CLASSICAL, show_progress_bar=False)
+    study.optimize(objective, n_trials=_n, show_progress_bar=False)
 
     df = pd.DataFrame(all_results).sort_values("log_loss", ignore_index=True)
     best = study.best_params
@@ -238,7 +239,7 @@ def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True):
 # =====================================================================
 # Random Forest
 # =====================================================================
-def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True):
+def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
     """Tune Random Forest via Optuna TPE + Purged K-Fold.
 
     Search space:
@@ -248,11 +249,12 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True):
         max_features:     categorical {sqrt, log2}
     """
     splits = _purged_kfold_splits(X_train, y_train, w_train)
+    _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
         print(
             f"    [tuning] random_forest: {len(splits)} purged K-fold splits, "
-            f"{N_TRIALS_CLASSICAL} Optuna trials (TPE)"
+            f"{_n} Optuna trials (TPE)"
         )
 
     all_results = []
@@ -293,7 +295,7 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True):
         sampler=TPESampler(seed=OPTUNA_SEED),
         pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=1),
     )
-    study.optimize(objective, n_trials=N_TRIALS_CLASSICAL, show_progress_bar=False)
+    study.optimize(objective, n_trials=_n, show_progress_bar=False)
 
     df = pd.DataFrame(all_results).sort_values("log_loss", ignore_index=True)
     best = study.best_params
@@ -316,7 +318,7 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True):
 # =====================================================================
 # XGBoost
 # =====================================================================
-def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True):
+def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
     """Tune XGBoost via Optuna TPE + Purged K-Fold.
 
     Search space:
@@ -332,11 +334,12 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True):
     n_estimators fixed at 500 with early stopping (20 rounds).
     """
     splits = _purged_kfold_splits(X_train, y_train, w_train)
+    _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
         print(
             f"    [tuning] xgboost: {len(splits)} purged K-fold splits, "
-            f"{N_TRIALS_CLASSICAL} Optuna trials (TPE)"
+            f"{_n} Optuna trials (TPE)"
         )
 
     all_results = []
@@ -414,7 +417,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True):
         sampler=TPESampler(seed=OPTUNA_SEED),
         pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=1),
     )
-    study.optimize(objective, n_trials=N_TRIALS_CLASSICAL, show_progress_bar=False)
+    study.optimize(objective, n_trials=_n, show_progress_bar=False)
 
     df = pd.DataFrame(all_results).sort_values("log_loss", ignore_index=True)
     best = study.best_params
@@ -442,7 +445,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True):
 # LSTM
 # =====================================================================
 def tune_lstm(X_train, y_train, w_train=None, n_features=None,
-              seed=42, verbose=True):
+              seed=42, verbose=True, n_trials=None):
     """Tune LSTM via Optuna TPE + Purged K-Fold.
 
     Search space:
@@ -492,10 +495,12 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     if not seq_splits:
         return {"best_params": {}, "best_log_loss": np.nan, "results_df": pd.DataFrame()}
 
+    _n = n_trials if n_trials is not None else N_TRIALS_NEURAL
+
     if verbose:
         print(
             f"    [tuning] lstm: {len(seq_splits)} purged K-fold splits, "
-            f"{N_TRIALS_NEURAL} Optuna trials (TPE)"
+            f"{_n} Optuna trials (TPE)"
         )
 
     all_results = []
@@ -617,7 +622,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
         sampler=TPESampler(seed=OPTUNA_SEED),
         pruner=MedianPruner(n_startup_trials=3, n_warmup_steps=1),
     )
-    study.optimize(objective, n_trials=N_TRIALS_NEURAL, show_progress_bar=False)
+    study.optimize(objective, n_trials=_n, show_progress_bar=False)
 
     if not all_results:
         return {"best_params": {}, "best_log_loss": np.nan, "results_df": pd.DataFrame()}
@@ -644,7 +649,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 # KAN (efficient-kan + AdamW)
 # =====================================================================
 def tune_kan(X_train, y_train, w_train=None, n_features=None,
-             seed=42, verbose=True):
+             seed=42, verbose=True, n_trials=None):
     """Tune KAN via Optuna TPE + Purged K-Fold.
 
     Search space:
@@ -669,11 +674,13 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     epochs = 200
     patience = 20
 
+    _n = n_trials if n_trials is not None else N_TRIALS_NEURAL
+
     if verbose:
         print(
             f"    [tuning] kan (efficient-kan + AdamW): "
             f"{len(splits)} purged K-fold splits, "
-            f"{N_TRIALS_NEURAL} Optuna trials (TPE)"
+            f"{_n} Optuna trials (TPE)"
         )
 
     all_results = []
@@ -815,7 +822,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
         sampler=TPESampler(seed=OPTUNA_SEED),
         pruner=MedianPruner(n_startup_trials=3, n_warmup_steps=1),
     )
-    study.optimize(objective, n_trials=N_TRIALS_NEURAL, show_progress_bar=False)
+    study.optimize(objective, n_trials=_n, show_progress_bar=False)
 
     if not all_results:
         return {"best_params": {}, "best_log_loss": np.nan, "results_df": pd.DataFrame()}
@@ -844,7 +851,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
 # =====================================================================
 def tune_all_models(
     X_train, y_train, w_train=None, n_features=None,
-    models=None, seed=42, verbose=True,
+    models=None, seed=42, verbose=True, n_trials=None,
 ):
     """Run Optuna TPE hyperparameter tuning for all specified models.
 
@@ -853,6 +860,9 @@ def tune_all_models(
     models : list[str], optional
         Models to tune. Defaults to ["logistic", "random_forest", "xgboost"].
         Add "lstm" and/or "kan" for neural model tuning.
+    n_trials : int, optional
+        Number of Optuna trials per model. If None, uses defaults
+        (60 for classical, 40 for neural).
 
     Returns
     -------
@@ -869,11 +879,11 @@ def tune_all_models(
         )
 
     dispatch = {
-        "logistic": lambda: tune_logistic(X_train, y_train, w_train, seed, verbose),
-        "random_forest": lambda: tune_random_forest(X_train, y_train, w_train, seed, verbose),
-        "xgboost": lambda: tune_xgboost(X_train, y_train, w_train, seed, verbose),
-        "lstm": lambda: tune_lstm(X_train, y_train, w_train, n_features, seed, verbose),
-        "kan": lambda: tune_kan(X_train, y_train, w_train, n_features, seed, verbose),
+        "logistic": lambda: tune_logistic(X_train, y_train, w_train, seed, verbose, n_trials),
+        "random_forest": lambda: tune_random_forest(X_train, y_train, w_train, seed, verbose, n_trials),
+        "xgboost": lambda: tune_xgboost(X_train, y_train, w_train, seed, verbose, n_trials),
+        "lstm": lambda: tune_lstm(X_train, y_train, w_train, n_features, seed, verbose, n_trials),
+        "kan": lambda: tune_kan(X_train, y_train, w_train, n_features, seed, verbose, n_trials),
     }
 
     all_results = {}
