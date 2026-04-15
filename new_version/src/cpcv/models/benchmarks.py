@@ -184,11 +184,12 @@ class LogisticRegressionModel(BaseModel):
         y = y_train.values if hasattr(y_train, "values") else y_train
         w = sample_weight.values if hasattr(sample_weight, "values") else sample_weight
 
+        solver = "liblinear" if LOGISTIC_PENALTY == "l1" else "lbfgs"
         self.model = LogisticRegression(
             C=LOGISTIC_C,
             penalty=LOGISTIC_PENALTY,
             class_weight="balanced",
-            solver="lbfgs",
+            solver=solver,
             max_iter=LOGISTIC_MAX_ITER,
             random_state=self.seed,
         )
