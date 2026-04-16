@@ -5,15 +5,18 @@ Compute all features from the full OHLCV DataFrame. Returns a feature
 matrix covering every daily bar. Feature selection by row (restricting
 to labeled events) happens later in alignment.
 
-Implements technical analysis features (Step 6a), AFML Part 4
-mathematical features (Step 6b), and log transforms (Step 7).
+Implements technical analysis features, AFML Part 4 mathematical
+features, and log transforms.
 
 TA features (23 total):
-  Original 12: log_returns, rsi, macd, macd_signal, macd_hist, bb_width,
-               atr, obv, gk_vol, realized_vol, skewness, kurtosis
-  New 11:      yz_vol, ema_ratio_20_50, ema_ratio_50_200, vwma_ratio_20_50,
-               roc_14, stoch_k, stoch_d, williams_r, cci_14, chaikin_osc,
-               mfi_14
+  log_returns, rsi, macd, macd_signal, macd_hist, bb_width, atr, obv,
+  skewness, kurtosis, realized_vol, gk_vol, yz_vol, ema_ratio_20_50,
+  ema_ratio_50_200, vwma_ratio_20_50, roc_14, stoch_k, stoch_d,
+  williams_r, cci_14, chaikin_osc, mfi_14
+
+Mathematical features (9 total):
+  shannon_entropy, lz_complexity, hurst, variance_ratio, jarque_bera,
+  gaussian_entropy, sadf, smt_poly1, smt_exp
 """
 
 import logging
@@ -34,7 +37,6 @@ BB_PERIOD = 20
 ATR_PERIOD = 14
 ROLLING_WINDOW = 21
 
-# new feature parameters
 EMA_SHORT = 20
 EMA_MID = 50
 EMA_LONG = 200
@@ -47,18 +49,18 @@ CHAIKIN_FAST = 3
 CHAIKIN_SLOW = 10
 YZ_WINDOW = 21
 
-# ── Mathematical feature parameters ──────────────────────────────────
-SADF_MIN_SL = 63        # minimum sample length (~1 quarter)
+# ── Mathematical feature parameters ───────────────────────────────────
+SADF_MIN_SL = 63                # minimum sample length (~1 quarter)
 SADF_LAGS = 1
 ENTROPY_WINDOW = 21
 LZ_WINDOW = 63
 HURST_WINDOW = 126
-VR_WINDOW = 63             
-VR_LAG = 5                 
-JB_WINDOW = 63             
-GAUSS_ENT_WINDOW = 21      
+VR_WINDOW = 63
+VR_LAG = 5
+JB_WINDOW = 63
+GAUSS_ENT_WINDOW = 21
 
-# ── Log transform targets ────────────────────────────────────────────
+# ── Log transform targets ─────────────────────────────────────────────
 LOG_TRANSFORM_COLUMNS = ["atr", "obv"]
 
 # ── Cache ─────────────────────────────────────────────────────────────
@@ -89,8 +91,6 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     open_ = df["Open"]
 
     features = pd.DataFrame(index=df.index)
-
-    # ── Original 12 features ──────────────────────────────────────────
 
     # 1. Log returns
     log_returns = np.log(close / close.shift(1))
@@ -149,8 +149,6 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     gk_daily = 0.5 * log_hl ** 2 - (2.0 * np.log(2) - 1.0) * log_co ** 2
     features["gk_vol"] = gk_daily.rolling(ROLLING_WINDOW).mean()
 
-    # ── Aditional 11 features ───────────────────────────────────────────────
-
     # 11. Yang-Zhang volatility (best unbiased OHLC estimator)
     features["yz_vol"] = _yang_zhang_volatility(
         open_, high, low, close, window=YZ_WINDOW,
@@ -170,7 +168,7 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     vwma_50 = (close * volume).rolling(EMA_MID).sum() / volume.rolling(EMA_MID).sum()
     features["vwma_ratio_20_50"] = vwma_20 / vwma_50
 
-    # 15. Rate of Change (top predictor in Confluence paper)
+    # 15. Rate of Change
     features["roc_14"] = (close / close.shift(ROC_PERIOD) - 1.0) * 100.0
 
     # 16. Stochastic %K
@@ -225,17 +223,15 @@ def _yang_zhang_volatility(
     Rogers-Satchell components for the most efficient unbiased
     OHLC volatility estimate.
     """
-    log_oc = np.log(open_ / close.shift(1))   # overnight return
-    log_co = np.log(close / open_)             # close-to-open
+    log_oc = np.log(open_ / close.shift(1))
+    log_co = np.log(close / open_)
     log_ho = np.log(high / open_)
     log_lo = np.log(low / open_)
     log_hc = np.log(high / close)
     log_lc = np.log(low / close)
 
-    # Rogers-Satchell component
     rs = log_ho * log_hc + log_lo * log_lc
 
-    # rolling variances
     k = 0.34 / (1.34 + (window + 1) / (window - 1))
 
     var_overnight = log_oc.rolling(window).var()
@@ -295,7 +291,8 @@ def compute_math_features(
     df : pd.DataFrame
         OHLCV DataFrame with DatetimeIndex.
     which : list[str] or "all"
-        Features to compute. Options: 'shannon_entropy', 'lz_complexity', 'hurst',
+        Features to compute. Options: 'shannon_entropy', 'lz_complexity',
+        'hurst', 'variance_ratio', 'jarque_bera', 'gaussian_entropy',
         'sadf', 'smt'. Pass "all" for everything.
     """
     ALL_MATH = ["shannon_entropy", "lz_complexity", "hurst", "variance_ratio",
@@ -423,12 +420,10 @@ def _compute_rolling_variance_ratio(
         if np.any(np.isnan(w)):
             continue
 
-        # single-period variance
         var_1 = np.var(w, ddof=1)
         if var_1 < 1e-20:
             continue
 
-        # multi-period returns
         m = len(w) - lag
         if m < 2:
             continue
@@ -468,7 +463,7 @@ def _compute_rolling_jarque_bera(
 
         z = (w - mean_w) / std_w
         skew = np.mean(z ** 3)
-        kurt = np.mean(z ** 4) - 3.0  # excess kurtosis
+        kurt = np.mean(z ** 4) - 3.0
 
         jb = (m / 6.0) * (skew ** 2 + kurt ** 2 / 4.0)
         result.iloc[i] = jb
@@ -504,6 +499,7 @@ def _compute_rolling_gaussian_entropy(
         result.iloc[i] = 0.5 * np.log(2.0 * np.pi * np.e * var)
 
     return result.reindex(log_returns.index)
+
 
 # ---------------------------------------------------------------------------
 # SADF (AFML Snippet 17.1)
@@ -759,7 +755,7 @@ def _hurst_rs(data: np.ndarray, sub_periods: np.ndarray) -> float:
 
 
 # =====================================================================
-# Step 7 — Log transforms
+# Log transforms
 # =====================================================================
 def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
     """Apply log transforms to scale-compress specified columns.
@@ -797,7 +793,7 @@ def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        ~30 feature columns covering every daily bar.
+        Feature columns covering every daily bar.
     """
     ta = compute_ta_features(df)
     math = compute_math_features(df)

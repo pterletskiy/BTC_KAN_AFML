@@ -1,14 +1,24 @@
 """
 4.2) External Features
-==================
+============================
 Fetch, cache, and align external data sources to BTC's daily calendar.
 
-Macro features (10):
-  dxy_roc_21, us2y, us10y, yield_curve_2y10y, yield_curve_10y30y,
-  vix, sp500_ret_21, nasdaq_ret_21, gold_ret_21, oil_ret_21
+Features are organized into three groups:
 
-Crypto-specific features (2):
+Macro (13):
+  Traditional finance signals reflecting the broader economic environment.
+  dxy_roc_21, us2y, us10y, yield_curve_2y10y, yield_curve_10y30y, vix,
+  sp500_ret_21, nasdaq_ret_21, gold_ret_21, silver_ret_21, copper_ret_21,
+  oil_ret_21, natgas_ret_21
+
+Crypto-Macro (2):
+  Market-level cross-crypto signals (not blockchain fundamentals).
   eth_btc_ratio, btc_dominance
+
+On-Chain (8):
+  Blockchain network activity from CoinMetrics Community API.
+  active_addr_roc_14, tx_count_roc_14, hashrate_roc_30, mvrv,
+  net_exchange_flow, fee_per_tx, exchange_supply_pct, issuance_ntv
 
 All external data is forward-filled to BTC's trading calendar via
 pd.merge_asof(direction='backward') so that each BTC day uses the
@@ -29,6 +39,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 CACHE_DIR = "cache/"
 EXTERNAL_CACHE_FILE = "external_features.parquet"
+ONCHAIN_CACHE_FILE = "onchain_raw.parquet"
 
 # yfinance tickers for macro data
 MACRO_TICKERS = {
@@ -54,6 +65,20 @@ COINGECKO_BTC_DOM_URL = (
     "?vs_currency=usd&days=max&interval=daily"
 )
 
+# CoinMetrics metrics to fetch (daily, community tier)
+COINMETRICS_METRICS = [
+    "AdrActCnt",       # active addresses
+    "TxCnt",           # transaction count
+    "HashRate",        # hash rate
+    "CapMVRVCur",      # MVRV ratio
+    "FlowInExNtv",     # exchange inflows (BTC)
+    "FlowOutExNtv",    # exchange outflows (BTC)
+    "FeeTotNtv",       # total fees (BTC)
+    "SplyExNtv",       # supply on exchanges (BTC)
+    "SplyCur",         # current supply
+    "IssTotNtv",       # daily issuance (BTC)
+]
+
 
 # =====================================================================
 # Data fetching helpers
@@ -78,12 +103,15 @@ def _fetch_yfinance(ticker: str, start: str, end: str) -> pd.Series:
 
 
 def _fetch_us2y(start: str, end: str) -> pd.Series:
-    """Fetch 2Y Treasury yield. Falls back through multiple sources."""
-    # attempt 1: pandas_datareader from FRED (full history)
+    """Fetch 2Y Treasury yield from FRED.
+
+    Returns an empty Series on failure. The caller is expected to
+    fall back to the T10Y2Y spread derivation in compute_macro_features.
+    """
     try:
         import pandas_datareader.data as web
         from pandas_datareader.fred import FredReader
-        FredReader.timeout = 60  # increase from default 30s
+        FredReader.timeout = 60  # default 30s is too aggressive
         series = web.DataReader("DGS2", "fred", start, end)["DGS2"]
         series.index = pd.to_datetime(series.index).tz_localize(None)
         series = series.dropna()
@@ -93,38 +121,19 @@ def _fetch_us2y(start: str, end: str) -> pd.Series:
     except (ImportError, Exception) as e:
         logger.warning("FRED DGS2 failed: %s", e)
 
-    # attempt 2: derive from FRED T10Y2Y spread + 10Y yield
-    try:
-        import pandas_datareader.data as web
-        from pandas_datareader.fred import FredReader
-        FredReader.timeout = 60  # increase from default 30s
-        spread = web.DataReader("T10Y2Y", "fred", start, end)["T10Y2Y"]
-        spread.index = pd.to_datetime(spread.index).tz_localize(None)
-        spread = spread.dropna()
-        if len(spread) > 2000:
-            logger.info("Using T10Y2Y + 10Y to derive 2Y yield (%d bars).", len(spread))
-            return spread  # return spread directly, handle in caller
-    except (ImportError, Exception) as e:
-        logger.warning("FRED T10Y2Y failed: %s", e)
-
-    # attempt 3: yfinance futures
-    try:
-        series = _fetch_yfinance("2YY=F", start, end)
-        if len(series) > 100:
-            return series
-    except Exception:
-        pass
-
-    logger.warning("Could not fetch 2Y yield from any source. Column will be NaN.")
     return pd.Series(dtype=float)
 
 
 def _fetch_btc_dominance(start: str, end: str) -> pd.Series:
-    """Fetch BTC dominance from CoinGecko API."""
+    """Fetch BTC market cap history from CoinGecko.
+
+    Returns BTC market cap (in USD) rather than dominance percentage.
+    The absolute market cap carries the same signal as dominance after
+    feature scaling and is more reliable to fetch in a single call.
+    """
     try:
         import requests
 
-        # fetch BTC market cap history
         resp = requests.get(COINGECKO_BTC_DOM_URL, timeout=30)
         resp.raise_for_status()
         data = resp.json()
@@ -133,26 +142,10 @@ def _fetch_btc_dominance(start: str, end: str) -> pd.Series:
         btc_mcap["date"] = pd.to_datetime(btc_mcap["timestamp"], unit="ms").dt.normalize()
         btc_mcap = btc_mcap.drop_duplicates("date", keep="last").set_index("date")["btc_mcap"]
         btc_mcap.index = btc_mcap.index.tz_localize(None)
-
-        # get current dominance percentage for scaling
-        time.sleep(1.5)  # CoinGecko rate limit
-        resp_g = requests.get("https://api.coingecko.com/api/v3/global", timeout=30)
-        resp_g.raise_for_status()
-        current_dom = resp_g.json()["data"]["market_cap_percentage"]["btc"]
-
-        # current total market cap
-        current_total = btc_mcap.iloc[-1] / (current_dom / 100.0)
-
-        # approximate historical total market cap assuming BTC mcap / total is
-        # roughly proportional (this is an approximation for early years)
-        # Better approach: use the ratio trend
         btc_mcap = btc_mcap.loc[start:end]
 
         if len(btc_mcap) > 100:
-            logger.info("BTC market cap from CoinGecko: %d days. Current dominance: %.1f%%",
-                        len(btc_mcap), current_dom)
-            # return raw market cap; the ratio with total is what matters
-            # and feature selection will handle it
+            logger.info("BTC market cap from CoinGecko: %d days.", len(btc_mcap))
             return btc_mcap
 
         return pd.Series(dtype=float)
@@ -162,11 +155,15 @@ def _fetch_btc_dominance(start: str, end: str) -> pd.Series:
         return pd.Series(dtype=float)
 
 
-def _compute_btc_dominance_proxy(btc_close: pd.Series, start: str, end: str) -> pd.Series:
-    """Approximate BTC dominance using inverse ETH/BTC ratio.
+def _compute_btc_dominance_proxy(
+    btc_close: pd.Series, start: str, end: str,
+) -> pd.Series:
+    """Approximate BTC dominance using the inverse ETH/BTC ratio.
 
-    When CoinGecko API is unavailable, 1/(1 + ETH/BTC) serves as a
-    proxy: when ETH/BTC rises, BTC dominance falls.
+    When CoinGecko is unavailable, 100 / (1 + ETH_USD / BTC_USD) serves
+    as a rough proxy: when ETH outperforms BTC, dominance proxy falls.
+    This is not true market-cap dominance but preserves the directional
+    signal after feature scaling.
     """
     try:
         eth = _fetch_yfinance("ETH-USD", start, end)
@@ -187,8 +184,14 @@ def _compute_btc_dominance_proxy(btc_close: pd.Series, start: str, end: str) -> 
         return pd.Series(dtype=float)
 
 
-def _align_to_btc(series: pd.Series, btc_index: pd.DatetimeIndex, name: str) -> pd.Series:
-    """Forward-fill an external series to BTC's daily calendar."""
+def _align_to_btc(
+    series: pd.Series, btc_index: pd.DatetimeIndex, name: str,
+) -> pd.Series:
+    """Forward-fill an external series to BTC's daily calendar.
+
+    Uses merge_asof with direction='backward' so each BTC day gets the
+    most recent available value from the external source.
+    """
     if series.empty:
         return pd.Series(np.nan, index=btc_index, name=name)
 
@@ -211,10 +214,10 @@ def _align_to_btc(series: pd.Series, btc_index: pd.DatetimeIndex, name: str) -> 
 
 
 # =====================================================================
-# Macro features
+# Macro Features (13)
 # =====================================================================
 def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
-    """Compute 10 macro features aligned to BTC's daily calendar.
+    """Compute 13 macro features aligned to BTC's daily calendar.
 
     Parameters
     ----------
@@ -224,7 +227,7 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        10 macro feature columns indexed on btc_index.
+        13 macro feature columns indexed on btc_index.
     """
     # buffer for rolling calculations
     start = str(btc_index[0].date() - pd.Timedelta(days=250))
@@ -234,7 +237,7 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
 
     print("[external] Fetching macro data from yfinance...")
 
-    # ── fetch all tickers ─────────────────────────────────────────────
+    # fetch all yfinance tickers
     raw = {}
     for name, ticker in MACRO_TICKERS.items():
         t0 = time.time()
@@ -246,15 +249,13 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
             logger.warning("Failed to fetch %s (%s): %s", name, ticker, e)
             raw[name] = pd.Series(dtype=float)
 
-    # fetch 2Y yield separately
+    # fetch 2Y yield separately (FRED)
     t0 = time.time()
     raw["us2y"] = _fetch_us2y(start, end)
     print(f"  {'us2y':>10s} ({'DGS2':>10s}): {len(raw['us2y'])} bars ({time.time()-t0:.1f}s)")
 
-    # ── align all to BTC calendar ─────────────────────────────────────
+    # align all to BTC calendar
     aligned = {name: _align_to_btc(series, btc_index, name) for name, series in raw.items()}
-
-    # ── compute features ──────────────────────────────────────────────
 
     # 1. DXY 21-day rate of change (%)
     dxy = aligned["dxy"]
@@ -266,7 +267,7 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
         us10y = us10y / 10.0
     features["us10y"] = us10y
 
-    # 3. US 2Y yield
+    # 3 & 4. US 2Y yield + yield curve 2y10y (with FRED spread fallback)
     us2y = aligned["us2y"]
     if us2y.notna().sum() > 2000:
         if us2y.median() > 10:
@@ -274,7 +275,7 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
         features["us2y"] = us2y
         features["yield_curve_2y10y"] = features["us10y"] - features["us2y"]
     else:
-        # fallback: fetch spread directly from FRED
+        # fallback: fetch the T10Y2Y spread directly from FRED
         try:
             import pandas_datareader.data as web
             spread = web.DataReader("T10Y2Y", "fred", start, end)["T10Y2Y"]
@@ -289,44 +290,42 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
             features["us2y"] = np.nan
             features["yield_curve_2y10y"] = np.nan
 
-    # 4. Yield curve: 30Y minus 10Y spread
+    # 5. Yield curve 10y30y
     us30y = aligned["us30y"]
     if us30y.median() > 10:
         us30y = us30y / 10.0
     features["yield_curve_10y30y"] = us30y - features["us10y"]
 
-    # 5. VIX (level)
+    # 6. VIX (level)
     features["vix"] = aligned["vix"]
 
-    # 6. S&P 500 rolling 21-day log return
+    # 7. S&P 500 rolling 21-day log return
     sp500 = aligned["sp500"]
     features["sp500_ret_21"] = np.log(sp500 / sp500.shift(RET_WINDOW))
 
-    # 7. Nasdaq rolling 21-day log return
+    # 8. Nasdaq rolling 21-day log return
     nasdaq = aligned["nasdaq"]
     features["nasdaq_ret_21"] = np.log(nasdaq / nasdaq.shift(RET_WINDOW))
 
-    # 8. Gold rolling 21-day log return
+    # 9. Gold rolling 21-day log return
     gold = aligned["gold"]
     features["gold_ret_21"] = np.log(gold / gold.shift(RET_WINDOW))
 
-    # 9. Silver rolling 21-day log return
+    # 10. Silver rolling 21-day log return
     silver = aligned["silver"]
     features["silver_ret_21"] = np.log(silver / silver.shift(RET_WINDOW))
 
-    # 10. Copper rolling 21-day log return
+    # 11. Copper rolling 21-day log return
     copper = aligned["copper"]
     features["copper_ret_21"] = np.log(copper / copper.shift(RET_WINDOW))
-    
-    # 11. Oil rolling 21-day log return
+
+    # 12. Oil rolling 21-day log return
     oil = aligned["oil"]
     features["oil_ret_21"] = np.log(oil / oil.shift(RET_WINDOW))
 
-    # 12. Natural gas rolling 21-day log return
+    # 13. Natural gas rolling 21-day log return
     natgas = aligned["natgas"]
     features["natgas_ret_21"] = np.log(natgas / natgas.shift(RET_WINDOW))
-
-
 
     n_valid = features.notna().all(axis=1).sum()
     logger.info("Macro features: %d columns, %d/%d rows fully valid.",
@@ -336,13 +335,16 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
 
 
 # =====================================================================
-# Crypto-specific features
+# Crypto-Macro Features (2)
 # =====================================================================
-def compute_crypto_features(
+def compute_crypto_macro_features(
     btc_close: pd.Series,
     btc_index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
-    """Compute 2 crypto-specific features aligned to BTC's calendar.
+    """Compute 2 crypto-macro features aligned to BTC's calendar.
+
+    These are market-level cross-crypto signals, distinct from
+    blockchain fundamentals (which are in compute_onchain_features).
 
     Parameters
     ----------
@@ -354,16 +356,16 @@ def compute_crypto_features(
     Returns
     -------
     pd.DataFrame
-        2 crypto feature columns indexed on btc_index.
+        2 crypto-macro feature columns indexed on btc_index.
     """
     start = str(btc_index[0].date() - pd.Timedelta(days=30))
     end = str(btc_index[-1].date() + pd.Timedelta(days=1))
 
     features = pd.DataFrame(index=btc_index)
 
-    print("[external] Fetching crypto data...")
+    print("[external] Fetching crypto-macro data...")
 
-    # ── 1. ETH/BTC ratio ─────────────────────────────────────────────
+    # 1. ETH/BTC ratio
     t0 = time.time()
     try:
         eth = _fetch_yfinance("ETH-USD", start, end)
@@ -376,7 +378,7 @@ def compute_crypto_features(
         logger.warning("ETH/BTC ratio failed: %s", e)
         features["eth_btc_ratio"] = np.nan
 
-    # ── 2. BTC dominance ──────────────────────────────────────────────
+    # 2. BTC dominance (CoinGecko with ETH/BTC proxy fallback)
     t0 = time.time()
     print("  Fetching BTC dominance from CoinGecko...")
 
@@ -388,7 +390,8 @@ def compute_crypto_features(
 
     if not btc_dom.empty and btc_dom.notna().sum() > 100:
         features["btc_dominance"] = _align_to_btc(btc_dom, btc_index, "btc_dominance")
-        print(f"  BTC dominance: {features['btc_dominance'].notna().sum()} valid days ({time.time()-t0:.1f}s)")
+        print(f"  BTC dominance: {features['btc_dominance'].notna().sum()} valid days "
+              f"({time.time()-t0:.1f}s)")
     else:
         features["btc_dominance"] = np.nan
         logger.warning("BTC dominance unavailable. Column will be NaN.")
@@ -397,26 +400,8 @@ def compute_crypto_features(
 
 
 # =====================================================================
-# On-chain features (CoinMetrics Community API)
+# On-Chain Features (8)
 # =====================================================================
-
-# CoinMetrics metrics to fetch (daily, community tier)
-COINMETRICS_METRICS = [
-    "AdrActCnt",       # active addresses
-    "TxCnt",           # transaction count
-    "HashRate",        # hash rate
-    "CapMVRVCur",      # MVRV ratio
-    "FlowInExNtv",     # exchange inflows (BTC)
-    "FlowOutExNtv",    # exchange outflows (BTC)
-    "FeeTotNtv",       # total fees (BTC)
-    "SplyExNtv",       # supply on exchanges (BTC)
-    "SplyCur",         # current supply
-    "IssTotNtv",       # daily issuance (BTC)
-]
-
-ONCHAIN_CACHE_FILE = "onchain_raw.parquet"
-
-
 def _fetch_coinmetrics(
     metrics: list[str], start: str, end: str,
 ) -> pd.DataFrame:
@@ -449,11 +434,9 @@ def _fetch_coinmetrics(
     df = df.set_index("time")
     df.index.name = "Date"
 
-    # drop non-metric columns
     if "asset" in df.columns:
         df = df.drop(columns=["asset"])
 
-    # convert to numeric
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -469,6 +452,9 @@ def _fetch_coinmetrics(
 
 def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     """Compute 8 on-chain features from CoinMetrics Community API.
+
+    These are blockchain fundamentals, distinct from crypto-macro
+    market-level signals.
 
     Parameters
     ----------
@@ -487,7 +473,7 @@ def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
 
     print("[external] Fetching on-chain data from CoinMetrics...")
 
-    # ── fetch raw metrics (with cache) ────────────────────────────────
+    # fetch raw metrics (with cache)
     raw_cache = os.path.join(CACHE_DIR, ONCHAIN_CACHE_FILE)
 
     if os.path.exists(raw_cache):
@@ -503,12 +489,8 @@ def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
         os.makedirs(CACHE_DIR, exist_ok=True)
         raw.to_parquet(raw_cache)
 
-    # ── align to BTC calendar ─────────────────────────────────────────
-    aligned = {}
-    for col in raw.columns:
-        aligned[col] = _align_to_btc(raw[col], btc_index, col)
-
-    # ── compute derived features ──────────────────────────────────────
+    # align to BTC calendar
+    aligned = {col: _align_to_btc(raw[col], btc_index, col) for col in raw.columns}
 
     # 1. Active addresses: 14-day rate of change
     adr = aligned.get("AdrActCnt", pd.Series(np.nan, index=btc_index))
@@ -557,7 +539,7 @@ def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
 def build_external_features(
     btc_df: pd.DataFrame,
     include_macro: bool = True,
-    include_crypto: bool = True,
+    include_crypto_macro: bool = True,
     include_onchain: bool = True,
 ) -> pd.DataFrame:
     """Fetch, compute, and cache all external features.
@@ -567,9 +549,9 @@ def build_external_features(
     btc_df : pd.DataFrame
         BTC OHLCV DataFrame with DatetimeIndex (from data_loader).
     include_macro : bool
-        Whether to include macro features.
-    include_crypto : bool
-        Whether to include crypto-specific features.
+        Whether to include macro features (traditional finance).
+    include_crypto_macro : bool
+        Whether to include crypto-macro features (ETH/BTC, BTC dominance).
     include_onchain : bool
         Whether to include on-chain features (requires coinmetrics-api-client).
 
@@ -600,17 +582,14 @@ def build_external_features(
     parts = []
 
     if include_macro:
-        macro = compute_macro_features(btc_index)
-        parts.append(macro)
+        parts.append(compute_macro_features(btc_index))
 
-    if include_crypto:
-        crypto = compute_crypto_features(btc_close, btc_index)
-        parts.append(crypto)
+    if include_crypto_macro:
+        parts.append(compute_crypto_macro_features(btc_close, btc_index))
 
     if include_onchain:
         try:
-            onchain = compute_onchain_features(btc_index)
-            parts.append(onchain)
+            parts.append(compute_onchain_features(btc_index))
         except ImportError as e:
             print(f"  ⚠ Skipping on-chain features: {e}")
             logger.warning("On-chain features skipped: %s", e)
