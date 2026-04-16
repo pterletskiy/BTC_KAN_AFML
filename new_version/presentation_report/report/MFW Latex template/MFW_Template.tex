@@ -1,0 +1,497 @@
+% ISEG MASTER DISSERTATION TEMPLATE
+% MASTER'S IN_____________
+% AUTHOR:_________________
+% SUPERVISER:___________________
+%
+% DISCLAIMER: This template is intended to help ISEG master's students producing their master's dissertation. It follows the guidelines set by Costa (2017). Note that for convenience this template does not use a bibliographic manager (e.g. JabRef), although it is highly recommendable (more on this on the 'References' below). I thank Professor Paulo Brito for helpful comments.
+%
+% NOTE: Use XeLaTeX for compiling.
+%
+% Domingos Guerreiro Seward and Luís F. Costa 11.11.2018
+%
+%
+% =============================================
+% Preambule
+% =============================================
+%
+% Define the document class 'article'.
+% Set font size to 12pt, set to  A4 paper, and one-sided document.
+\documentclass [12pt,a4paper,oneside]{article}
+
+% Set font type to 'Times New Roman'.
+\usepackage{times}
+
+% Portuguese accents just in case.
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% English language.
+\usepackage[english]{babel}
+
+% Appendix
+\usepackage[toc,page]{appendix} 
+
+\makeatletter
+
+\def\@biblabel#1{\hspace*{-\labelsep}}
+
+\makeatother
+
+% Bibliography package.
+\usepackage{natbib}
+
+% Set margins to 3cm.
+\usepackage[top=3cm, bottom=3cm, left=3cm, right=3cm]{geometry}
+
+% Change margins command.
+\def\changemargin#1#2{\list{}{\rightmargin#2\leftmargin#1}\item[]}
+\let\endchangemargin=\endlist 
+
+% Paragraph indentation.
+\usepackage{indentfirst}
+
+% Set vertical spacing to 1.5 lines.
+\usepackage{setspace}
+\onehalfspacing
+
+% Set first line of paragraph indentation.
+\parskip=6pt
+
+% Page headers and footers customisation.
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+	% Set left header to footnotesize (10pt) and upper cases.
+\lhead{\footnotesize \textsc{Luís F. Costa}}
+	% Set left header to footnotesize (10pt) and upper cases.
+\rhead{\footnotesize\textsc{Template for \gls{mfw} at ISEG}}
+	% Set centred footer to page number.
+\cfoot{\thepage}
+
+
+% Customise chapters, sections, subsections, and subsubsections.
+\usepackage{titlesec}
+	% Set chapters' titles to upper cases and centred.
+\titleformat{\chapter}[display]
+  {\scshape\center}
+  {}
+  {0pt}
+  {\thechapter.\ }
+  \usepackage{etoolbox}% Stop chapters from starting at new page.
+\makeatletter
+\patchcmd{\chapter}{\if@openright\cleardoublepage\else\clearpage\fi}{}{}{}
+\makeatother
+	% Set sections' titles to upper cases and centred.
+\titleformat{\section}
+  {\scshape\center}{\thesection}{1em}{}
+	% Set subsections' titles to italic and centred.
+\titleformat{\subsection}
+  {\itshape\center}{\thesubsection}{1em}{}
+	% Idem for subsubsections' titles.
+\titleformat{\subsubsection}
+  {\itshape\center}{\thesubsection}{1em}{}
+
+
+% Link objects (e.g. tables, figures, pages) in the body of text.
+\usepackage{hyperref}
+
+
+% Customize table of contents.
+\usepackage{tocloft}
+\setlength{\cftbeforetoctitleskip}{0pt}
+%	\addto\captionsenglish{%
+%	\renewcommand{\contentsname}{\hfill\normalfont\scshape\normalsize Table of Contents\hfill}   
+	%\renewcommand{\cftaftertoctitle}{\hfill}
+%	}
+
+%\addto\captionsenglish{%
+ % \renewcommand{\contentsname}%
+  %  {\scshape Table of Contents}%
+%}
+\setlength{\cftbeforeloftitleskip}{0pt}
+\setlength{\cftbeforelottitleskip}{0pt}
+
+% Customise tables.
+\renewcommand*\thetable{\Roman{table}}% Roman Numerals Tables
+\addto\captionsenglish{\renewcommand{\tablename}{\textsc{Table}}}% Full Caps Tables
+\addto\captionsenglish{\renewcommand{\figurename}{\textsc{Figure}}}% Full Caps Figures
+
+% Tables useful packages.
+\usepackage{lipsum}
+
+\usepackage{booktabs}
+\usepackage{adjustbox}
+\setlength\heavyrulewidth{0.3ex}
+
+\usepackage{tabularx}
+\usepackage{array}
+
+\usepackage{threeparttable}
+
+
+% Quotes
+\usepackage{csquotes}
+
+
+% Mathematics
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{bm} % for bold characters in math mode.
+
+
+% Build a glossary.
+\usepackage[automake]{glossaries}
+
+\makeglossaries  
+  % Define, e.g. acronyms (\newacronym{<label>}{<abbrv>}{<full>}).
+  % Use \gls{<label>} command to call the acronym in the text. On first use the \gls command will display "<full> (<abbrv>)". On subsequent uses only the abbreviation will be displayed.
+
+  \newacronym{gdp}{GDP}{Gross Domestic Product}
+  \newacronym{jel}{JEL}{Journal of Economic Literature}
+  \newacronym{mfw}{MFW}{Master's Final Work}
+  \newacronym{ols}{OLS}{Ordinary Least Squares}
+  \newacronym{var}{VAR}{Vector Auto-Regression}
+  
+  
+% =============================================
+% Begin the document.
+% =============================================
+
+\begin{document}
+
+% This is just a blank page.
+% You can use this page for a dedication. See the example below.
+
+\thispagestyle{empty}% No header and footer.
+\vspace*{\fill} %Text that will now be at the bottom of the page.
+\begin{flushright}
+\textit{%
+To all my master's students\\
+that started a dissertation\\
+under my supervision, but\\
+were abducted by extra-\\
+terrestrials or crossed to\\
+another dimension.
+}
+\end{flushright}
+
+
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+	\addcontentsline{toc}{section}{Erratum} % Add to table of contents.
+	
+	\setcounter{page}{1} % Set page number to i
+	\pagenumbering{roman} % Roman lowercase numerals for page numbering
+
+\section*{Erratum}
+% Use this section only if you need to include an erratum. This only makes sense for a MFW that passed without any changes in the viva voce examination. Otherwise, you should delete this section.
+% Please find below the example of a paragraph in an erratum:
+
+\begin{enumerate}
+\item	In page \hyperlink{page.23}{23}, third line of second paragraph, it is written "the curve shifts rightwards" instead of "the curve shifts leftwards".
+\end{enumerate}
+
+
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+	\addcontentsline{toc}{section}{Glossary} % Add to table of contents.
+	
+	
+% Print Glossary
+% Here you should list expressions and acronyms that will be used all over the text. They should be listed alphabetically.
+% Please find some examples below (See the preamble for the Glossary construction).
+
+\glsaddall
+\printglossaries
+
+
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+	\addcontentsline{toc}{section}{Abstract, Keywords, and JEL Codes} % Add to table of contents.
+	
+\section*{Abstract, Keywords, and \gls{jel} Codes}
+% Write your abstract in 300 words or less. You should set the problem, say how you tackled it, and what the main conclusions were.
+% Here is an example of an opening period:
+
+This dissertation provides new insights on the estimation of mark-up ratios in Portugal, using annual panel data for Portuguese manufacturing industries over the period 2004-2010. (...)
+
+% Write up to 6 keywords that helps the reader to understand what your work is about. Keywords may actually be short phrases. Use semicolons to separate them.
+% See the example below:
+\textsc{Keywords}: Mark-ups; Productivity; Production Function.
+
+% Insert up to 6 Journal of Economic Literature (JEL) codes that you deem appropriate for your MFW. They should be related to the keywords, but there is no need to have a one-to-one relationship. Remember that JEL codes also cover areas in Business (area M) and Finance (area G). The usage of Maths and Statistics in Economics and Management is usually within area C, Economic History is in area N, and most of all other Social Sciences can be found in area Z.
+% Here is an example:
+\textsc{\gls{jel} Codes}: C23; C36; D24; D43; E32; L22.
+
+
+% Call the table of contents.
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+		\addcontentsline{toc}{section}{Table of Contents} % Add to table of contents.
+	% Customize table of contents' title.
+	\renewcommand*\contentsname{\hfill\normalfont\scshape\normalsize Table of Contents \hfill}
+\tableofcontents
+
+% Call the list of figures.
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+		\addcontentsline{toc}{section}{List of Figures} % Add to table of contents.
+	% Customize table of contents' title.
+	\renewcommand*\listfigurename{\hfill\normalfont\scshape\normalsize List of Figures \hfill}
+\listoffigures
+
+% Call the list of tables.
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+			\addcontentsline{toc}{section}{List of Tables} % Add to table of contents.
+	% Customize table of contents' title.
+	\renewcommand*\listtablename{\hfill\normalfont\scshape\normalsize List of Tables \hfill}
+\listoftables
+
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+	\addcontentsline{toc}{section}{Preface} % Add to table of contents.
+\section*{Preface}
+%This is an optional section, written by somebody else. For most students, this is a rather pedantic way of showing that his/her work is a very important thing. For some mature students with some life and professional experience, a preface may make sense.
+
+
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+	\addcontentsline{toc}{section}{Acknowledgements} % Add to table of contents.
+\section*{Acknowledgements}
+% Here is where you express your gratitude towards your parents, spouses, partners, friends, and supervisors. This is also the end of the pre-textual part of your MFW.
+% An example is presented below:
+
+First, I wish to thank Professor X for his/her encouragement and guidance.
+
+I am also grateful to my colleagues Y and Z for numerous discussions.
+
+Finally, I am also thankful to my family for their patience and their support while I pursued this project.
+
+
+	\newpage % Create a new page.
+	\thispagestyle{plain}% No header and footer.
+	
+	\setcounter{page}{1} % Set page number to 1
+	\pagenumbering{arabic} % Arabic lowercase numerals for page numbering
+	
+\begin{center} % Begin centred text.
+
+\textsc{TEMPLATE FOR \gls{mfw} AT ISEG}\\ % Title of the dissertation.
+    
+\vspace{0.5cm} % Add a 0.5cm space between title and authorship
+By Luís F. Costa and Domingos Seward\\
+    
+\begingroup\singlespacing % Set line vertical spacing to 1.
+\begin{changemargin}{2cm}{2cm} % Change margins to 2cm.
+{\footnotesize \textsc{This template} was made to be used by Master's students at ISEG, ULisboa. This paragraph is called a "headnote" and it is a shorter version (100 words maximum) of your abstract.}
+\end{changemargin}
+\endgroup
+
+\end{center} % End centred text.
+
+
+\section{Introduction}\label{sec:introduction}
+
+This is where your textual part begins. Remember that this part has a maximum length of 10 000 words long, but it cannot be larger than 35 pages long.
+
+The first chapter is always called "introduction" and usually it does not have any sections.
+
+This introduction should not be larger than 20 per cent of the textual part, i.e. its maximum length is 7 pages for a 35 page \gls{mfw}. It should contain paragraphs with the following items:
+\begin{itemize}
+\item The research question. Why is it relevant?
+\item The (general) survey of the literature.
+\item How are you going to address the question?
+\item What is your contribution? What's new, doc?
+\item Describing the following chapters (last paragraph).
+\end{itemize}
+
+Chapter \ref{sec:maintext} covers the main text and chapter \label{sec:conclusion} concludes.
+
+
+\newpage % New page.
+\section{Main Text}\label{sec:maintext}
+
+This this the main part of your \gls{mfw}. In your case, there should be more than just one chapter in the main text. You can have 2, 3, 4, but avoid more than 5 for such a short piece (remember the limits in the previous section).
+
+
+The main text should be at least 70 per cent of the textual part, i.e. a minimum of 24 pages in a 35 page textual part.
+
+
+Here you should write the chapters, sections and sub-sections with the empirical applications or the theoretical constructions. Analytical surveys follow the same structure.
+
+
+Do not forget to follow \cite{costa_2017} for the style. The following is based upon this text.
+
+	\subsection{Mathematical Notation}\label{subsec:mathematical}
+
+Some rules for writing mathematical notations are already incorporated into specific applications (e.g. Equation Editor, Math Type, Scientific Workplace) and those should be taken into account: variables should be written in italics, matrices and vectors in bold, etc.
+
+Equations and other key mathematical expressions should be written on a separate line, numbered and punctuated in accordance with their function in the text, e.g.
+
+\begin{equation}\label{eq:1}
+\dot{K}(t) = y(K(t), L(t), \bm{\varphi}) - C(t)
+\end{equation}
+where variables in Equation \ref{eq:1} are $K$ representing the capital stock, $L$ labour, $C$ stands for consumption, $y(\bm{\cdot})$ is the production function, $t$ is time, and $\bm{\varphi})$ is a parameter vector.
+
+Shorter, less important expressions may be incorporated into the body of the main text, taking care not to alter the formatting. Fractions are an example: $[a + (b/c)]$.
+
+Notice that you can also present the outcome of estimations as an equation:
+
+\begin{equation}\label{eq:2}
+\begin{split}
+\Delta \ln q_{ijt} = \underset{(0.074)^{***}}{0.317} \Delta \ln k_{ijt} + \underset{(0.051)^{***}}{0.104} \Delta \ln \ell_{ijt} + \underset{(0.078)^{***}}{0.297} \Delta \ln m_{ijt}
+\\
+{\footnotesize\textrm{Sargan OICD (p-value): 0.003 \quad Observations: 483 \quad CRtS test (p-value): 0.00853}}
+\end{split}
+\end{equation}
+
+
+	\subsection{Tables}\label{subsec:tables}
+
+All tables should be numbered using Roman numerals, should have a title, and should appear next to their first reference in the text. Sources of information should be clearly identified. The format should be as in Table I below:
+
+\begin{table}[h] \label{table:1}
+\centering
+ \begin{threeparttable}
+{\def\arraystretch{1}
+\setlength{\tabcolsep}{30pt}
+
+
+\caption{\textsc{Comparison between a RBC Model and observed data}}
+
+\begin{tabular}{@{}ccc}
+
+\hline\hline
+& USA Data & RBC Model\tnote{(a)} \\ \hline
+
+$\sigma_{Y}$ & 1.92 & 1.30 %
+ \\ 
+$\sigma_{C}/\sigma_{Y}$ & 0.45 & 0.31 %
+ \\ \toprule
+
+\end{tabular}%
+ }
+
+    \begin{tablenotes}
+      \footnotesize
+      \item[(a)] Basic calibrated model
+      \item Source: \cite{romer_2012}, p. 219.
+    \end{tablenotes}
+  \end{threeparttable}
+\end{table}%
+
+
+
+
+
+
+
+
+	\subsection{Figures}
+
+All figures should be numbered using Arabic numerals, should have a title and should appear next to their first reference in the text. Sources of information should be clearly identified. The format should be as follows:
+
+\begin{figure}[h]%Include figures.
+\centering
+
+\includegraphics[scale=0.35]{phase_diagram}
+
+\caption{Phase diagram for the endogenous tax rule model.}
+\label{fig:phase_diagram.}
+
+\end{figure}
+
+
+	\subsection{Quotations}
+
+Excerpts from others' work should be used only when strictly necessary. Whenever used, it should be easy to identify their both presence in the text (using indentation and/or a different font) and their source.
+
+For excerpts up to three lines, you can use the normal formatting of the body of the text e.g.: "as referred to by \cite{rodrigues_2014}, the final report is limited to a <<maximum of 20 pages of text (...), including the table of contents.>>"
+
+Longer quotations should appear as follows:
+
+\begin{displayquote}
+{\small Recent research has also emphasized the role of imperfect competition in explaining a host of issues in international trade and finance (...). Thus, while there plainly are many other important distortions in the economy, there is good reason to believe that imperfect competition is one of the more important issues.}
+\begin{flushright}
+In: \cite{obstfeld_rogoff_1996}, p. 689.
+\end{flushright}
+\end{displayquote}
+
+Unacknowledged use of another's work is \textbf{plagiarism}. This not only violates the most basic rules of academic work, but as a form of falsification (or in some very specific cases, usurpation) it is also subject to disciplinary penalties imposed by the higher education institution. It is also a civil crime with penalties ranging from a fine to 3 years in prison (doubled in the case of repeat offences).
+
+	\subsection{References}
+
+Given the complexity of managing a bibliographical database linked to a text, especially on a large scale, such as in a \gls{mfw} or doctoral thesis, use of specialist software (e.g. JabRef, BibTeX, EndNote, ProCite, Reference Manager) is highly recommended from the beginning\footnote{I used JabRef.}. Reference databases such as EconLit or the Web of Knowledge export their listings into most formats used by these programmes, thereby facilitating the construction of a bibliography.
+
+For formats to be used in-text and in the reference list, please read \cite{costa_2017}. Remember that there must be a one-to-one correspondence between the set of in-text citations (e.g. \cite{costa_2017} used above) and the list in the post-textual section References (e.g. Costa, L. (2017). \textit{Rules Governing the Presentation of Written Work at ISEG}. Mimeo ISEG.).
+
+
+\begin{figure}[h]%Include figures.
+\centering
+
+\includegraphics[scale=0.8]{citation_errors}
+
+\caption{In-text citations and the reference list.}
+\label{fig:citation_errors}
+
+\end{figure}
+
+Figure \ref{fig:citation_errors} above shows two examples of the wrong way of citing your bibliographic references:
+
+\begin{itemize}
+\item If you cite \cite{obstfeld_rogoff_1996} in your text\footnote{I did it above.}, then you have to list it in the References section.
+\item If you want to keep the book "Recursive Macroeconomic Theory" in your reference list, then you have to cite it in the text as "Ljungqvist \& Sargent (2012)".
+\end{itemize}
+
+\newpage % New page.
+\section{Conclusion}
+
+This is the final section of the main text. The maximum length is 10 per cent of the textual part, i.e. 3.5 pages.
+
+Here, you should present the results and (if applicable) your intentions for future research.
+
+
+
+%  ==============    BIBLIOGRAPHY  ================
+
+% NOTE: The use of a bibliographic manager is highly recommendable. One can import the references stored on a bibliographic manager, as examplified below.
+\newpage % New page.
+\phantomsection
+\thispagestyle{plain}% No header and footer.
+\addcontentsline{toc}{section}{Bibliography}
+\bibliographystyle{agsm}
+\bibliography{mfw_references} % <- insert you *.bib file here 
+
+
+
+%  ==============    APPENDICES   ================
+
+\newpage % New page.
+\phantomsection
+\thispagestyle{plain}% No header and footer.
+
+\appendix
+%\begin{appendices} % Begin appendices.
+\section{Appendices} \label{chap:appendixA}
+
+
+This is the place where you put everything that is important to understand your work, but it is not indispensable in the main text. Use them, but remember that pages used here are counting for the 50 page limit. Some useful advices about appendices:
+\begin{itemize}
+\item Do not reproduce databases in paper! Use a website to make it available.
+\item If you have too many graphs (e.g. impulse-responses in a \gls{var}) put them here.
+\item For cumbersome mathematical derivations, use the appendices as well.
+\end{itemize}
+
+
+%\end{appendices} % End appendices.
+
+% =============================================
+% End the document.
+% =============================================
+\end{document}
+
+
+
+
