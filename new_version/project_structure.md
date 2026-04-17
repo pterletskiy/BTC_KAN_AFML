@@ -11,8 +11,9 @@
 The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Networks (KANs), benchmarked against AR Logistic, Logistic Regression, Random Forest, XGBoost, and LSTM models, evaluated under López de Prado's *Advances in Financial Machine Learning* (2018) framework. The pipeline is organized into three phases with strict leakage boundaries between them.
 
 **Data:** BTC-USD daily OHLCV, October 2014 – March 2026 (~4,200 bars).
-**Features:** 51 total (23 technical, 8 mathematical/AFML Part 4, 20 external: 12 macro, 2 crypto ecosystem, 8 on-chain from CoinMetrics).
-**Evaluation:** CPCV (N=6, k=2) producing 15 splits and 5 backtest paths, with Deflated Sharpe Ratio and Probability of Backtest Overfitting.
+**Features:** 55 total (23 technical, 9 mathematical/AFML Part 4, 23 external: 13 macro, 2 crypto-macro, 8 on-chain from CoinMetrics).
+**Evaluation:** CPCV (N=6, k=2) producing 15 splits and 5 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
+**Tuning:** Nested Optuna TPE + Purged K-Fold, per-split, inside each CPCV training fold (AFML Ch. 7 compliant).
 **Interpretability contribution:** Symbolic formula extraction from KAN via PyKAN re-training, pruning, and symbolification.
 
 ---
@@ -32,15 +33,16 @@ project/
 │   │   ├── labeling.py                     ← volatility, CUSUM, triple-barrier, rare-label drop
 │   │   ├── sample_weights.py               ← concurrent labels, uniqueness, return attribution, time decay
 │   │   ├── features.py                     ← TA + mathematical features, log transforms
-│   │   ├── external_features.py            ← macro, crypto ecosystem, on-chain features
+│   │   ├── external_features.py            ← macro, crypto-macro, on-chain features
 │   │   └── alignment.py                    ← index intersection, validation assertions
 │   │
 │   ├── cpcv/                               ← PHASE 2: Cross-Validation & Training
 │   │   ├── __init__.py
 │   │   ├── cv.py                           ← CPCV splits, purging, embargo, path matrix
-│   │   ├── preprocessing.py                ← per-fold FFD, RobustScaler, feature selection (MDI/MDA)
+│   │   ├── preprocessing.py                ← per-fold FFD, RobustScaler, multi-model MDA feature selection
+│   │   ├── tuning.py                       ← Optuna TPE + Purged K-Fold nested per-split tuning
 │   │   ├── calibration.py                  ← Platt scaling, temperature scaling
-│   │   ├── pipeline.py                     ← full CPCV loop orchestration
+│   │   ├── pipeline.py                     ← full CPCV loop orchestration (accepts n_trials parameter)
 │   │   └── models/
 │   │       ├── __init__.py                 ← model registry & factory
 │   │       ├── base.py                     ← abstract BaseModel interface
@@ -51,12 +53,12 @@ project/
 │   │
 │   └── post_cpcv/                          ← PHASE 3: Evaluation & Interpretability
 │       ├── __init__.py
-│       ├── evaluation.py                   ← metrics, path stitching, DSR, PBO, model comparison
+│       ├── evaluation.py                   ← metrics, path stitching, DSR, PBO, DeLong AUC, comparison
 │       └── symbolic_extraction.py          ← PyKAN re-train, prune, symbolify, formula extraction
 │
 └── cache/                                  ← Parquet cache for expensive features
     ├── math_features.parquet               ← SADF, SMT, entropy, Hurst, etc.
-    ├── external_features.parquet           ← macro + crypto + on-chain
+    ├── external_features.parquet           ← macro + crypto-macro + on-chain
     └── onchain_raw.parquet                 ← raw CoinMetrics data
 ```
 
@@ -100,7 +102,7 @@ Fetches daily OHLCV from yfinance and returns a validated DataFrame with columns
 
 **Function:** `compute_daily_volatility(close, span=50) → pd.Series`
 
-Implements AFML Snippet 3.1. Computes `close.pct_change()` as log returns, then applies `ewm(span=50).std()`. The span of 50 (vs De Prado's 100 for equities) is calibrated for BTC's faster regime transitions. Returns a Series with NaN for the first ~50 rows (EWMA warm-up), indexed identically to `close`.
+Implements AFML Snippet 3.1. Computes `close.pct_change()` as log returns, then applies `ewm(span=50).std()`. The span of 50 (vs De Prado's 100 for equities) is calibrated for BTC's faster regime transitions: a smaller span reacts to regime changes more quickly, which matters for crypto's 24/7 trading and higher realized volatility. Returns a Series with NaN for the first ~50 rows (EWMA warm-up), indexed identically to `close`.
 
 This series serves as the dynamic threshold for both CUSUM (Step 2) and triple-barrier widths (Step 3).
 
@@ -114,9 +116,11 @@ Implements AFML Snippet 2.4 (symmetric CUSUM). Maintains two accumulators:
 - `s_pos = max(0, s_pos + return)` — tracks upside runs
 - `s_neg = min(0, s_neg + return)` — tracks downside runs
 
-Fires an event and resets when `s_pos >= h` or `s_neg <= -h`. The zero floor ensures only sustained directional runs trigger events (hovering around a level keeps resetting the accumulator). Returns a DatetimeIndex of event timestamps, reducing ~4,200 bars to ~1,000–1,500 informative events.
+Fires an event and resets when `s_pos >= h` or `s_neg <= -h`. The zero floor ensures only **sustained directional moves** trigger events (hovering around a level keeps resetting the accumulator). This is a structural break detector, not a volatility filter: choppy sideways action produces few events, while small-but-persistent drifts can produce many.
 
-**Parameters in notebook:** `h = 1.5 × daily_vol.mean()`
+Returns a DatetimeIndex of event timestamps, reducing ~4,200 bars to ~1,000 informative events.
+
+**Parameters in notebook:** `h = 1.5 × daily_vol.mean()`. The multiplier of 1.5 was chosen as a balance: `0.5×` produces ~3,000 noisy events, `3.0×` reduces to ~200 (too few for ML), `1.5×` yields ~900 events with roughly balanced classes.
 
 ---
 
@@ -135,11 +139,15 @@ Implements AFML Snippets 3.2 + 3.4 + 3.5. For each CUSUM event at time t₀:
 2. Sets lower barrier at `close[t₀] × (1 − pt_sl[1] × trgt[t₀])`
 3. Sets vertical barrier at t₀ + num_days
 4. Walks forward through the price path, records first barrier touch
-5. Labels: +1 (upper), -1 (lower), sign(return) at vertical (or 0 if |return| < min_return)
+5. Labels: +1 (upper), −1 (lower), sign(return) at vertical (or 0 if |return| < min_return)
 
 Aligns events to non-NaN volatility timestamps. Skips events with NaN vertical barriers or path length < 2.
 
-**Parameters in notebook:** `pt_sl=(1.5, 1.5)`, `num_days=10`, `min_return=0.0`
+**Parameters in notebook:** `pt_sl=(1.5, 1.5)`, `num_days=10`, `min_return=0.0`.
+
+**Parameter choice rationale:**
+- Symmetric `pt_sl=(1.5, 1.5)` avoids imposing any prior directional bias. With σ ≈ 3% daily, barriers sit at roughly ±4.5% from entry.
+- `num_days=10` gives horizontal barriers meaningful time to trigger without letting labels go stale. Observed mean holding period is ~5.1 days, indicating horizontal barriers hit roughly half the time before the vertical barrier.
 
 ---
 
@@ -174,13 +182,13 @@ Implements AFML Snippet 4.11. Applies linear decay via `np.linspace(oldest_weigh
 #### `compute_sample_weights(bins, num_bars_index, time_decay_factor=1.0, weight_cap_quantile=0.99) → pd.Series`
 Orchestration function. Chains: concurrent labels → uniqueness → return attribution → time decay → quantile capping. The `weight_cap_quantile` parameter clips extreme weights at the specified percentile to prevent single events from dominating training.
 
-**Parameters in notebook:** `time_decay_factor=0.5` (oldest sample's weight is halved), `weight_cap_quantile=0.99`
+**Parameters in notebook:** `time_decay_factor=0.5` (oldest sample's weight is halved), `weight_cap_quantile=0.99`.
 
 ---
 
 ### Step 6 — Feature Engineering (`features.py`, `external_features.py`)
 
-**Produces:** A pd.DataFrame of 51 features (23 TA + 8 mathematical + 20 external) covering every daily bar.
+**Produces:** A pd.DataFrame of 55 features (23 TA + 9 mathematical + 23 external) covering every daily bar.
 
 **Module-level constants (all feature parameters defined at top of each file):**
 
@@ -201,8 +209,6 @@ Cache: CACHE_DIR="cache/", MATH_CACHE_FILE="math_features.parquet",
 
 **Function:** `compute_ta_features(df) → pd.DataFrame` — 23 columns
 
-**Original 12 features:**
-
 | # | Feature | Formula | Scale |
 |---|---------|---------|-------|
 | 1 | `log_returns` | `log(close / close.shift(1))` | Dimensionless |
@@ -217,28 +223,23 @@ Cache: CACHE_DIR="cache/", MATH_CACHE_FILE="math_features.parquet",
 | 10 | `kurtosis` | Rolling 21-day excess kurtosis of log returns | Dimensionless |
 | 11 | `realized_vol` | Rolling 21-day std of log returns × √365 | Annualized, dimensionless |
 | 12 | `gk_vol` | Garman-Klass: `0.5·ln(H/L)² − (2ln2−1)·ln(C/O)²`, rolling 21-day mean | Dimensionless |
-
-**Additional 11 features:**
-
-| # | Feature | Formula / Method | Scale |
-|---|---------|-----------------|-------|
-| 13 | `yz_vol` | Yang-Zhang (2000) volatility: combines overnight, open-to-close, and Rogers-Satchell components. Uses `k = 0.34/(1.34 + (w+1)/(w−1))` weighting. Rolling 21-day window. | Dimensionless |
-| 14 | `ema_ratio_20_50` | EMA(20) / EMA(50) — short vs medium trend | Ratio ≈ 1.0 |
-| 15 | `ema_ratio_50_200` | EMA(50) / EMA(200) — golden/death cross signal | Ratio ≈ 1.0 |
-| 16 | `vwma_ratio_20_50` | VWMA(20) / VWMA(50) — volume-weighted trend confirmation | Ratio ≈ 1.0 |
-| 17 | `roc_14` | `(close / close.shift(14) − 1) × 100` — rate of change (top predictor in the "Next Step for Bitcoin: Confluence of TA and ML" paper) | Percentage |
-| 18 | `stoch_k` | `100 × (C − LL₁₄) / (HH₁₄ − LL₁₄)` — Stochastic %K | Bounded [0, 100] |
-| 19 | `stoch_d` | SMA(%K, 3) — smoothed Stochastic | Bounded [0, 100] |
-| 20 | `williams_r` | `−100 × (HH₁₄ − C) / (HH₁₄ − LL₁₄)` — Williams %R | Bounded [-100, 0] |
-| 21 | `cci_14` | `(TP − SMA(TP)) / (0.015 × MAD(TP))` — Commodity Channel Index | Unbounded, centered ~0 |
-| 22 | `chaikin_osc` | EMA(ADL, 3) − EMA(ADL, 10) — volume + price momentum | Volume units |
+| 13 | `yz_vol` | Yang-Zhang (2000) combining overnight, open-to-close, and Rogers-Satchell components. `k = 0.34/(1.34 + (w+1)/(w−1))` weighting, rolling 21-day | Dimensionless |
+| 14 | `ema_ratio_20_50` | EMA(20) / EMA(50), short vs medium trend | Ratio ≈ 1.0 |
+| 15 | `ema_ratio_50_200` | EMA(50) / EMA(200), golden/death cross signal | Ratio ≈ 1.0 |
+| 16 | `vwma_ratio_20_50` | VWMA(20) / VWMA(50), volume-weighted trend confirmation | Ratio ≈ 1.0 |
+| 17 | `roc_14` | `(close / close.shift(14) − 1) × 100`, rate of change | Percentage |
+| 18 | `stoch_k` | `100 × (C − LL₁₄) / (HH₁₄ − LL₁₄)`, Stochastic %K | Bounded [0, 100] |
+| 19 | `stoch_d` | SMA(%K, 3), smoothed Stochastic | Bounded [0, 100] |
+| 20 | `williams_r` | `−100 × (HH₁₄ − C) / (HH₁₄ − LL₁₄)`, Williams %R | Bounded [−100, 0] |
+| 21 | `cci_14` | `(TP − SMA(TP)) / (0.015 × MAD(TP))`, Commodity Channel Index | Unbounded, centered ~0 |
+| 22 | `chaikin_osc` | EMA(ADL, 3) − EMA(ADL, 10), volume + price momentum | Volume units |
 | 23 | `mfi_14` | Volume-weighted RSI using typical price × volume | Bounded [0, 100] |
 
 **Internal helpers:** `_yang_zhang_volatility()` implements the Yang-Zhang (2000) estimator. `_money_flow_index()` implements the volume-weighted RSI calculation.
 
 #### Step 6.b — Mathematical Features (`features.py`)
 
-**Function:** `compute_math_features(df, which="all") → pd.DataFrame` — 8 columns
+**Function:** `compute_math_features(df, which="all") → pd.DataFrame` — 9 columns
 
 All features are computationally expensive (O(n²) for SADF/SMT). The function checks for a cached Parquet file before computing; if cache exists with matching date range and requested columns, it loads from cache. Otherwise computes, saves, and returns.
 
@@ -250,27 +251,28 @@ The `which` parameter accepts `"all"` or a list of specific feature names for pa
 | 2 | `lz_complexity` | Ch. 18.4 | Binary-encode returns ("1" if > 0), apply Lempel-Ziv-76 algorithm, normalize by `n/log₂(n)` | 63 days | < 1 min |
 | 3 | `hurst` | Related | Rescaled Range (R/S) analysis at sub-periods [10, 21, 42, 63], slope of log(R/S) vs log(n) | 126 days | < 1 min |
 | 4 | `variance_ratio` | Related | Lo & MacKinlay (1988): `VR(q) = Var(r_q) / (q × Var(r₁))`. VR > 1 = momentum, VR < 1 = mean-reversion | 63 days, lag=5 | < 1 min |
-| 5 | `jarque_bera` | Related | `JB = (n/6)(S² + K²/4)` where S = skewness, K = excess kurtosis. Measures departure from normality. | 63 days | < 1 min |
-| 6 | `gaussian_entropy` | Ch. 18.6 | `H_gauss = 0.5 × ln(2πeσ²)`. Gap between this and Shannon entropy measures non-Gaussianity. | 21 days | < 1 min |
-| 7 | `sadf` | Ch. 17.4.2 | Supremum ADF: backward-expanding ADF regressions on log prices, `Δlog[yₜ] = α + β·log[yₜ₋₁] + Σγₖ·Δlog[yₜ₋ₖ] + ε`, take supremum of β's t-statistic | minSL=63 | ~15 min |
-| 8–9 | `smt_poly1`, `smt_exp` | Ch. 17.4.3 | Sub/Super-Martingale Tests. Poly1: `log[yₜ] = α + β·t + ε`. Exp: `log[yₜ] = α + β·exp(t) + ε`. Backward-expanding, supremum of `|t-stat(β)| / (length)^0.5` | minSL=63 | ~30 min |
+| 5 | `jarque_bera` | Related | `JB = (n/6)(S² + K²/4)` where S = skewness, K = excess kurtosis. Measures departure from normality | 63 days | < 1 min |
+| 6 | `gaussian_entropy` | Ch. 18.6 | `H_gauss = 0.5 × ln(2πeσ²)`. Gap vs Shannon entropy measures non-Gaussianity | 21 days | < 1 min |
+| 7 | `sadf` | Ch. 17.4.2 | Supremum ADF: backward-expanding ADF regressions on log prices, take supremum of β's t-statistic | minSL=63 | ~15 min |
+| 8 | `smt_poly1` | Ch. 17.4.3 | Sub/Super-Martingale polynomial-1 spec: `log[yₜ] = α + β·t + ε`, backward-expanding, supremum of `|t-stat(β)| / length^0.5` | minSL=63 | ~15 min (joint) |
+| 9 | `smt_exp` | Ch. 17.4.3 | Sub/Super-Martingale exponential spec: `log[yₜ] = α + β·exp(t/length) + ε`, same supremum structure | minSL=63 | ~15 min (joint) |
 
 **Internal helpers:** `_compute_sadf()`, `_adf_tstat()`, `_compute_smt()`, `_ols_tstat()`, `_compute_rolling_entropy()`, `_compute_rolling_lz()`, `_lempel_ziv_76()`, `_compute_rolling_hurst()`, `_hurst_rs()`, `_compute_rolling_variance_ratio()`, `_compute_rolling_jarque_bera()`, `_compute_rolling_gaussian_entropy()`.
 
 #### Step 6.c — Macro Features (`external_features.py`)
 
-**Function:** `compute_macro_features(btc_index) → pd.DataFrame` — 12 columns
+**Function:** `compute_macro_features(btc_index) → pd.DataFrame` — 13 columns
 
 **Alignment method:** All external data is merged onto BTC's 7-day calendar via `pd.merge_asof(direction='backward')` through the helper `_align_to_btc()`. This ensures each BTC day uses the most recent available value (no look-ahead): weekends carry Friday's macro close, weekly data persists until the next release.
 
-Data sources: yfinance for 11 tickers + FRED (via pandas-datareader) for 2Y Treasury yield with multi-source fallback.
+Data sources: yfinance for 11 tickers plus FRED (via pandas-datareader) for 2Y Treasury yield with spread-based fallback.
 
 | # | Feature | Source Ticker | Transformation |
 |---|---------|--------------|----------------|
 | 1 | `dxy_roc_21` | DX-Y.NYB (US Dollar Index) | 21-day rate of change (%) |
-| 2 | `us2y` | FRED DGS2 → T10Y2Y fallback → 2YY=F fallback | Level (yield in %) |
-| 3 | `us10y` | ^TNX (10Y Treasury) | Level (yield in %), auto-scaled if median > 10 |
-| 4 | `yield_curve_2y10y` | Derived: us10y − us2y | Spread (percentage points) |
+| 2 | `us10y` | ^TNX (10Y Treasury) | Level (yield in %), auto-scaled if median > 10 |
+| 3 | `us2y` | FRED DGS2 → spread-derived fallback | Level (yield in %), auto-scaled |
+| 4 | `yield_curve_2y10y` | Derived: us10y − us2y (or FRED T10Y2Y directly) | Spread (percentage points) |
 | 5 | `yield_curve_10y30y` | Derived: ^TYX − ^TNX | Spread (percentage points) |
 | 6 | `vix` | ^VIX | Level |
 | 7 | `sp500_ret_21` | ^GSPC | 21-day log return |
@@ -281,18 +283,20 @@ Data sources: yfinance for 11 tickers + FRED (via pandas-datareader) for 2Y Trea
 | 12 | `oil_ret_21` | CL=F | 21-day log return |
 | 13 | `natgas_ret_21` | NG=F | 21-day log return |
 
-**2Y yield fallback chain:** (1) FRED DGS2 directly → (2) FRED T10Y2Y spread + 10Y yield to derive 2Y → (3) yfinance 2YY=F futures. Logs each attempt's result and falls to the next on failure.
+**2Y yield fallback:** (1) FRED DGS2 directly. (2) If DGS2 returns fewer than 2,000 bars, falls back to fetching the T10Y2Y spread from FRED, using it directly as `yield_curve_2y10y` and back-deriving `us2y = us10y − spread`. This two-step fallback ensures the yield curve feature is always populated even when DGS2 is unavailable.
 
-#### Step 6.d — Crypto Features (`external_features.py`)
+#### Step 6.d — Crypto-Macro Features (`external_features.py`)
 
-**Function:** `compute_crypto_features(btc_close, btc_index) → pd.DataFrame` — 2 columns
+**Function:** `compute_crypto_macro_features(btc_close, btc_index) → pd.DataFrame` — 2 columns
+
+These are market-level cross-crypto signals, distinct from blockchain fundamentals (which are in Step 6.e).
 
 | # | Feature | Source | Method |
 |---|---------|--------|--------|
 | 1 | `eth_btc_ratio` | yfinance ETH-USD | `ETH_close / BTC_close` aligned via merge_asof |
-| 2 | `btc_dominance` | CoinGecko API → fallback: `100 / (1 + ETH/BTC)` proxy | BTC market cap from CoinGecko `/coins/bitcoin/market_chart`, with dominance proxy as fallback when API is unavailable |
+| 2 | `btc_dominance` | CoinGecko API → fallback: `100 / (1 + ETH/BTC)` proxy | BTC market cap from CoinGecko `/coins/bitcoin/market_chart`, with dominance proxy as fallback when the API is unavailable |
 
-**BTC dominance fallback:** When CoinGecko API fails or returns < 100 data points, computes `100 / (1 + ETH/BTC)` as a dominance proxy. This is an approximation (ignores altcoins beyond ETH) but captures the main directional signal.
+**BTC dominance fallback:** When CoinGecko API fails or returns fewer than 100 data points, computes `100 / (1 + ETH/BTC)` as a dominance proxy. This is an approximation (ignores altcoins beyond ETH) but captures the main directional signal: when ETH outperforms BTC, the proxy falls.
 
 #### Step 6.e — On-Chain Features (`external_features.py`)
 
@@ -322,7 +326,7 @@ FeeTotNtv, SplyExNtv, SplyCur, IssTotNtv
 
 #### External features orchestration
 
-`build_external_features(btc_df, include_macro=True, include_crypto=True, include_onchain=True) → pd.DataFrame` fetches all three categories (macro, crypto, on-chain), concatenates, reports NaN summary, and caches to Parquet. Each category is independently toggleable. On-chain fetch is wrapped in try/except so missing `coinmetrics-api-client` doesn't break the pipeline.
+`build_external_features(btc_df, include_macro=True, include_crypto_macro=True, include_onchain=True) → pd.DataFrame` fetches all three categories (macro, crypto-macro, on-chain), concatenates, reports NaN summary, and caches to Parquet. Each category is independently toggleable. On-chain fetch is wrapped in try/except so missing `coinmetrics-api-client` doesn't break the pipeline.
 
 ---
 
@@ -334,7 +338,7 @@ Applies `log(|x| + 1e-8)` to `atr` (always positive). Applies `sign(x) × log(|x
 
 **Target columns:** `LOG_TRANSFORM_COLUMNS = ["atr", "obv"]`
 
-**Orchestration:** `build_feature_matrix(df) → pd.DataFrame` chains `compute_ta_features(df)` → `compute_math_features(df)` → `pd.concat` → `apply_log_transforms`. Returns ~31 columns × ~4,200 rows. External features are assembled separately in the notebook via `build_external_features(df_raw)` and concatenated before alignment.
+**Orchestration:** `build_feature_matrix(df) → pd.DataFrame` chains `compute_ta_features(df)` → `compute_math_features(df)` → `pd.concat` → `apply_log_transforms`. Returns 32 columns × ~4,200 rows. External features are assembled separately in the notebook via `build_external_features(df_raw)` and concatenated before alignment.
 
 ---
 
@@ -345,7 +349,7 @@ Lives directly in `main.ipynb` section 2.5 as inline plotting cells. Inspects da
 | Check | Method | What to look for |
 |-------|--------|-----------------|
 | Feature distributions | Histograms per feature with kurtosis annotation | Features with kurtosis > 10 (flagged in red) may saturate KAN spline ranges |
-| Pairwise correlations | Heatmap with values annotated, threshold at |r| > 0.9 | Redundant feature pairs (e.g., stoch_k ↔ williams_r) as drop candidates |
+| Pairwise correlations | Heatmap with values annotated, threshold at \|r\| > 0.9 | Redundant feature pairs (e.g., stoch_k ↔ williams_r) as drop candidates |
 | Stationarity | ADF test per feature at 5% significance | Non-stationary features → candidates for FFD inside CPCV (currently only ATR) |
 | Feature-label MI | `mutual_info_classif` with 5 nearest neighbors | Features with near-zero MI are removal candidates |
 
@@ -386,7 +390,7 @@ Standalone validation for the CV loop to call. Checks everything `align_for_cv` 
 
 | Object | Shape | Description |
 |--------|-------|-------------|
-| `X` | ~911 × 51 | Feature matrix (23 TA + 8 math + 20 external, post log-transform) |
+| `X` | ~911 × 55 | Feature matrix (23 TA + 9 math + 23 external, post log-transform) |
 | `y` | ~911 | Binary labels {-1, +1} |
 | `w` | ~911 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
 | `t1` | ~911 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
@@ -397,7 +401,7 @@ These four objects are the contract between Phase 1 and Phase 2. Everything from
 
 ## Phase 2 — CPCV (Cross-Validation & Training)
 
-Everything in this phase runs inside the CPCV loop. Every stateful transformation (FFD d* estimation, scaling, feature selection) is fitted on training data only. This is the leakage-critical zone.
+Everything in this phase runs inside the CPCV loop. Every stateful transformation (FFD d* estimation, scaling, feature selection, hyperparameter tuning) is fitted on training data only. This is the leakage-critical zone.
 
 ### Notebook sections: 3 (CV Framework) → 4 (Model Training)
 
@@ -463,7 +467,7 @@ Fits `sklearn.preprocessing.RobustScaler` (median + IQR) on training fold. Trans
 
 #### Step 11.c — Feature Selection (`select_features`)
 
-**Multi-Model MDA** (the actual implementation, differing from the three-method MDI/MDA/SFI protocol in AFML):
+**Multi-Model MDA** (differs from AFML's three-method MDI/MDA/SFI protocol):
 
 Uses `compute_multi_model_mda()` which runs permutation importance with **two classifiers in parallel**:
 
@@ -471,6 +475,8 @@ Uses `compute_multi_model_mda()` which runs permutation importance with **two cl
 |-------|-------------|
 | Random Forest (500 trees, balanced) | Captures nonlinear interactions and ensemble effects |
 | Logistic Regression (balanced, L2) | Captures linear relationships, prevents RF-biased selection |
+
+**Rationale for multi-model over RF-only MDA:** RF-only MDA introduces tree bias (features that tree models naturally exploit get inflated importance). SFI in weak-signal regimes produces uninformative near-uniform scores (~0.45–0.55). Averaging MDA from RF and LR balances these biases and reduces selection variance.
 
 For each model, `_compute_mda_single_model()` runs a **purged inner 3-fold CV** on the training set:
 1. Splits training data into 3 chronological inner folds
@@ -484,7 +490,7 @@ The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
 2. Cap at `top_k_frac` of total features (default 40%, overridable from notebook)
 3. Hard floor of 5 features minimum
 
-**Typical result:** ~18–22 features selected per fold from ~51 total.
+**Typical result:** ~18–22 features selected per fold from 55 total.
 
 #### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, ffd_columns, top_k_frac, skip_selection=False)`
 
@@ -492,7 +498,78 @@ Orchestration chaining FFD → scaling → selection. Returns DataFrames with **
 
 ---
 
-### Step 12 — Model Training (`models/`)
+### Step 12 — Nested Hyperparameter Tuning (`tuning.py`)
+
+**Produces:** Per-split optimal hyperparameters for each tuned model, derived using only the 4 training groups of the current CPCV split (AFML Ch. 7 compliant). Replaces the earlier walk-forward 3-fold majority vote approach.
+
+**Module-level constants:**
+```
+N_INNER_FOLDS = 3              # Purged K-Fold folds inside each training fold
+PURGE_EMBARGO = 10             # observations purged around inner-fold boundaries
+N_TRIALS_CLASSICAL = 60        # default trials for Logistic, RF, XGBoost
+N_TRIALS_NEURAL = 40           # default trials for LSTM, KAN
+```
+
+The `run_cpcv_pipeline()` function accepts an `n_trials` parameter that overrides these defaults. Recommended values balancing exploration against runtime:
+
+| Model | Recommended `n_trials` | Rationale |
+|-------|----------------------|-----------|
+| Logistic | 30 | Cheap per trial, only 2 hyperparameters |
+| Random Forest | 30 | Moderate cost, 4 hyperparameters |
+| XGBoost | 30 | Moderate cost, 8 hyperparameters (early stopping compensates) |
+| LSTM | 20 | Expensive per trial; tighter search space |
+| KAN | 20 | Expensive per trial; tighter search space |
+
+#### `_purged_kfold_splits(X, y, w) → list[(train_idx, val_idx)]`
+
+Creates 3 chronological inner folds with 10-observation embargo around boundaries (matches TBL num_days). Fewer folds (3 vs 5) improves runtime by ~40% and increases inner validation set size (~200 vs ~120 observations per fold), providing more reliable log loss estimates in a low-signal environment.
+
+#### Per-model tuning functions
+
+Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataFrame}`:
+
+**`tune_logistic(X, y, w, n_trials=None)`** — Search space:
+- `C`: log-uniform [1e-4, 1e2]
+- `penalty`: categorical {l1, l2}
+
+**`tune_random_forest(X, y, w, n_trials=None)`** — Search space:
+- `n_estimators`: int [100, 300] step 50 (capped from 500 to avoid wasteful trials on small data)
+- `max_depth`: int [3, 20]
+- `min_samples_leaf`: int [1, 30]
+- `max_features`: categorical {sqrt, log2}
+
+**`tune_xgboost(X, y, w, n_trials=None)`** — Search space:
+- `max_depth`: int [2, 6] (capped from 10 to prevent overfitting ~900 samples)
+- `learning_rate`: log-uniform [0.01, 0.3]
+- `min_child_weight`: int [1, 30]
+- `subsample`, `colsample_bytree`: uniform [0.6, 1.0]
+- `gamma`, `reg_alpha`, `reg_lambda`: log-uniform [1e-8, 10.0]
+- `n_estimators` fixed at 500 with early stopping (20 rounds)
+
+**`tune_lstm(X, y, w, n_features, n_trials=None)`** — Search space:
+- `hidden_size`: int [16, 64] step 16 (capped from 128)
+- `num_layers`: int [1, 3]
+- `dropout`: uniform [0.1, 0.5] (floor raised from 0.0 for regularization)
+- `learning_rate`: log-uniform [1e-4, 5e-2]
+
+**`tune_kan(X, y, w, n_features, n_trials=None)`** — Search space:
+- `width1`: int [3, 12] (capped from 20)
+- `width2`: int [0, 10], 0 = skip second hidden layer (capped from 15)
+- `lr`: log-uniform [1e-3, 0.1]
+- `weight_decay`: log-uniform [1e-5, 1e-2]
+- `grid`: categorical {3, 5} (dropped 8 to prevent memorization)
+
+**Optuna configuration:** TPE sampler with `seed=42` for reproducibility. MedianPruner with `n_startup_trials=5` (classical) or `n_startup_trials=3` (neural), `n_warmup_steps=1`. Pruner kills trials whose intermediate log loss after any inner fold falls below the median of all completed trials, saving compute on clearly bad regions.
+
+**Rationale for capped search spaces:** With ~600 training samples per CPCV split, overly flexible architectures guarantee overfitting. Each cap was chosen to match parameter count to sample size (e.g., a `[22, 20, 15, 2]` KAN has ~8,500 parameters for 480 samples; capping widths drops this to manageable levels).
+
+#### `tune_all_models(X, y, w, n_features, models, seed, verbose, n_trials) → dict`
+
+Orchestrates per-split tuning for a list of models. Returns `{model_name: tune_result}`. Called inside `pipeline.py`'s split loop; tuned parameters are then applied as module-level constants for model training in that split.
+
+---
+
+### Step 13 — Model Training (`models/`)
 
 All six models implement the `BaseModel` abstract interface from `base.py`:
 
@@ -513,43 +590,45 @@ The model registry in `models/__init__.py` provides `create_model(name, n_featur
 
 | Model | Class | Key Behavior |
 |-------|-------|-------------|
-| **AR Logistic** | `ARLogistic` | Constructs its own features: lagged log returns at lags [1, 2, 3, 5, 10, 21]. Ignores the selected feature set entirely. Requires a `log_returns` column in X (pipeline passes pre-selection DataFrame). `predict_logits` returns log-odds via `log(p₁/p₀)`. |
-| **Logistic Regression** | `LogisticRegressionModel` | Standard sklearn LogisticRegression (C=1.0, L2, balanced, LBFGS) on the selected feature set. `predict_logits` returns `decision_function` (raw log-odds). |
+| **AR Logistic** | `ARLogistic` | Constructs its own features: lagged log returns at lags [1, 2, 3, 5, 10, 21]. Ignores the selected feature set entirely. Requires a `log_returns` column in X (pipeline passes pre-selection DataFrame). `predict_logits` returns log-odds via `log(p₁/p₀)`. Not tuned (deterministic baseline). |
+| **Logistic Regression** | `LogisticRegressionModel` | Standard sklearn LogisticRegression, `class_weight='balanced'`, solver chosen based on penalty (lbfgs for L2, liblinear for L1). Tuned per split. `predict_logits` returns `decision_function` (raw log-odds). |
 
-Both use `LOGISTIC_C=1.0`, `LOGISTIC_PENALTY='l2'`, `LOGISTIC_MAX_ITER=1000`.
+AR Logistic uses `LOGISTIC_MAX_ITER=1000` and L2 penalty as hardcoded defaults. Logistic Regression's `C` and `penalty` are tuned per split.
 
 #### Tree Models (`tree_models.py`)
 
-| Model | Class | Key Config |
-|-------|-------|-----------|
-| **Random Forest** | `RandomForestModel` | 500 trees, max_features='sqrt', no max_depth, min_samples_leaf=5, balanced_subsample, n_jobs=-1. `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with clipping at 1e-10. |
-| **XGBoost** | `XGBoostModel` | 300 estimators, max_depth=4, lr=0.05, subsample=0.8, colsample_bytree=0.8, binary:logistic. Computes `scale_pos_weight = n_neg/n_pos` from training class balance. Early stopping at 20 rounds when X_val provided. |
+| Model | Class | Tuned Params | Fixed Params |
+|-------|-------|-------------|-------------|
+| **Random Forest** | `RandomForestModel` | n_estimators, max_depth, min_samples_leaf, max_features | max_features='sqrt' default, balanced_subsample, n_jobs=-1 |
+| **XGBoost** | `XGBoostModel` | max_depth, learning_rate, min_child_weight, subsample, colsample_bytree, gamma, reg_alpha, reg_lambda | n_estimators=500 with early stopping at 20 rounds, binary:logistic, scale_pos_weight from class balance |
+
+XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with clipping at 1e-10.
 
 #### LSTM (`lstm_model.py`)
 
-**Architecture:** `nn.LSTM(input_size=n_features, hidden_size=64, num_layers=2, dropout=0.2, batch_first=True)` → `nn.Dropout(0.2)` → `nn.Linear(64, 2)`. Takes last hidden state from final layer.
+**Architecture:** `nn.LSTM(input_size=n_features, hidden_size, num_layers, dropout, batch_first=True)` → `nn.Dropout` → `nn.Linear(hidden_size, 2)`. Takes last hidden state from final layer. All architectural parameters tuned per split.
 
 **Sequence construction:** `create_sequences(X, y, w, window=21)` reshapes 2D features into 3D windowed sequences of shape `(T-20, 21, n_features)`. First 20 observations are dropped (insufficient lookback). Returns `valid_indices` mapping sequences back to original positions.
 
-**Training:** Adam (lr=1e-3), ReduceLROnPlateau (patience=5, factor=0.5), CrossEntropyLoss with class weights and AFML sample weights (per-sample weighted loss), early stopping patience=10 on validation loss, batch size=64, max 100 epochs. Best model state restored after early stop.
+**Training:** Adam optimizer (lr tuned), ReduceLROnPlateau (patience=5, factor=0.5), CrossEntropyLoss with class weights and AFML sample weights (per-sample weighted loss), early stopping patience=10 on validation loss, batch size=64, max 100 epochs. Best model state restored after early stop.
 
 **Pipeline interaction:** `last_valid_indices` attribute stores the index mapping after `predict_proba`/`predict_logits`. The pipeline uses this to align LSTM predictions with original timestamps (LSTM produces fewer predictions than other models). Calibration handles this via `calibrator.fit_from_logits()` with pre-aligned y_cal.
 
 #### KAN (`kan_model.py`)
 
-**Architecture:** `efficient_kan.KAN(layers_hidden=[n_features, 5, 2], grid_size=5, spline_order=3, grid_range=[-1, 1])`. A narrow bottleneck (hidden=5) rather than the wider architectures discussed in the blueprint, chosen for stability on small datasets.
+**Architecture:** `efficient_kan.KAN(layers_hidden=[n_features, width1, (width2), 2], grid_size=grid, spline_order=3, grid_range=[-1, 1])`. Width parameters and grid size tuned per split; typical result `[n, 5, 2]` with grid=5.
 
 **Input normalization:** Tanh normalization fitted on training data: `z = tanh((x - mean) / (std + ε))`. Maps features into [-1, 1] to match the spline grid range. Stored parameters applied at inference time.
 
-**Training:** AdamW (lr=1e-3, weight_decay=1e-4), CrossEntropyLoss with class weights and AFML sample weights, early stopping patience=20 on validation loss, max 200 epochs. No grid refinement schedule (single grid=5 throughout). Best model state restored after early stop.
+**Training:** AdamW (lr and weight_decay tuned), CrossEntropyLoss with class weights and AFML sample weights, early stopping patience=20 on validation loss, max 200 epochs. No grid refinement schedule (single grid level throughout training). Best model state restored after early stop.
 
-**Key difference from blueprint:** Uses a single grid level (5) trained with AdamW instead of the coarse-to-fine LBFGS→Adam schedule. This was found to be more stable on the ~700-sample training folds.
+**Key difference from blueprint:** Uses a single grid level trained with AdamW instead of the coarse-to-fine LBFGS→Adam schedule. This was found to be more stable on the ~700-sample training folds.
 
-**Symbolic bridge:** Stores `_dataset` dict (normalized train/val tensors) for downstream use by `symbolic_extraction.py`. Symbolic extraction re-trains a separate PyKAN model from scratch.
+**Dual-library strategy:** efficient-kan is used for CPCV training/inference across all 15 splits (fast, reliable). PyKAN is re-trained independently on the best or last fold for symbolic extraction only (Phase 3). This avoids the PyKAN vs efficient-kan parameter incompatibility while leveraging PyKAN's symbolic features.
 
 ---
 
-### Step 13 — Calibration (`calibration.py`)
+### Step 14 — Calibration (`calibration.py`)
 
 **Two methods, auto-selected by model type:**
 
@@ -562,11 +641,13 @@ Both use `LOGISTIC_C=1.0`, `LOGISTIC_PENALTY='l2'`, `LOGISTIC_MAX_ITER=1000`.
 
 Calibration is fitted on the held-out 20% of the training fold (chronological split, no shuffling). Never touches test data. If calibration fails (logged as warning), the pipeline falls back to uncalibrated `predict_proba`.
 
+**Methodological note:** The 20% calibration subset serves a dual role: early stopping monitor for XGBoost and input for temperature scaling across all models. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set), and temperature scaling fits a single scalar parameter, this shared use introduces minimal information leakage. Splitting the already-small cal set (~120 observations) further would degrade both purposes.
+
 ---
 
-### Step 14 — Pipeline Orchestration (`pipeline.py`)
+### Step 15 — Pipeline Orchestration (`pipeline.py`)
 
-**Single entry point:** `run_cpcv_pipeline(X, y, w, t1, bins_ret, ...)`
+**Single entry point:** `run_cpcv_pipeline(X, y, w, t1, bins_ret, ..., tune=False, tune_models=None, n_trials=None)`
 
 **Execution flow per split:**
 1. Extract fold data using positional indices
@@ -574,7 +655,8 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 3. Re-align y, w, t1 after FFD may drop NaN rows
 4. Keep `X_tr_full` (all columns) for AR Logistic alongside `X_tr_sel` (selected) for other models
 5. Chronological 80/20 split of training into model-train + calibration
-6. For each model × each seed:
+6. If `tune=True`: run nested Optuna tuning on `X_tr_sel` using `tune_all_models()`, apply results to module-level constants
+7. For each model × each seed:
    - `create_model(name, n_features, seed)`
    - Route correct X (full for AR Logistic, selected for others)
    - `model.fit(X_fit, y_model, sample_weight=w_model, X_val=X_c, y_val=y_cal)`
@@ -582,11 +664,11 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
    - `model.predict_logits(X_test)` → `calibrator.calibrate(logits)` → argmax for predictions
    - Handle LSTM index mismatch via `last_valid_indices`
    - Compute inline metrics: F1 macro, AUC-ROC, log-loss
-   - Store: y_true, y_pred, cal_proba, timestamps, returns, prep_info, calibrator repr
+   - Store: y_true, y_pred, cal_proba, timestamps, returns, prep_info, calibrator repr, tuned_params
 
 **Storage key:** `(model_name, split_idx, seed)` tuple.
 
-**Models run separately in the notebook** (Section 4): AR Logistic first (~5s), then LR (~6min), then RF+XGBoost (~7min), then LSTM (~10min), then KAN (~16min). Results merged in Section 4.6 via dictionary union before passing to post-CPCV evaluation.
+**Models run separately in the notebook** (Section 4): AR Logistic first (~5s, no tuning), then LR, then RF+XGBoost, then LSTM, then KAN. Results merged in Section 4.6 via dictionary union before passing to post-CPCV evaluation.
 
 **Error handling:** Failed model fits are caught, logged, and skipped (don't crash the pipeline). Summary prints successful/failed task counts.
 
@@ -594,14 +676,14 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 
 ### Model Specifications Summary
 
-| Model | Seeds | ~Time (15 splits) | Key Hyperparameters |
-|-------|-------|-------------------|-------------------|
-| AR Logistic | 3 | ~5 sec | Lags [1,2,3,5,10,21], C=1.0, L2 |
-| Logistic Regression | 3 | ~6 min | C=1.0, L2, balanced |
-| Random Forest | 3 | ~3 min | 500 trees, sqrt features, balanced_subsample |
-| XGBoost | 3 | ~4 min | 300 rounds, depth=4, lr=0.05, early stop=20 |
-| LSTM | 2 | ~10 min | hidden=64, 2 layers, window=21, patience=10 |
-| KAN | 2 | ~16 min | [n, 5, 2], grid=5, k=3, AdamW, patience=20 |
+| Model | Seeds | Tuned per split | Notes |
+|-------|-------|-----------------|-------|
+| AR Logistic | 3 | No | Fixed: C=1.0, L2, lags [1,2,3,5,10,21] |
+| Logistic Regression | 3 | Yes (30 trials) | C, penalty |
+| Random Forest | 3 | Yes (30 trials) | n_estimators ≤ 300, depth, leaf, max_features |
+| XGBoost | 3 | Yes (30 trials) | 8 params, depth ≤ 6, early stopping |
+| LSTM | 2 | Yes (20 trials) | hidden ≤ 64, layers, dropout ≥ 0.1, lr |
+| KAN | 2 | Yes (20 trials) | width ≤ 12, grid ∈ {3,5}, lr, weight_decay |
 
 ---
 
@@ -613,7 +695,7 @@ Takes the raw predictions dictionary from Phase 2 and produces the thesis delive
 
 ---
 
-### Step 15 — Evaluation (`evaluation.py`)
+### Step 16 — Evaluation (`evaluation.py`)
 
 **Module-level constants:**
 ```
@@ -624,11 +706,11 @@ ANNUALIZATION_FACTOR = 365        # BTC trades every calendar day
 RISK_FREE_RATE = 0.0              # assume 0 for crypto
 ```
 
-#### Step 15.a — Split-level metrics (`compute_split_metrics`)
+#### Step 16.a — Split-level metrics (`compute_split_metrics`)
 
 For each split's test fold: accuracy, F1 macro, F1 per class (class 0 = bearish, class 1 = bullish), precision macro, recall macro, log-loss, Brier score, AUC-ROC. All computed with sample weights where applicable. Handles single-class test folds (AUC returns NaN).
 
-#### Step 15.b — Bet sizing (`bet_size_from_proba`)
+#### Step 16.b — Bet sizing (`bet_size_from_proba`)
 
 Implements De Prado's S-curve (AFML Chapter 10.3):
 1. Direction: `+1 if P(up) > P(down), else -1`
@@ -641,11 +723,11 @@ Implements De Prado's S-curve (AFML Chapter 10.3):
 
 **This is where the abstention mechanism lives.** Predictions with p ≈ 0.50 produce bet ≈ 0, meaning no capital is allocated despite having a prediction.
 
-#### Step 15.c — Strategy returns (`compute_strategy_returns`)
+#### Step 16.c — Strategy returns (`compute_strategy_returns`)
 
 For each observation: `gross_return = bet_size × label_return`, `turnover = |Δbet_size|`, `tx_cost = 0.1% × turnover`, `net_return = gross - tx_cost`. Returns a pd.Series indexed by timestamps.
 
-#### Step 15.d — Path stitching (`stitch_paths`)
+#### Step 16.d — Path stitching (`stitch_paths`)
 
 Assembles 5 full-span backtest paths from the 15 splits using the path-assignment matrix. For each path:
 1. Collects `(group_id, split_id)` pairs from `path_map[path_id]`
@@ -653,7 +735,7 @@ Assembles 5 full-span backtest paths from the 15 splits using the path-assignmen
 3. Concatenates chronologically, sorts by timestamp
 4. Computes bet sizes → strategy returns → path performance
 
-#### Step 15.e — Path performance (`compute_path_performance`)
+#### Step 16.e — Path performance (`compute_path_performance`)
 
 Per-path financial metrics:
 
@@ -665,12 +747,12 @@ Per-path financial metrics:
 | Maximum drawdown | `min((equity - running_max) / running_max)` |
 | Time under water | Longest consecutive run where equity < running_max (days) |
 | Win rate | Fraction of traded observations with positive return |
-| Profit factor | `Σ(positive returns) / |Σ(negative returns)|` |
+| Profit factor | `Σ(positive returns) / \|Σ(negative returns)\|` |
 | Number of trades | Count of observations where bet_size ≠ 0 |
 | Average bet size | Mean |bet| among traded observations |
 | Skewness / kurtosis | Distribution shape of strategy returns |
 
-#### Step 15.f — Deflated Sharpe Ratio (`compute_deflated_sharpe`)
+#### Step 16.f — Deflated Sharpe Ratio (`compute_deflated_sharpe`)
 
 Implements AFML Chapter 14. Corrects observed Sharpe for selection bias (n_trials = 6 models) and non-normal returns:
 
@@ -680,9 +762,11 @@ SR_std = √((1 - skew×SR + (kurt-1)/4 × SR²) / (n_obs - 1))
 DSR = Φ((SR_observed - E[max SR]) / SR_std)
 ```
 
+**NaN safety fix:** The `SR_std` formula can produce a negative value inside the square root when `skew × SR > 1`, causing `sqrt(negative) = NaN`. The implementation clamps `inner = max(inner, 1e-10)` before sqrt to prevent this while preserving correct output for well-behaved inputs.
+
 DSR > 0.95 → result survives multiple-testing correction. DSR < 0.95 → may be a statistical artifact.
 
-#### Step 15.g — Probability of Backtest Overfitting (`compute_pbo`)
+#### Step 16.g — Probability of Backtest Overfitting (`compute_pbo`)
 
 Implements AFML Chapter 11 via CSCV. Takes `path_sharpes_matrix` of shape (6 models, 5 paths):
 1. Generates all C(5, 2) = 10 IS/OOS partitions of the 5 paths
@@ -691,13 +775,25 @@ Implements AFML Chapter 11 via CSCV. Takes `path_sharpes_matrix` of shape (6 mod
 
 PBO < 0.3 → robust selection. PBO > 0.5 → anti-predictive (in-sample winner is out-of-sample loser).
 
-#### Step 15.h — Model comparison table (`compare_models`)
+#### Step 16.h — DeLong pairwise AUC tests (`compute_auc_significance`)
+
+New in the current pipeline. For each pair of models, tests the null hypothesis that their AUCs are equal using the DeLong (1988) method:
+
+1. Pools predicted probabilities and true labels across all 15 CPCV splits (seed=0)
+2. Computes AUC for each model on the pooled data
+3. Uses the non-parametric covariance estimator (`_delong_covariance`) via placement values (midranks)
+4. Computes z-statistic: `z = (AUC_a − AUC_b) / sqrt(Var(AUC_a) + Var(AUC_b) − 2·Cov(AUC_a, AUC_b))`
+5. Two-sided p-value from standard normal
+
+Returns a DataFrame with columns: `model_a`, `model_b`, `auc_a`, `auc_b`, `delta_auc`, `z_stat`, `p_value`, `significant` (at α=0.05). The notebook reports "X/Y pairs significantly different" as a top-line robustness statistic.
+
+#### Step 16.i — Model comparison table (`compare_models`)
 
 Ranks models by median path Sharpe (primary, descending) with std Sharpe as tiebreaker (ascending, prefer consistency).
 
 **Columns:** rank, model_name, median_sharpe, std_sharpe, DSR, mean_f1, mean_accuracy, mean_log_loss, mean_auc_roc, median_max_dd, median_cum_return, median_win_rate, median_profit_factor.
 
-#### Step 15.i — Model summary aggregation (`compute_model_summary`)
+#### Step 16.j — Model summary aggregation (`compute_model_summary`)
 
 Per model: pools path-level metrics (median/mean/std Sharpe, median drawdown, win rate, profit factor), split-level metrics (mean F1, accuracy, log-loss, AUC-ROC, Brier), and computes DSR using pooled skewness/kurtosis from all paths.
 
@@ -709,15 +805,15 @@ Per model: pools path-level metrics (median/mean/std Sharpe, median drawdown, wi
 
 #### Top-level orchestration (`analyze_results`)
 
-Called from notebook as `analysis = analyze_results(results)`. Chains: split metrics → path stitching → path performance → model summaries → comparison table → PBO → feature stability → FFD stability. Returns a dictionary with all results for the notebook's visualization cells (confusion matrices, equity curves, Sharpe box plots, feature stability bar chart, FFD d* values).
+Called from notebook as `analysis = analyze_results(results)`. Chains: split metrics → path stitching → path performance → model summaries → comparison table → PBO → DeLong AUC significance → feature stability → FFD stability. Returns a dictionary with all results for the notebook's visualization cells (confusion matrices, equity curves, Sharpe box plots, feature stability bar chart, FFD d* values, DeLong significance heatmap).
 
 ---
 
-### Step 16 — Symbolic Extraction (`symbolic_extraction.py`)
+### Step 17 — Symbolic Extraction (`symbolic_extraction.py`)
 
 **1,412 lines.** The most complex file in the project. Re-trains a PyKAN model independently from efficient-kan, following Algorithm 1 from the VIX KAN paper, with extensive robustness engineering for PyKAN's fragile APIs.
 
-**Architecture:** Shares `KAN_HIDDEN=5`, `KAN_GRID=5`, `KAN_K=3` from `kan_model.py` to ensure the symbolic model matches the CPCV predictor's structure.
+**Architecture:** Shares `KAN_HIDDEN=5`, `KAN_GRID=5`, `KAN_K=3` as defaults but uses data-aware sizing that can reduce these based on training sample count.
 
 **Module-level constants (PyKAN-specific, not shared with efficient-kan):**
 ```
@@ -750,15 +846,15 @@ Top-level entry point. Three control parameters:
 
 **Pipeline:**
 
-#### Step 16.a — Fold selection (`select_extraction_fold`)
+#### Step 17.a — Fold selection (`select_extraction_fold`)
 
 Scans all `(kan, split_idx, seed)` predictions, averages F1 across seeds per split, selects by strategy. Also retrieves `prep_info` (FFD d*, scaler, selected features) from that fold.
 
-#### Step 16.b — Feature ranking (`rank_features_by_stability`)
+#### Step 17.b — Feature ranking (`rank_features_by_stability`)
 
 Counts how often each feature was selected across all KAN CPCV folds. Returns `[(feature_name, selection_frequency)]` sorted descending. When `n_top_features` is set, only the top N are used for extraction, producing simpler formulas.
 
-#### Step 16.c — Data preparation (`prepare_extraction_data`)
+#### Step 17.c — Data preparation (`prepare_extraction_data`)
 
 Reconstructs the extraction fold's preprocessed data:
 1. Re-generates CPCV splits to get training indices
@@ -770,7 +866,7 @@ Reconstructs the extraction fold's preprocessed data:
 
 Returns PyKAN-format dataset dict with normalized float32 tensors.
 
-#### Step 16.d — PyKAN training (`train_pykan`)
+#### Step 17.d — PyKAN training (`train_pykan`)
 
 **Data-aware architecture:** Computes maximum hidden width such that `n_samples / total_params ≥ 5`. With ~350 training samples and grid=3, k=3, this typically yields hidden=2–5. Prevents LBFGS memorization.
 
@@ -788,7 +884,7 @@ Grid extension is **disabled** (`PYKAN_GRID_EXTEND=False`) because with ~350 sam
 
 **Diagnostic checkpoints:** Logs train/val accuracy after each phase.
 
-#### Step 16.e — Pruning (`prune_network`)
+#### Step 17.e — Pruning (`prune_network`)
 
 1. Forward pass to populate cached activations
 2. Edge survival analysis: counts active edges (above threshold) vs total
@@ -799,7 +895,7 @@ Grid extension is **disabled** (`PYKAN_GRID_EXTEND=False`) because with ~350 sam
 
 Typical result: `[12, 5, 2] → [5, 3, 2]` or similar compression.
 
-#### Step 16.f — Symbolification (`symbolify_network`)
+#### Step 17.f — Symbolification (`symbolify_network`)
 
 The most complex function (~350 lines) due to PyKAN's inconsistent API. For each surviving edge:
 
@@ -817,7 +913,7 @@ The most complex function (~350 lines) due to PyKAN's inconsistent API. For each
 
 Saves `cache/kan_symbolified_network.png`.
 
-#### Step 16.g — Formula extraction (`extract_formulas`)
+#### Step 17.g — Formula extraction (`extract_formulas`)
 
 1. Builds SymPy variable list, tries three naming conventions: `x1..xn` (no underscore, 1-based), `x_1..x_n` (underscore, 1-based), `x_0..x_{n-1}` (underscore, 0-based)
 2. `model.symbolic_formula(var=...)` — falls back to no-var call
@@ -871,9 +967,11 @@ for feat in symbolic['surviving_features']:
 |------|-----------|-------|
 | FFD d* computed on full data | d* estimated per fold on training data only | `preprocessing.py` |
 | Scaler fitted on full data | RobustScaler fitted on training fold only | `preprocessing.py` |
-| Feature selection on full data | MDI/MDA run on training fold only | `preprocessing.py` |
+| Feature selection on full data | Multi-model MDA run on training fold only | `preprocessing.py` |
+| Hyperparameter tuning on full data | Nested Optuna TPE inside each training fold (3-fold Purged K-Fold) | `tuning.py` |
 | Overlapping triple-barrier labels | Purging removes training obs whose t1 extends into test | `cv.py` |
 | Serial correlation across CV boundary | Embargo removes buffer after test boundary | `cv.py` |
 | Calibration on test data | Calibrator fitted on held-out training partition (20%), never on test | `calibration.py` |
+| Shared cal set for XGB early stop + calibration | Acknowledged trade-off; only ensemble size affected, no tree decisions | `pipeline.py` |
 | On-chain data look-ahead | CoinMetrics data shifted by 1 day before alignment | `external_features.py` |
 | CUSUM threshold on full data | Minor approximation (h uses full-sample vol mean); acknowledged, negligible impact | `labeling.py` |

@@ -1,497 +1,1107 @@
-% ISEG MASTER DISSERTATION TEMPLATE
-% MASTER'S IN_____________
-% AUTHOR:_________________
-% SUPERVISER:___________________
+% ISEG MASTER DISSERTATION
+% MASTER'S IN MATHEMATICAL FINANCE
+% AUTHOR: Petr Terletskiy
+% SUPERVISOR: [Advisor Name]
 %
-% DISCLAIMER: This template is intended to help ISEG master's students producing their master's dissertation. It follows the guidelines set by Costa (2017). Note that for convenience this template does not use a bibliographic manager (e.g. JabRef), although it is highly recommendable (more on this on the 'References' below). I thank Professor Paulo Brito for helpful comments.
+% Based on the ISEG template by Costa (2017),
+% adapted by Domingos Guerreiro Seward and Luís F. Costa (2018).
 %
 % NOTE: Use XeLaTeX for compiling.
 %
-% Domingos Guerreiro Seward and Luís F. Costa 11.11.2018
-%
-%
 % =============================================
-% Preambule
+% Preamble
 % =============================================
-%
-% Define the document class 'article'.
-% Set font size to 12pt, set to  A4 paper, and one-sided document.
-\documentclass [12pt,a4paper,oneside]{article}
 
-% Set font type to 'Times New Roman'.
+\documentclass[12pt,a4paper,oneside]{article}
+
+% Font
 \usepackage{times}
-
-% Portuguese accents just in case.
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 
-% English language.
+% Language
 \usepackage[english]{babel}
 
 % Appendix
-\usepackage[toc,page]{appendix} 
+\usepackage[toc,page]{appendix}
 
 \makeatletter
-
 \def\@biblabel#1{\hspace*{-\labelsep}}
-
 \makeatother
 
-% Bibliography package.
+% Bibliography
 \usepackage{natbib}
 
-% Set margins to 3cm.
+% Margins (3cm all sides per ISEG guidelines)
 \usepackage[top=3cm, bottom=3cm, left=3cm, right=3cm]{geometry}
 
-% Change margins command.
+% Change margins command
 \def\changemargin#1#2{\list{}{\rightmargin#2\leftmargin#1}\item[]}
-\let\endchangemargin=\endlist 
+\let\endchangemargin=\endlist
 
-% Paragraph indentation.
+% Paragraph indentation
 \usepackage{indentfirst}
 
-% Set vertical spacing to 1.5 lines.
+% 1.5 line spacing
 \usepackage{setspace}
 \onehalfspacing
 
-% Set first line of paragraph indentation.
+% Paragraph spacing
 \parskip=6pt
 
-% Page headers and footers customisation.
+% Headers and footers
 \usepackage{fancyhdr}
 \pagestyle{fancy}
 \fancyhf{}
-	% Set left header to footnotesize (10pt) and upper cases.
-\lhead{\footnotesize \textsc{Luís F. Costa}}
-	% Set left header to footnotesize (10pt) and upper cases.
-\rhead{\footnotesize\textsc{Template for \gls{mfw} at ISEG}}
-	% Set centred footer to page number.
+\lhead{\footnotesize \textsc{Petr Terletskiy}}
+\rhead{\footnotesize\textsc{BTC Direction Prediction Using KANs}}
 \cfoot{\thepage}
 
-
-% Customise chapters, sections, subsections, and subsubsections.
+% Section formatting
 \usepackage{titlesec}
-	% Set chapters' titles to upper cases and centred.
 \titleformat{\chapter}[display]
   {\scshape\center}
   {}
   {0pt}
   {\thechapter.\ }
-  \usepackage{etoolbox}% Stop chapters from starting at new page.
+\usepackage{etoolbox}
 \makeatletter
 \patchcmd{\chapter}{\if@openright\cleardoublepage\else\clearpage\fi}{}{}{}
 \makeatother
-	% Set sections' titles to upper cases and centred.
 \titleformat{\section}
   {\scshape\center}{\thesection}{1em}{}
-	% Set subsections' titles to italic and centred.
 \titleformat{\subsection}
   {\itshape\center}{\thesubsection}{1em}{}
-	% Idem for subsubsections' titles.
 \titleformat{\subsubsection}
-  {\itshape\center}{\thesubsection}{1em}{}
+  {\itshape\center}{\thesubsubsection}{1em}{}
 
-
-% Link objects (e.g. tables, figures, pages) in the body of text.
+% Hyperlinks
 \usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue
+}
 
-
-% Customize table of contents.
+% Table of contents
 \usepackage{tocloft}
 \setlength{\cftbeforetoctitleskip}{0pt}
-%	\addto\captionsenglish{%
-%	\renewcommand{\contentsname}{\hfill\normalfont\scshape\normalsize Table of Contents\hfill}   
-	%\renewcommand{\cftaftertoctitle}{\hfill}
-%	}
-
-%\addto\captionsenglish{%
- % \renewcommand{\contentsname}%
-  %  {\scshape Table of Contents}%
-%}
 \setlength{\cftbeforeloftitleskip}{0pt}
 \setlength{\cftbeforelottitleskip}{0pt}
 
-% Customise tables.
-\renewcommand*\thetable{\Roman{table}}% Roman Numerals Tables
-\addto\captionsenglish{\renewcommand{\tablename}{\textsc{Table}}}% Full Caps Tables
-\addto\captionsenglish{\renewcommand{\figurename}{\textsc{Figure}}}% Full Caps Figures
+% Tables
+\renewcommand*\thetable{\Roman{table}}
+\addto\captionsenglish{\renewcommand{\tablename}{\textsc{Table}}}
+\addto\captionsenglish{\renewcommand{\figurename}{\textsc{Figure}}}
 
-% Tables useful packages.
 \usepackage{lipsum}
-
 \usepackage{booktabs}
 \usepackage{adjustbox}
 \setlength\heavyrulewidth{0.3ex}
-
 \usepackage{tabularx}
 \usepackage{array}
-
 \usepackage{threeparttable}
-
+\usepackage{multirow}
+\usepackage{longtable}
 
 % Quotes
 \usepackage{csquotes}
-
 
 % Mathematics
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{amssymb}
-\usepackage{bm} % for bold characters in math mode.
+\usepackage{bm}
 
+% Graphics
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{subcaption}
 
-% Build a glossary.
+% Code listings (for algorithm pseudocode)
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% Glossary / Acronyms
 \usepackage[automake]{glossaries}
+\makeglossaries
 
-\makeglossaries  
-  % Define, e.g. acronyms (\newacronym{<label>}{<abbrv>}{<full>}).
-  % Use \gls{<label>} command to call the acronym in the text. On first use the \gls command will display "<full> (<abbrv>)". On subsequent uses only the abbreviation will be displayed.
+% ── Acronyms ──────────────────────────────────────────────────────────
+% AFML & Methodology
+\newacronym{afml}{AFML}{Advances in Financial Machine Learning}
+\newacronym{tbl}{TBL}{Triple Barrier Labeling}
+\newacronym{cusum}{CUSUM}{Cumulative Sum}
+\newacronym{ffd}{FFD}{Fixed-width Window Fractional Differentiation}
+\newacronym{cpcv}{CPCV}{Combinatorial Purged Cross-Validation}
+\newacronym{dsr}{DSR}{Deflated Sharpe Ratio}
+\newacronym{pbo}{PBO}{Probability of Backtest Overfitting}
+\newacronym{mda}{MDA}{Mean Decrease Accuracy}
 
-  \newacronym{gdp}{GDP}{Gross Domestic Product}
-  \newacronym{jel}{JEL}{Journal of Economic Literature}
-  \newacronym{mfw}{MFW}{Master's Final Work}
-  \newacronym{ols}{OLS}{Ordinary Least Squares}
-  \newacronym{var}{VAR}{Vector Auto-Regression}
-  
-  
+% Models
+\newacronym{kan}{KAN}{Kolmogorov-Arnold Network}
+\newacronym{lstm}{LSTM}{Long Short-Term Memory}
+\newacronym{rf}{RF}{Random Forest}
+\newacronym{xgb}{XGBoost}{Extreme Gradient Boosting}
+\newacronym{lr}{LR}{Logistic Regression}
+\newacronym{ar}{AR}{Autoregressive}
+\newacronym{mlp}{MLP}{Multi-Layer Perceptron}
+
+% Technical
+\newacronym{btc}{BTC}{Bitcoin}
+\newacronym{ohlcv}{OHLCV}{Open-High-Low-Close-Volume}
+\newacronym{ta}{TA}{Technical Analysis}
+\newacronym{ewma}{EWMA}{Exponentially Weighted Moving Average}
+\newacronym{adf}{ADF}{Augmented Dickey-Fuller}
+\newacronym{rsi}{RSI}{Relative Strength Index}
+\newacronym{macd}{MACD}{Moving Average Convergence Divergence}
+\newacronym{atr}{ATR}{Average True Range}
+\newacronym{obv}{OBV}{On-Balance Volume}
+\newacronym{mfi}{MFI}{Money Flow Index}
+\newacronym{cci}{CCI}{Commodity Channel Index}
+\newacronym{vix}{VIX}{CBOE Volatility Index}
+\newacronym{mvrv}{MVRV}{Market Value to Realized Value}
+\newacronym{sadf}{SADF}{Supremum Augmented Dickey-Fuller}
+
+% Financial
+\newacronym{mfw}{MFW}{Master's Final Work}
+\newacronym{jel}{JEL}{Journal of Economic Literature}
+\newacronym{emh}{EMH}{Efficient Market Hypothesis}
+
+
 % =============================================
-% Begin the document.
+% Begin Document
 % =============================================
 
 \begin{document}
 
-% This is just a blank page.
-% You can use this page for a dedication. See the example below.
-
-\thispagestyle{empty}% No header and footer.
-\vspace*{\fill} %Text that will now be at the bottom of the page.
+% ── Dedication ────────────────────────────────────────────────────────
+\thispagestyle{empty}
+\vspace*{\fill}
 \begin{flushright}
 \textit{%
-To all my master's students\\
-that started a dissertation\\
-under my supervision, but\\
-were abducted by extra-\\
-terrestrials or crossed to\\
-another dimension.
+% Add your dedication here, or leave blank.
 }
 \end{flushright}
 
 
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-	\addcontentsline{toc}{section}{Erratum} % Add to table of contents.
-	
-	\setcounter{page}{1} % Set page number to i
-	\pagenumbering{roman} % Roman lowercase numerals for page numbering
+% ── Glossary ──────────────────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Glossary}
 
-\section*{Erratum}
-% Use this section only if you need to include an erratum. This only makes sense for a MFW that passed without any changes in the viva voce examination. Otherwise, you should delete this section.
-% Please find below the example of a paragraph in an erratum:
-
-\begin{enumerate}
-\item	In page \hyperlink{page.23}{23}, third line of second paragraph, it is written "the curve shifts rightwards" instead of "the curve shifts leftwards".
-\end{enumerate}
-
-
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-	\addcontentsline{toc}{section}{Glossary} % Add to table of contents.
-	
-	
-% Print Glossary
-% Here you should list expressions and acronyms that will be used all over the text. They should be listed alphabetically.
-% Please find some examples below (See the preamble for the Glossary construction).
+\setcounter{page}{1}
+\pagenumbering{roman}
 
 \glsaddall
 \printglossaries
 
 
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-	\addcontentsline{toc}{section}{Abstract, Keywords, and JEL Codes} % Add to table of contents.
-	
+% ── Abstract ──────────────────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Abstract, Keywords, and JEL Codes}
+
 \section*{Abstract, Keywords, and \gls{jel} Codes}
-% Write your abstract in 300 words or less. You should set the problem, say how you tackled it, and what the main conclusions were.
-% Here is an example of an opening period:
 
-This dissertation provides new insights on the estimation of mark-up ratios in Portugal, using annual panel data for Portuguese manufacturing industries over the period 2004-2010. (...)
+% TODO: Write abstract (300 words max).
+% State the problem, how you tackled it, and the main findings.
+% Lead with results (Cochrane): say what you find, not what you look for.
 
-% Write up to 6 keywords that helps the reader to understand what your work is about. Keywords may actually be short phrases. Use semicolons to separate them.
-% See the example below:
-\textsc{Keywords}: Mark-ups; Productivity; Production Function.
+\vspace{1em}
 
-% Insert up to 6 Journal of Economic Literature (JEL) codes that you deem appropriate for your MFW. They should be related to the keywords, but there is no need to have a one-to-one relationship. Remember that JEL codes also cover areas in Business (area M) and Finance (area G). The usage of Maths and Statistics in Economics and Management is usually within area C, Economic History is in area N, and most of all other Social Sciences can be found in area Z.
-% Here is an example:
-\textsc{\gls{jel} Codes}: C23; C36; D24; D43; E32; L22.
+\textsc{Keywords}: Bitcoin; Kolmogorov-Arnold Networks; Symbolic Extraction; Triple Barrier Labeling; Combinatorial Purged Cross-Validation; Financial Machine Learning.
+
+\textsc{\gls{jel} Codes}: C45; C53; C58; G11; G17.
+% C45 - Neural Networks and Related Topics
+% C53 - Forecasting and Prediction Methods
+% C58 - Financial Econometrics
+% G11 - Portfolio Choice; Investment Decisions
+% G17 - Financial Forecasting and Simulation
 
 
-% Call the table of contents.
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-		\addcontentsline{toc}{section}{Table of Contents} % Add to table of contents.
-	% Customize table of contents' title.
-	\renewcommand*\contentsname{\hfill\normalfont\scshape\normalsize Table of Contents \hfill}
+% ── Table of Contents ─────────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Table of Contents}
+\renewcommand*\contentsname{\hfill\normalfont\scshape\normalsize Table of Contents \hfill}
 \tableofcontents
 
-% Call the list of figures.
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-		\addcontentsline{toc}{section}{List of Figures} % Add to table of contents.
-	% Customize table of contents' title.
-	\renewcommand*\listfigurename{\hfill\normalfont\scshape\normalsize List of Figures \hfill}
+% ── List of Figures ───────────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{List of Figures}
+\renewcommand*\listfigurename{\hfill\normalfont\scshape\normalsize List of Figures \hfill}
 \listoffigures
 
-% Call the list of tables.
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-			\addcontentsline{toc}{section}{List of Tables} % Add to table of contents.
-	% Customize table of contents' title.
-	\renewcommand*\listtablename{\hfill\normalfont\scshape\normalsize List of Tables \hfill}
+% ── List of Tables ────────────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{List of Tables}
+\renewcommand*\listtablename{\hfill\normalfont\scshape\normalsize List of Tables \hfill}
 \listoftables
 
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-	\addcontentsline{toc}{section}{Preface} % Add to table of contents.
-\section*{Preface}
-%This is an optional section, written by somebody else. For most students, this is a rather pedantic way of showing that his/her work is a very important thing. For some mature students with some life and professional experience, a preface may make sense.
-
-
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-	\addcontentsline{toc}{section}{Acknowledgements} % Add to table of contents.
+% ── Acknowledgements ──────────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Acknowledgements}
 \section*{Acknowledgements}
-% Here is where you express your gratitude towards your parents, spouses, partners, friends, and supervisors. This is also the end of the pre-textual part of your MFW.
-% An example is presented below:
 
-First, I wish to thank Professor X for his/her encouragement and guidance.
-
-I am also grateful to my colleagues Y and Z for numerous discussions.
-
-Finally, I am also thankful to my family for their patience and their support while I pursued this project.
+% TODO: Write acknowledgements.
 
 
-	\newpage % Create a new page.
-	\thispagestyle{plain}% No header and footer.
-	
-	\setcounter{page}{1} % Set page number to 1
-	\pagenumbering{arabic} % Arabic lowercase numerals for page numbering
-	
-\begin{center} % Begin centred text.
+% =============================================
+% TEXTUAL PART BEGINS
+% =============================================
+\newpage
+\thispagestyle{plain}
 
-\textsc{TEMPLATE FOR \gls{mfw} AT ISEG}\\ % Title of the dissertation.
-    
-\vspace{0.5cm} % Add a 0.5cm space between title and authorship
-By Luís F. Costa and Domingos Seward\\
-    
-\begingroup\singlespacing % Set line vertical spacing to 1.
-\begin{changemargin}{2cm}{2cm} % Change margins to 2cm.
-{\footnotesize \textsc{This template} was made to be used by Master's students at ISEG, ULisboa. This paragraph is called a "headnote" and it is a shorter version (100 words maximum) of your abstract.}
+\setcounter{page}{1}
+\pagenumbering{arabic}
+
+\begin{center}
+\textsc{BTC DAILY DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK}\\
+
+\vspace{0.5cm}
+By Petr Terletskiy\\
+
+\begingroup\singlespacing
+\begin{changemargin}{2cm}{2cm}
+{\footnotesize \textsc{This dissertation} evaluates whether Kolmogorov-Arnold Networks can predict Bitcoin daily price direction and extract interpretable symbolic formulas, benchmarked against five models within López de Prado's Advances in Financial Machine Learning framework. Using Combinatorial Purged Cross-Validation with the Deflated Sharpe Ratio and Probability of Backtest Overfitting, the study finds that no model achieves statistically significant predictive performance, consistent with market efficiency. The core contribution is KAN symbolic expression extraction, deriving closed-form decision functions from the trained network.}
 \end{changemargin}
 \endgroup
+\end{center}
 
-\end{center} % End centred text.
 
-
+% ==================================================================
+% CHAPTER 1: INTRODUCTION
+% ==================================================================
 \section{Introduction}\label{sec:introduction}
 
-This is where your textual part begins. Remember that this part has a maximum length of 10 000 words long, but it cannot be larger than 35 pages long.
-
-The first chapter is always called "introduction" and usually it does not have any sections.
-
-This introduction should not be larger than 20 per cent of the textual part, i.e. its maximum length is 7 pages for a 35 page \gls{mfw}. It should contain paragraphs with the following items:
-\begin{itemize}
-\item The research question. Why is it relevant?
-\item The (general) survey of the literature.
-\item How are you going to address the question?
-\item What is your contribution? What's new, doc?
-\item Describing the following chapters (last paragraph).
-\end{itemize}
-
-Chapter \ref{sec:maintext} covers the main text and chapter \label{sec:conclusion} concludes.
-
-
-\newpage % New page.
-\section{Main Text}\label{sec:maintext}
-
-This this the main part of your \gls{mfw}. In your case, there should be more than just one chapter in the main text. You can have 2, 3, 4, but avoid more than 5 for such a short piece (remember the limits in the previous section).
-
-
-The main text should be at least 70 per cent of the textual part, i.e. a minimum of 24 pages in a 35 page textual part.
-
-
-Here you should write the chapters, sections and sub-sections with the empirical applications or the theoretical constructions. Analytical surveys follow the same structure.
-
-
-Do not forget to follow \cite{costa_2017} for the style. The following is based upon this text.
-
-	\subsection{Mathematical Notation}\label{subsec:mathematical}
-
-Some rules for writing mathematical notations are already incorporated into specific applications (e.g. Equation Editor, Math Type, Scientific Workplace) and those should be taken into account: variables should be written in italics, matrices and vectors in bold, etc.
-
-Equations and other key mathematical expressions should be written on a separate line, numbered and punctuated in accordance with their function in the text, e.g.
-
-\begin{equation}\label{eq:1}
-\dot{K}(t) = y(K(t), L(t), \bm{\varphi}) - C(t)
-\end{equation}
-where variables in Equation \ref{eq:1} are $K$ representing the capital stock, $L$ labour, $C$ stands for consumption, $y(\bm{\cdot})$ is the production function, $t$ is time, and $\bm{\varphi})$ is a parameter vector.
-
-Shorter, less important expressions may be incorporated into the body of the main text, taking care not to alter the formatting. Fractions are an example: $[a + (b/c)]$.
-
-Notice that you can also present the outcome of estimations as an equation:
-
-\begin{equation}\label{eq:2}
-\begin{split}
-\Delta \ln q_{ijt} = \underset{(0.074)^{***}}{0.317} \Delta \ln k_{ijt} + \underset{(0.051)^{***}}{0.104} \Delta \ln \ell_{ijt} + \underset{(0.078)^{***}}{0.297} \Delta \ln m_{ijt}
-\\
-{\footnotesize\textrm{Sargan OICD (p-value): 0.003 \quad Observations: 483 \quad CRtS test (p-value): 0.00853}}
-\end{split}
-\end{equation}
-
-
-	\subsection{Tables}\label{subsec:tables}
-
-All tables should be numbered using Roman numerals, should have a title, and should appear next to their first reference in the text. Sources of information should be clearly identified. The format should be as in Table I below:
-
-\begin{table}[h] \label{table:1}
-\centering
- \begin{threeparttable}
-{\def\arraystretch{1}
-\setlength{\tabcolsep}{30pt}
-
-
-\caption{\textsc{Comparison between a RBC Model and observed data}}
-
-\begin{tabular}{@{}ccc}
-
-\hline\hline
-& USA Data & RBC Model\tnote{(a)} \\ \hline
-
-$\sigma_{Y}$ & 1.92 & 1.30 %
- \\ 
-$\sigma_{C}/\sigma_{Y}$ & 0.45 & 0.31 %
- \\ \toprule
-
-\end{tabular}%
- }
-
-    \begin{tablenotes}
-      \footnotesize
-      \item[(a)] Basic calibrated model
-      \item Source: \cite{romer_2012}, p. 219.
-    \end{tablenotes}
-  \end{threeparttable}
-\end{table}%
-
-
-
-
-
-
-
-
-	\subsection{Figures}
-
-All figures should be numbered using Arabic numerals, should have a title and should appear next to their first reference in the text. Sources of information should be clearly identified. The format should be as follows:
-
-\begin{figure}[h]%Include figures.
-\centering
-
-\includegraphics[scale=0.35]{phase_diagram}
-
-\caption{Phase diagram for the endogenous tax rule model.}
-\label{fig:phase_diagram.}
-
-\end{figure}
-
-
-	\subsection{Quotations}
-
-Excerpts from others' work should be used only when strictly necessary. Whenever used, it should be easy to identify their both presence in the text (using indentation and/or a different font) and their source.
-
-For excerpts up to three lines, you can use the normal formatting of the body of the text e.g.: "as referred to by \cite{rodrigues_2014}, the final report is limited to a <<maximum of 20 pages of text (...), including the table of contents.>>"
-
-Longer quotations should appear as follows:
-
-\begin{displayquote}
-{\small Recent research has also emphasized the role of imperfect competition in explaining a host of issues in international trade and finance (...). Thus, while there plainly are many other important distortions in the economy, there is good reason to believe that imperfect competition is one of the more important issues.}
-\begin{flushright}
-In: \cite{obstfeld_rogoff_1996}, p. 689.
-\end{flushright}
-\end{displayquote}
-
-Unacknowledged use of another's work is \textbf{plagiarism}. This not only violates the most basic rules of academic work, but as a form of falsification (or in some very specific cases, usurpation) it is also subject to disciplinary penalties imposed by the higher education institution. It is also a civil crime with penalties ranging from a fine to 3 years in prison (doubled in the case of repeat offences).
-
-	\subsection{References}
-
-Given the complexity of managing a bibliographical database linked to a text, especially on a large scale, such as in a \gls{mfw} or doctoral thesis, use of specialist software (e.g. JabRef, BibTeX, EndNote, ProCite, Reference Manager) is highly recommended from the beginning\footnote{I used JabRef.}. Reference databases such as EconLit or the Web of Knowledge export their listings into most formats used by these programmes, thereby facilitating the construction of a bibliography.
-
-For formats to be used in-text and in the reference list, please read \cite{costa_2017}. Remember that there must be a one-to-one correspondence between the set of in-text citations (e.g. \cite{costa_2017} used above) and the list in the post-textual section References (e.g. Costa, L. (2017). \textit{Rules Governing the Presentation of Written Work at ISEG}. Mimeo ISEG.).
-
-
-\begin{figure}[h]%Include figures.
-\centering
-
-\includegraphics[scale=0.8]{citation_errors}
-
-\caption{In-text citations and the reference list.}
-\label{fig:citation_errors}
-
-\end{figure}
-
-Figure \ref{fig:citation_errors} above shows two examples of the wrong way of citing your bibliographic references:
-
-\begin{itemize}
-\item If you cite \cite{obstfeld_rogoff_1996} in your text\footnote{I did it above.}, then you have to list it in the References section.
-\item If you want to keep the book "Recursive Macroeconomic Theory" in your reference list, then you have to cite it in the text as "Ljungqvist \& Sargent (2012)".
-\end{itemize}
-
-\newpage % New page.
-\section{Conclusion}
-
-This is the final section of the main text. The maximum length is 10 per cent of the textual part, i.e. 3.5 pages.
-
-Here, you should present the results and (if applicable) your intentions for future research.
-
-
-
-%  ==============    BIBLIOGRAPHY  ================
-
-% NOTE: The use of a bibliographic manager is highly recommendable. One can import the references stored on a bibliographic manager, as examplified below.
-\newpage % New page.
+% Target: max 20% of textual part (~7 pages for 35-page MFW).
+%
+% ── OPENING PARAGRAPHS (before any subsection) ───────────────────
+% Cochrane: "Start with your central contribution."
+% Thatcher R1: "First 1-2 sentences state a clear, field-relevant claim."
+%
+% Write 1-2 paragraphs that state the contribution upfront.
+% Topics to cover:
+%   - This thesis applies KANs to BTC daily direction prediction
+%     within the full AFML framework
+%   - Benchmarks KAN against five models (AR Logistic, LR, RF,
+%     XGBoost, LSTM) under CPCV with DSR and PBO evaluation
+%   - Core contribution: KAN symbolic expression extraction,
+%     deriving closed-form decision functions from the trained network
+%   - Telegraph the key finding: no model achieves statistically
+%     significant performance (DSR=0), consistent with market efficiency;
+%     the symbolic extraction pipeline successfully produces
+%     interpretable formulas nonetheless
+
+
+\subsection{Research Context and Contribution}\label{subsec:context}
+
+% ── PROBLEM 1 (the spark): Interpretability and feature identification ──
+%
+% The narrative: "I wanted to understand what drives BTC price direction"
+%
+% Topics:
+%   - ML models in finance are opaque; practitioners, risk managers,
+%     and regulators cannot explain why a model made a specific prediction
+%   - Researchers use dozens of features (23 TA indicators, 9 mathematical
+%     features, 23 external: macro, crypto, on-chain) with no consensus
+%     on which actually drive BTC direction
+%   - On-chain data (active addresses, hash rate, MVRV, exchange flows)
+%     offers a transparent window into blockchain network fundamentals
+%     with no equivalent in traditional finance; the question is whether
+%     this publicly available "inside view" translates into measurable signal
+%   - The need: a model that not only predicts but also reveals WHAT
+%     matters and HOW it matters, in a formula a human can read and audit
+%
+%
+% ── PROBLEM 2 (the tool): Does model complexity justify its cost? ────
+%
+% The narrative: "My advisor pointed me to KANs as a solution"
+%
+% Topics:
+%   - KANs (Liu et al., 2024) are a new neural network architecture based
+%     on the Kolmogorov-Arnold representation theorem
+%   - Unique property: learnable B-spline activation functions on edges
+%     (not nodes), which can be distilled into closed-form symbolic
+%     expressions via pruning and symbolification
+%   - This makes KANs the only neural architecture that can produce
+%     an explicit mathematical formula as its output, not just a prediction
+%   - But KANs, LSTMs, and ensemble methods are orders of magnitude
+%     more expensive than logistic regression on lagged returns
+%   - If complex models don't produce better predictions under rigorous
+%     evaluation, the interpretability contribution (symbolic formulas)
+%     becomes the primary value, even under weak predictive performance
+%   - No prior work applies KANs to BTC direction prediction, nor
+%     extracts symbolic formulas from a classification KAN in a
+%     weak-signal financial regime
+%
+%
+% ── PROBLEM 3 (the realization): The evaluation crisis in crypto-ML ──
+%
+% The narrative: "When I surveyed the literature, I found it was
+%                 methodologically broken"
+%
+% Topics:
+%   - Most crypto-ML papers report 85-95% accuracy using naive
+%     train/test splits with no purging, no embargo, fixed-horizon labels
+%   - Overlapping triple-barrier labels leak information across folds,
+%     inflating performance metrics; without purging and embargo,
+%     reported results are unreliable
+%   - The AFML framework (Lopez de Prado, 2018) was designed to prevent
+%     exactly these pitfalls: CUSUM event filtering, TBL, FFD for
+%     stationarity with memory preservation, sample uniqueness weights,
+%     CPCV with purging and embargo, DSR, PBO
+%   - Few crypto studies adopt the full AFML pipeline; most cherry-pick
+%     individual components (e.g., TBL without CPCV, or CPCV without FFD)
+%   - Applying the full framework honestly may produce negative results
+%     (DSR=0, PBO near zero), which are not failures but evidence of
+%     market efficiency under rigorous evaluation
+%   - The three-version pipeline evolution in this thesis (early version
+%     with data leakage, partial fix, final AFML-compliant version)
+%     itself demonstrates how methodology shapes conclusions
+%
+%
+% ── ASSET CHOICE: Why BTC? ───────────────────────────────────────────
+%
+% Topics (keep to one paragraph, factual justification only):
+%   - BTC is the first and largest cryptocurrency by market capitalization,
+%     representing over 50% of the total crypto market
+%   - Since its inception in 2009, BTC has delivered the highest cumulative
+%     returns of any asset class over the same period, including equities,
+%     gold, and real estate
+%   - It operates on a fully transparent, publicly auditable blockchain,
+%     making it uniquely suited for on-chain feature analysis (this is
+%     why on-chain features are part of the feature set)
+%   - 24/7 trading, extreme volatility, and absence of market closes
+%     create a demanding testbed for predictive models
+%   - Daily OHLCV data freely available from 2014 onward provides
+%     over a decade of history (~4,200 daily observations)
+%
+%
+% ── CONTRIBUTION STATEMENT ───────────────────────────────────────────
+%
+% Topics (close the subsection with a crisp summary):
+%   - This thesis fills three gaps by combining:
+%     (a) The full AFML pipeline applied to BTC (evaluation rigor)
+%     (b) KAN as a novel architecture for crypto direction prediction
+%     (c) Symbolic expression extraction from a trained KAN
+%   - Produces the first head-to-head comparison of six model
+%     architectures under rigorous financial ML evaluation for BTC
+%   - Produces the first symbolic formula extraction from a BTC
+%     direction classifier
+%   - Negative predictive results (DSR=0) are framed as honest
+%     findings consistent with the efficient market hypothesis,
+%     not as methodological failure
+
+
+\subsection{Research Objectives}\label{subsec:objectives}
+
+% Each RQ maps directly to a problem stated above.
+% Thatcher R6: parallel logic (Problem -> RQ -> pipeline component -> result).
+%
+% Topics:
+%
+%   - RQ1 (from Problem 1 — interpretability + features):
+%     Can interpretable symbolic decision functions be extracted from
+%     a KAN trained on BTC daily direction data, and which features
+%     (technical, mathematical, macro, on-chain) survive in the
+%     resulting formula?
+%     → Answered by: symbolic extraction pipeline (Section 3.12)
+%
+%   - RQ2 (from Problem 2 — complexity vs value):
+%     Does KAN predictive performance justify its architectural
+%     complexity relative to five established baselines (AR Logistic,
+%     Logistic Regression, Random Forest, XGBoost, LSTM)?
+%     → Answered by: CPCV model comparison (Section 4.1)
+%
+%   - RQ3 (from Problem 3 — evaluation crisis):
+%     Does applying the full AFML methodology (CUSUM filtering,
+%     triple barrier labeling, fractional differentiation, combinatorial
+%     purged cross-validation, deflated Sharpe ratio, probability of
+%     backtest overfitting) change the conclusions relative to the
+%     naive evaluation approaches prevalent in the crypto-ML literature?
+%     → Answered by: DSR and PBO results (Section 4.3),
+%       three-version pipeline evolution (Section 5.1)
+
+
+\subsection{Document Structure}\label{subsec:structure}
+
+% One short paragraph. ISEG expects this; keep it minimal.
+%
+% Topics:
+%   - Section 2 reviews the literature across three streams:
+%     BTC price prediction, the AFML methodology, and KANs
+%   - Section 3 presents the full methodology, from data collection
+%     through labeling, feature engineering, CPCV, model training,
+%     calibration, evaluation, and symbolic extraction
+%   - Section 4 reports the results: model comparison, classification
+%     and financial performance metrics, feature stability, and
+%     the extracted symbolic formulas
+%   - Section 5 discusses the findings, interpreting the negative
+%     results in the context of market efficiency and positioning
+%     the symbolic extraction contribution
+%   - Section 6 concludes
+%   - Section 7 outlines directions for future work
+
+
+% ==================================================================
+% CHAPTER 2: LITERATURE REVIEW
+% ==================================================================
+\newpage
+\section{Literature Review}\label{sec:literature}
+
+% Cochrane: "After you've explained your contribution, then you can write
+% a brief literature review. Make it a separate section."
+% Cochrane: "The main point should be to set your paper off against the
+% 2 or 3 closest papers, and to give proper credit."
+% Thatcher R3: Each subsection opens with a claim, not background.
+%
+% ── OPENING PARAGRAPH (before any subsection) ────────────────────
+%
+% Topics:
+%   - One paragraph framing the three literature streams and how they
+%     converge in this thesis
+%   - This thesis sits at the intersection of three bodies of work:
+%     (a) Kolmogorov-Arnold Networks as a novel interpretable architecture,
+%     (b) ML-based cryptocurrency price prediction, and
+%     (c) the AFML framework for rigorous financial ML evaluation
+%   - Each stream is reviewed below, with emphasis on the gaps this
+%     thesis addresses
+
+
+% ------------------------------------------------------------------
+\subsection{Kolmogorov-Arnold Networks}\label{subsec:lit_kan}
+% ------------------------------------------------------------------
+
+% Narrative: introduce the architecture, establish its unique capabilities,
+% then show how it has been applied to finance, then identify the gap.
+%
+%
+% ── 2.1.1 Mathematical Foundation ────────────────────────────────
+%
+% Topics:
+%   - The Kolmogorov-Arnold representation theorem (Kolmogorov, 1957;
+%     Arnold, 1958): any continuous multivariate function f(x1,...,xn)
+%     can be decomposed as a finite sum of continuous univariate functions
+%   - This means: any prediction task can theoretically be expressed as
+%     compositions of one-variable functions, which is the foundation
+%     for KAN's architecture
+%   - The theorem was long considered impractical (the inner functions
+%     can be highly non-smooth); Liu et al. (2024) made it practical
+%     by parameterizing these functions with learnable B-splines
+%
+%
+% ── 2.1.2 KAN Architecture (Liu et al., 2024) ───────────────────
+%
+% Topics (cite: liu_kan_2024):
+%   - MLPs place fixed activation functions (ReLU, sigmoid) on nodes;
+%     KANs place learnable activation functions on edges
+%   - Each edge is parameterized as a B-spline: g(x) = sum(a_k * B_k(x))
+%     where B_k are basis spline functions of order k over G grid intervals
+%   - Architecture notation: [n_input, n_hidden, n_output]
+%   - Grid extension: refine the spline grid from coarse to fine without
+%     retraining from scratch (increases expressiveness)
+%   - Training: typically Adam followed by L-BFGS for fine-tuning;
+%     sparsity regularization (L1 on activations + entropy)
+%   - Key advantage over MLPs: after training, each edge's spline
+%     function can be inspected, pruned, or replaced with a symbolic
+%     function (e.g., sin, exp, x^2), yielding an interpretable formula
+%   - KANs achieve comparable accuracy to MLPs with significantly
+%     fewer parameters on scientific discovery tasks
+%
+%
+% ── 2.1.3 KAN 2.0 and MultKAN (Liu et al., 2024) ────────────────
+%
+% Topics (cite: liu_kan2_2024):
+%   - KAN 2.0 introduces MultKAN: multiplication nodes alongside
+%     addition, enabling multiplicative feature interactions
+%     (e.g., rsi * stoch_k) without fragile log/exp decomposition
+%   - Same symbolic extraction pipeline works for both standard
+%     KAN and MultKAN
+%   - Relevant to this thesis: MultKAN comparison is explored as
+%     a potential extension (Section 7)
+%
+%
+% ── 2.1.4 KANs for Financial Time Series ────────────────────────
+%
+% Topics:
+%
+%   VIX KAN paper (cite: cho_lee_kim_2025):
+%   - Applies KAN to VIX forecasting (regression, not classification)
+%   - Introduces Algorithm 1: Train (Adam + grid extend + LBFGS)
+%     → Prune → Symbolify → Affine fine-tune
+%   - Achieves competitive forecasting with interpretable closed-form
+%     formulas; extracted formulas reveal mean reversion and leverage
+%     effects in VIX, validating domain knowledge
+%   - Direct methodological ancestor of this thesis's symbolic
+%     extraction pipeline (Section 3.12)
+%   - Key difference: VIX is a regression target on a relatively
+%     predictable mean-reverting series; BTC daily direction is a
+%     binary classification in a weak-signal regime, which makes
+%     symbolic extraction substantially harder
+%
+%   KASPER (cite: oad_kasper_2025):
+%   - Integrates KAN with regime detection (Gumbel-Softmax mechanism)
+%     for stock price prediction
+%   - Uses regime-specific KANs with sparse spline activations
+%   - Achieves strong results (R^2 = 0.89, Sharpe = 12.02) on
+%     individual stocks from Yahoo Finance
+%   - Symbolic rule extraction via Monte Carlo Shapley values,
+%     producing human-readable rules per regime
+%   - Closest related work to this thesis in terms of KAN + finance
+%     + interpretability
+%   - Key differences from this thesis: (a) regression not classification,
+%     (b) regime detection layer absent in our pipeline, (c) different
+%     symbolic extraction method (Shapley-based vs direct formula),
+%     (d) they do not use AFML evaluation methodology
+%
+%
+% ── 2.1.5 Training Best Practices ───────────────────────────────
+%
+% Topics (cite: practitioner_kan_2025):
+%   - Grid size selection: coarser grids generalize better on small
+%     datasets; finer grids risk overfitting
+%   - Regularization: L1 on spline activations + entropy regularization
+%     encourages sparsity, which aids pruning and symbolification
+%   - Adam vs L-BFGS staging: Adam for initial learning (escapes
+%     local minima), L-BFGS for refinement (exploits curvature)
+%   - Input normalization: tanh normalization to [-1, 1] matches the
+%     default grid_range and stabilizes training
+%   - These practices directly inform the training configuration
+%     in this thesis (Section 3.6 and 3.12)
+%
+%
+% ── 2.1.6 Broader Landscape ─────────────────────────────────────
+%
+% Topics (cite: kan_ts_review_2025):
+%   - Brief mention of KAN variants for time series: TKAN (temporal),
+%     ChebyKAN (Chebyshev basis), DecoKAN (decomposition), etc.
+%   - The comprehensive review covers 40+ KAN-based models and notes
+%     that symbolic distillation remains underexplored in financial
+%     time series applications
+%   - Cite as catch-all reference to avoid individually citing each
+%     variant; this thesis uses standard B-spline KAN, not variants
+%
+%
+% ── 2.1.7 Gap Statement ─────────────────────────────────────────
+%
+% Topics:
+%   - No prior work applies KANs to BTC daily direction prediction
+%   - No prior work extracts symbolic formulas from a classification
+%     KAN (all existing work is regression: VIX forecasting, stock
+%     price prediction)
+%   - No prior work combines KAN symbolic extraction with the AFML
+%     evaluation framework
+%   - This thesis addresses all three gaps
+
+
+% ------------------------------------------------------------------
+\subsection{Bitcoin Price Prediction with Machine Learning}\label{subsec:lit_btc}
+% ------------------------------------------------------------------
+
+% Narrative: survey the BTC prediction landscape, show the range of
+% approaches, then expose the methodological weaknesses that motivate
+% adopting AFML in Section 2.3.
+%
+%
+% ── 2.2.1 Overview of Approaches ────────────────────────────────
+%
+% Topics:
+%   - BTC price prediction has attracted significant research interest
+%     due to BTC's volatility, 24/7 availability, and growing
+%     institutional adoption
+%   - Three broad families of approaches:
+%     (a) Statistical/econometric: ARIMA, GARCH, VAR
+%     (b) Classical ML: Random Forest, XGBoost, SVM, Logistic Regression
+%     (c) Deep learning: LSTM, GRU, CNN, Transformer, attention models
+%   - Most studies frame the problem as either price-level regression
+%     or direction classification (up/down); this thesis uses the latter
+%
+%
+% ── 2.2.2 Technical Analysis and ML for BTC ─────────────────────
+%
+% Topics (cite: mate_confluence_2023):
+%   - Investigates confluence of TA indicators with ML models for
+%     BTC prediction
+%   - Finds that ROC (Rate of Change) is among the top predictors,
+%     which directly informs this thesis's feature set (roc_14)
+%   - Demonstrates that combining multiple TA indicators outperforms
+%     single-indicator strategies
+%   - Limitation: uses standard train/test split without CPCV or
+%     purging; does not account for label overlap
+%
+%
+% ── 2.2.3 Deep Learning for BTC Direction ────────────────────────
+%
+% Topics (cite: dl_btc_direction_2024):
+%   - Applies DL models (LSTM, CNN, hybrid architectures) to BTC
+%     daily direction prediction, same problem as this thesis
+%   - Reports competitive accuracy with LSTM-based architectures
+%   - Does not use AFML labeling (fixed-horizon labels instead of TBL),
+%     no CUSUM filtering, no sample weights
+%   - No purging or embargo in cross-validation
+%   - Key positioning: this paper solves the same problem with different
+%     (and less rigorous) methodology; comparing conclusions illustrates
+%     how evaluation methodology shapes reported performance
+%
+%
+% ── 2.2.4 Broader Crypto-ML Landscape ───────────────────────────
+%
+% Topics (cite: crypto_dl_review_2024):
+%   - Comprehensive review of DL models applied to cryptocurrency
+%     forecasting across multiple coins and time horizons
+%   - Documents the dominance of LSTM, GRU, and attention-based
+%     models in the recent literature
+%   - Notes recurring issues: small datasets, overfitting, lack of
+%     out-of-sample robustness, inconsistent evaluation metrics
+%   - Very few studies incorporate transaction costs, bet sizing,
+%     or risk-adjusted performance metrics (Sharpe ratio, drawdown)
+%   - Use as catch-all citation for the broader landscape; avoids
+%     needing to cite 20+ individual crypto-ML papers
+%
+%
+% ── 2.2.5 Methodological Weaknesses in the Literature ───────────
+%
+% Topics (this is the bridge to Section 2.3):
+%   - Synthesize the common problems across the papers reviewed above:
+%     (a) Naive train/test splits: chronological split without purging;
+%         overlapping labels leak future information into training
+%     (b) Fixed-horizon labeling: "did the price go up in exactly 5 days?"
+%         ignores stop-loss and take-profit dynamics that real traders use
+%     (c) No sample weighting: all observations treated equally, even
+%         when labels overlap heavily (low uniqueness)
+%     (d) Accuracy as the primary metric: ignores class imbalance,
+%         ignores economic significance (a 52% accuracy model can
+%         lose money after transaction costs)
+%     (e) No correction for multiple testing: reporting the best model
+%         from many trials without deflating the Sharpe ratio overstates
+%         significance
+%   - These are exactly the pitfalls that the AFML framework (next
+%     subsection) was designed to address
+%   - Position: this thesis applies AFML to produce a methodologically
+%     honest evaluation of BTC direction prediction
+
+
+% ------------------------------------------------------------------
+\subsection{The AFML Methodology}\label{subsec:lit_afml}
+% ------------------------------------------------------------------
+
+% Narrative: present the AFML framework as the solution to the
+% methodological problems identified in Section 2.2. Then show that
+% few studies adopt the full pipeline, especially for crypto.
+%
+%
+% ── 2.3.1 Overview and Motivation ───────────────────────────────
+%
+% Topics (cite: lopez_de_prado_2018):
+%   - Lopez de Prado (2018) identifies systematic flaws in how ML
+%     is applied to finance: backtest overfitting, information leakage
+%     from overlapping labels, naive cross-validation, and inflated
+%     Sharpe ratios from multiple testing
+%   - Proposes a complete framework addressing each flaw:
+%     data representation, labeling, sample weighting, feature
+%     engineering, cross-validation, and backtesting evaluation
+%   - The framework is designed for institutional equity trading but
+%     the principles are asset-agnostic
+%
+%
+% ── 2.3.2 Event-Driven Sampling: CUSUM Filter ──────────────────
+%
+% Topics (cite: lopez_de_prado_2018, Ch. 2):
+%   - Standard time-sampled bars (daily OHLCV) produce observations
+%     at fixed intervals regardless of market activity
+%   - The symmetric CUSUM filter identifies structurally meaningful
+%     events: timestamps where cumulative price deviation exceeds
+%     a threshold h
+%   - Reduces the dataset to informationally rich observations,
+%     discarding periods of low activity
+%   - Threshold calibration: h is typically set as a multiple of
+%     mean daily volatility (this thesis uses h = 1.5x)
+%
+%
+% ── 2.3.3 Triple Barrier Labeling ───────────────────────────────
+%
+% Topics (cite: lopez_de_prado_2018, Ch. 3):
+%   - Fixed-horizon labeling ("did price go up in 5 days?") ignores
+%     path-dependent risk management (stop-losses, take-profits)
+%   - TBL defines three barriers for each event:
+%     (a) Upper horizontal: take-profit at pt * daily_vol
+%     (b) Lower horizontal: stop-loss at sl * daily_vol
+%     (c) Vertical: maximum holding period (num_days)
+%   - The label is determined by which barrier is touched first
+%   - Produces labels that reflect real trading outcomes, not
+%     arbitrary fixed-horizon snapshots
+%   - Labels carry a natural t1 (barrier touch timestamp) needed
+%     for downstream purging
+%
+%
+% ── 2.3.4 Fractional Differentiation ────────────────────────────
+%
+% Topics (cite: lopez_de_prado_2018, Ch. 5):
+%   - Integer differentiation (returns) achieves stationarity but
+%     destroys long-term memory; price levels preserve memory but
+%     are non-stationary
+%   - FFD finds the minimum differentiation order d* that achieves
+%     stationarity (ADF test) while preserving maximum memory
+%   - Fixed-width window implementation truncates weights below
+%     a threshold tau for computational efficiency
+%   - d* is estimated per fold on training data only to prevent leakage
+%
+%
+% ── 2.3.5 Sample Weights ───────────────────────────────────────
+%
+% Topics (cite: lopez_de_prado_2018, Ch. 4):
+%   - Overlapping TBL labels mean some observations are more unique
+%     (informative) than others
+%   - Average uniqueness: for each label, compute 1/c_t averaged over
+%     its lifespan, where c_t counts concurrent active labels at bar t
+%   - Return-attribution weights: weight by |return| * uniqueness,
+%     so high-return, unique events receive more influence
+%   - Time decay: optionally downweight older observations to
+%     prioritize recent market regimes
+%   - These weights are passed to classifiers via sample_weight,
+%     ensuring the model doesn't overfit to redundant observations
+%
+%
+% ── 2.3.6 Combinatorial Purged Cross-Validation ─────────────────
+%
+% Topics (cite: lopez_de_prado_2018, Ch. 7 and 12):
+%   - Standard k-fold CV is invalid for financial time series because
+%     overlapping labels leak information across folds
+%   - CPCV partitions data into N contiguous groups, selects k groups
+%     as test set for each of C(N,k) combinations
+%   - Purging: remove training observations whose labels overlap with
+%     the test period (three overlap conditions)
+%   - Embargo: remove training observations immediately after each
+%     test group to prevent serial correlation leakage
+%   - Path matrix: C(N-1,k-1) non-overlapping backtest paths allow
+%     distribution-level analysis of performance (not just a single
+%     point estimate)
+%   - This thesis uses N=6, k=2: 15 splits, 5 backtest paths
+%
+%
+% ── 2.3.7 Backtesting Evaluation: DSR and PBO ──────────────────
+%
+% Topics (cite: lopez_de_prado_2018, Ch. 11 and 14):
+%
+%   Deflated Sharpe Ratio:
+%   - The observed Sharpe ratio is inflated when the best model is
+%     selected from multiple trials
+%   - DSR corrects for this selection bias by comparing the observed
+%     Sharpe to the expected maximum under the null hypothesis
+%     (all true Sharpes = 0)
+%   - Accounts for non-normality (skewness, kurtosis) in returns
+%   - DSR > 0.95 indicates the Sharpe is statistically significant
+%     after correcting for the number of models tested
+%
+%   Probability of Backtest Overfitting:
+%   - PBO measures how likely the in-sample best model underperforms
+%     out-of-sample relative to the median model
+%   - Computed via combinatorially symmetric cross-validation: split
+%     the CPCV paths into IS and OOS halves, check if the IS winner
+%     beats the OOS median
+%   - PBO near 0 means in-sample selection is reliable; PBO > 0.5
+%     means overfitting dominates
+%
+%
+% ── 2.3.8 AFML Applied to Crypto ────────────────────────────────
+%
+% Topics (cite: slepaczuk_bieganowski_2024):
+%   - One of the few studies combining FFD and TBL in crypto markets
+%   - Applies supervised autoencoders with walk-forward FFD d*
+%     estimation to BTC, ETH, and LTC
+%   - Demonstrates that the AFML labeling + feature engineering
+%     approach transfers to crypto with improved risk-adjusted returns
+%   - Does not use CPCV (uses walk-forward instead), does not compute
+%     DSR or PBO
+%   - Key takeaway: validates FFD + TBL in crypto context, but
+%     leaves CPCV evaluation as an open gap that this thesis fills
+%
+%
+% ── 2.3.9 The Fitting Scheme Matters More Than Model Choice ─────
+%
+% Topics (cite: audrino_chassot_2024):
+%   - Across 1,445 US equities, a properly fitted linear HAR model
+%     outperforms RF, XGBoost, GBT, and FFNN for realized volatility
+%     forecasting
+%   - The key finding: studies that report ML superiority over HAR
+%     used suboptimal fitting schemes (infrequent re-estimation,
+%     short training windows) that handicapped the baseline
+%   - When the fitting scheme is optimized (daily re-estimation,
+%     2.5-4 year training window), the simple model wins
+%   - Directly relevant to this thesis: our negative results (DSR=0)
+%     are consistent with this finding; properly evaluated baselines
+%     are hard to beat, especially in a weak-signal regime like BTC
+%   - Also reinforces the importance of methodology over model
+%     complexity, which is the thesis's Problem 3
+%
+%
+% ── 2.3.10 Gap Statement ────────────────────────────────────────
+%
+% Topics:
+%   - Few crypto-ML studies adopt the full AFML pipeline; most
+%     cherry-pick individual components (e.g., TBL without CPCV,
+%     or CPCV without FFD and sample weights)
+%   - No study combines AFML + KAN for any asset
+%   - No study reports DSR and PBO for KAN-based predictions
+%   - This thesis is the first to apply the complete AFML pipeline
+%     (CUSUM + TBL + FFD + sample weights + CPCV + DSR + PBO)
+%     to BTC direction prediction with KANs and five benchmark models
+
+
+% ==================================================================
+% CHAPTER 3: METHODOLOGY
+% ==================================================================
+\newpage
+\section{Methodology}\label{sec:methodology}
+
+% Target: min 70% of textual part together with Results/Discussion.
+% Present the pipeline sequentially, matching the code structure.
+% Only present what the reader needs to understand the results.
+
+\subsection{Data}\label{subsec:data}
+
+% BTC-USD daily OHLCV, yfinance, date range, gap filling,
+% OHLCV consistency checks. External data sources (macro, crypto,
+% on-chain). Justify BTC over other assets.
+
+
+\subsection{Labeling}\label{subsec:labeling}
+
+% Daily volatility (EWMA span=50, BTC calibration vs AFML's 100).
+% CUSUM filter (symmetric, h=1.5x mean daily vol).
+% Triple Barrier Labeling (pt_sl=(1.5,1.5), num_days=10, binary).
+% Drop rare labels. Justify parameter choices.
+
+
+\subsection{Sample Weights}\label{subsec:weights}
+
+% Concurrent labels, average uniqueness, return-attribution weights,
+% time decay (factor=0.5), outlier capping (99th percentile).
+
+
+\subsection{Feature Engineering}\label{subsec:features}
+
+% Three groups: TA (23), mathematical (9), external (23).
+% Total: 55 features. Log transforms on ATR and OBV.
+% Anti-leakage: merge_asof(backward) for external,
+% CoinMetrics EOD shift for on-chain.
+
+
+\subsection{Alignment and Stationarity}\label{subsec:alignment}
+
+% Date intersection, validation assertions.
+% ADF test results, FFD on ATR only (empirical justification).
+
+
+\subsection{Combinatorial Purged Cross-Validation}\label{subsec:cpcv}
+
+% CPCV (N=6, k=2): 15 splits, 5 paths.
+% Purging (3 overlap conditions from AFML 7.1).
+% Embargo (1% of T, after test only).
+% Leakage verification (zero leaks across all splits).
+
+
+\subsection{Preprocessing}\label{subsec:preprocessing}
+
+% Per-fold pipeline: FFD (d* from train only, applied to full series)
+% → RobustScaler (fit train, transform test)
+% → Multi-model MDA feature selection (RF + LR, top 40%, purged inner CV).
+% Defend: FFD full-series-with-train-d* (no leakage argument),
+% dual-model MDA over RF-only, 80/20 train/calibration split.
+
+
+\subsection{Models}\label{subsec:models}
+
+\subsubsection{AR Logistic (Econometric Baseline)}\label{subsubsec:ar}
+% Lagged log returns [1,2,3,5,10,21], bypasses MDA-selected features.
+
+\subsubsection{Logistic Regression}\label{subsubsec:logistic}
+% Linear baseline on selected features, balanced + sample weights.
+
+\subsubsection{Random Forest}\label{subsubsec:rf}
+% 500 trees, balanced_subsample + sample weights.
+
+\subsubsection{XGBoost}\label{subsubsec:xgboost}
+% 300 estimators, early stopping on calibration set.
+
+\subsubsection{LSTM}\label{subsubsec:lstm}
+% Window=21, 2 layers, hidden=64, dropout=0.2.
+% Sliding-window index alignment.
+
+\subsubsection{KAN}\label{subsubsec:kan}
+% efficient-kan for CPCV, [n_features, 5, 2], grid=5, k=3.
+% Tanh normalization, AdamW, full-batch.
+% Dual-library strategy: efficient-kan (training) vs PyKAN (extraction).
+
+
+\subsection{Calibration}\label{subsec:calibration}
+
+% Platt scaling (sklearn models), temperature scaling (LSTM, KAN).
+% Motivation: bet sizing via S-curve requires calibrated probabilities.
+
+
+\subsection{Hyperparameter Tuning}\label{subsec:tuning}
+
+% Nested per-split: Optuna TPE + Purged K-Fold (K=3, embargo=10).
+% 30 trials classical, 25 neural. Test fold never seen.
+% DSR/PBO remain valid under nested architecture.
+
+
+\subsection{Evaluation Framework}\label{subsec:evaluation}
+
+% Bet sizing (AFML S-curve, min_bet=0.10, discretization).
+% Strategy returns (0.1% transaction cost, 365-day annualization).
+% Path stitching (AFML 12.4).
+% DSR (n_trials = number of models, not tuning trials).
+% PBO (CSCV, IS/OOS split of paths).
+% DeLong pairwise AUC tests.
+% Feature and FFD stability.
+
+
+\subsection{Symbolic Extraction}\label{subsec:symbolic}
+
+% PyKAN retrained from scratch on best/last fold.
+% Data-aware architecture (5 samples/parameter rule).
+% Three-phase training: Adam (600 steps, noise injection)
+%   → LBFGS warmup → LBFGS sparsity.
+% Grid extension disabled (n < 1000).
+% Prune → Symbolify (R² ≥ 0.30, brute-force fallback) → Affine fine-tune.
+% Formula extraction with variable name substitution (1-based indexing).
+% sympy.simplify with 30s timeout.
+
+
+% ==================================================================
+% CHAPTER 4: RESULTS
+% ==================================================================
+\newpage
+\section{Results}\label{sec:results}
+
+% Present findings. Lead with the main result (model comparison table),
+% then supporting evidence.
+
+\subsection{Model Comparison}\label{subsec:results_comparison}
+% Comparison table: median Sharpe, DSR, F1, AUC, etc.
+
+\subsection{Classification Metrics}\label{subsec:results_classification}
+% Confusion matrices, per-split F1, AUC significance (DeLong).
+
+\subsection{Financial Performance}\label{subsec:results_financial}
+% Equity curves, Sharpe distribution across 5 paths, PBO.
+
+\subsection{Feature Selection Stability}\label{subsec:results_features}
+% Flat stability finding. FFD d* stability.
+
+\subsection{Symbolic Extraction Results}\label{subsec:results_symbolic}
+% Decision function, surviving features, pre/post symbolic accuracy,
+% symbolification rate, feature sensitivity (partial derivatives).
+
+
+% ==================================================================
+% CHAPTER 5: DISCUSSION
+% ==================================================================
+\newpage
+\section{Discussion}\label{sec:discussion}
+
+% Interpret findings. Link back to mechanisms (Thatcher R7).
+
+\subsection{Interpreting the Negative Results}\label{subsec:disc_negative}
+% DSR=0 as consistent with EMH and market efficiency.
+% HARd to Beat: properly fitted baselines are hard to surpass.
+% Conservative Predictions: abstention beats prediction in low-signal regimes.
+% Three-version pipeline evolution as methodological maturity narrative.
+
+\subsection{KAN Performance in Context}\label{subsec:disc_kan}
+% KAN fourth, behind RF and XGBoost but ahead of LSTM.
+% Contrast with KASPER's strong results (different asset, regime detection).
+
+\subsection{Symbolic Extraction as Contribution}\label{subsec:disc_symbolic}
+% Interpretability value even when predictive performance is weak.
+% Comparison with VIX KAN paper's symbolic results.
+% Limitations: fold-specific, small sample, R² threshold sensitivity.
+
+\subsection{Limitations}\label{subsec:disc_limitations}
+% Sample size (911 observations), daily frequency,
+% single asset, seed asymmetry, fold_selection="last" vs "best".
+
+
+% ==================================================================
+% CHAPTER 6: CONCLUSION
+% ==================================================================
+\newpage
+\section{Conclusion}\label{sec:conclusion}
+
+% Target: max 10% of textual part (~3.5 pages).
+% Short. State the contribution. End with resonance (Thatcher R16).
+% Do NOT restate all findings (Cochrane).
+
+
+% ==================================================================
+% CHAPTER 7: FUTURE WORK
+% ==================================================================
+\newpage
+\section{Future Work}\label{sec:future}
+
+% Keep brief (Cochrane: don't write your grant application here).
+% Concrete, actionable directions only.
+%
+% Candidates:
+% - MultKAN (KAN 2.0) comparison for multiplicative interactions
+% - Higher-frequency data (hourly/4h bars)
+% - Alternative assets (ETH, gold) for symbolic formula comparison
+% - Expanding window vs rolling window CPCV
+% - Meta-labeling layer on top of best classifier
+% - Larger sample periods or multi-asset pooling
+
+
+% =============================================
+% BIBLIOGRAPHY
+% =============================================
+\newpage
 \phantomsection
-\thispagestyle{plain}% No header and footer.
+\thispagestyle{plain}
 \addcontentsline{toc}{section}{Bibliography}
 \bibliographystyle{agsm}
-\bibliography{mfw_references} % <- insert you *.bib file here 
+\bibliography{references}
+% Create a references.bib file with all your citations.
 
 
-
-%  ==============    APPENDICES   ================
-
-\newpage % New page.
+% =============================================
+% APPENDICES
+% =============================================
+\newpage
 \phantomsection
-\thispagestyle{plain}% No header and footer.
+\thispagestyle{plain}
 
 \appendix
-%\begin{appendices} % Begin appendices.
-\section{Appendices} \label{chap:appendixA}
+\section{Appendices}\label{sec:appendices}
 
+\subsection{Pipeline Architecture Diagram}\label{app:pipeline}
+% Full pipeline flowchart: data → labeling → weights → features
+% → alignment → CPCV → preprocessing → models → evaluation → symbolic.
 
-This is the place where you put everything that is important to understand your work, but it is not indispensable in the main text. Use them, but remember that pages used here are counting for the 50 page limit. Some useful advices about appendices:
-\begin{itemize}
-\item Do not reproduce databases in paper! Use a website to make it available.
-\item If you have too many graphs (e.g. impulse-responses in a \gls{var}) put them here.
-\item For cumbersome mathematical derivations, use the appendices as well.
-\end{itemize}
+\subsection{CPCV Split Details}\label{app:cpcv_splits}
+% Group boundaries, train/test timelines, purging/embargo verification.
 
+\subsection{Hyperparameter Search Spaces}\label{app:hyperparams}
+% Optuna search spaces for all models (table format).
 
-%\end{appendices} % End appendices.
+\subsection{Per-Split Classification Reports}\label{app:split_reports}
+% Detailed per-split metrics if needed.
+
+\subsection{Full Feature List}\label{app:features}
+% Complete table of 55 features with descriptions, sources, parameters.
+
+\subsection{Symbolic Extraction Detailed Output}\label{app:symbolic}
+% Full PyKAN training logs, edge-by-edge R² values,
+% pruned architecture diagrams, unsimplified formulas.
+
 
 % =============================================
-% End the document.
+% End Document
 % =============================================
 \end{document}
-
-
-
-
