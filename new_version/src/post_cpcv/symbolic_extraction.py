@@ -67,6 +67,17 @@ PYKAN_GRID_EXTEND = False          # DISABLED — with 358 samples, grid extensi
 PYKAN_MIN_SAMPLES_PER_PARAM = 5    # want at least 5 samples per parameter
 PYKAN_HIDDEN_OVERRIDE = None       # set dynamically in train_pykan()
 
+# Symbolic extraction simplifications (when using tuned CPCV KAN params)
+PYKAN_SYMBOLIC_WIDTH_CAP = 8       # soft ceiling on width1; tuned KAN width1 is
+                                   # capped at this to keep formulas readable.
+                                   # A width=12 KAN produces ~24 summed terms
+                                   # pre-pruning, which overwhelms sympy.
+PYKAN_SYMBOLIC_DROP_WIDTH2 = True  # force single hidden layer for extraction.
+                                   # Two hidden layers produce nested f(g(x))
+                                   # compositions that sympy struggles with.
+PYKAN_SYMBOLIC_FORCE_GRID = 3      # force coarse grid for extraction. Coarser
+                                   # splines → cleaner symbolic matches.
+
 # Minimum accuracy gate — skip symbolification if PyKAN can't predict
 PYKAN_MIN_ACCURACY = 0.53          # must beat random (50%) by a margin
 
@@ -371,12 +382,26 @@ def prepare_extraction_data(
 # =====================================================================
 # 3. Train PyKAN (same architecture, staged training)
 # =====================================================================
-def train_pykan(dataset: dict, n_features: int, n_classes: int = 2, use_multkan: bool = False):
+def train_pykan(
+    dataset: dict,
+    n_features: int,
+    n_classes: int = 2,
+    use_multkan: bool = False,
+    tuned_kan_params: dict | None = None,
+):
     """Train a fresh PyKAN model for symbolic extraction.
 
-    Uses a data-aware architecture: hidden width is chosen so that the
-    total parameter count stays well below the number of training samples,
-    preventing LBFGS memorization.
+    Architecture selection priority:
+    1. If ``tuned_kan_params`` is provided (from CPCV tuning), uses the tuned
+       ``width1`` (capped at ``PYKAN_SYMBOLIC_WIDTH_CAP``) with simplifications:
+       drops ``width2`` and forces ``grid=PYKAN_SYMBOLIC_FORCE_GRID``. This
+       keeps the symbolic model architecturally linked to the benchmarked
+       CPCV KAN while ensuring formulas remain tractable for sympy.
+    2. Otherwise, falls back to data-aware sizing: hidden width chosen so
+       ``n_train / total_params >= PYKAN_MIN_SAMPLES_PER_PARAM``.
+
+    In either case, the final width is additionally clamped by the
+    data-aware safety floor to prevent memorization.
 
     Parameters
     ----------
@@ -386,6 +411,11 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2, use_multkan:
         relationships (e.g., rsi * stoch_k) that standard KAN cannot
         represent without fragile log/exp decomposition. Same symbolic
         extraction pipeline works for both.
+    tuned_kan_params : dict, optional
+        Best params dict from CPCV tuning for this fold, e.g.
+        ``{"width1": 10, "width2": 4, "grid": 5, "lr": 0.01, ...}``.
+        Only ``width1`` is consulted; ``width2`` and ``grid`` are
+        deliberately overridden for symbolic tractability.
 
     Phase 1: Adam with weight decay + input noise (generalization)
     Grid extension: only if dataset is large enough
@@ -405,27 +435,59 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2, use_multkan:
     y_val_t = dataset["test_label"].long()
     n_train = X_t.shape[0]
 
-    # ── Data-aware architecture ───────────────────────────────────────
-    # Each edge has ~(grid + k) parameters. With grid=3, k=3, that's ~6
-    # params per edge. We want n_train / total_params >= 5.
-    params_per_edge = PYKAN_GRID_INIT + KAN_K
+    # ── Data-aware safety floor ───────────────────────────────────────
+    # Regardless of source, we want n_train / total_params >= PYKAN_MIN_SAMPLES_PER_PARAM.
+    # Used both as fallback sizing and as a clamp on tuned widths.
+    params_per_edge = PYKAN_SYMBOLIC_FORCE_GRID + KAN_K
     max_edges = n_train // PYKAN_MIN_SAMPLES_PER_PARAM
+    max_hidden_safety = max_edges // (params_per_edge * (n_features + n_classes))
+    max_hidden_safety = max(2, max_hidden_safety)  # never below 2
 
-    # Architecture [n_features, h, n_classes] has n_features*h + h*n_classes edges
-    # Solve for h: h * (n_features + n_classes) <= max_edges / params_per_edge
-    max_hidden = max_edges // (params_per_edge * (n_features + n_classes))
-    max_hidden = max(2, min(max_hidden, KAN_HIDDEN))  # clamp to [2, KAN_HIDDEN]
+    # ── Architecture selection ────────────────────────────────────────
+    tuned_w1 = None
+    if tuned_kan_params is not None:
+        tuned_w1 = tuned_kan_params.get("width1")
 
-    hidden = max_hidden
+    if tuned_w1 is not None:
+        # Use tuned width1, but apply simplifications + safety clamp
+        hidden = min(tuned_w1, PYKAN_SYMBOLIC_WIDTH_CAP, max_hidden_safety)
+        hidden = max(2, hidden)  # enforce minimum
+        arch_source = (
+            f"tuned (raw width1={tuned_w1} → "
+            f"capped at {PYKAN_SYMBOLIC_WIDTH_CAP}, safety floor {max_hidden_safety})"
+        )
+    else:
+        # Fallback: data-aware sizing (original behavior), clamped by KAN_HIDDEN
+        hidden = min(max_hidden_safety, KAN_HIDDEN)
+        hidden = max(2, hidden)
+        arch_source = "data-aware fallback (no tuned params)"
+
     width = [n_features, hidden, n_classes]
     total_edges = n_features * hidden + hidden * n_classes
     total_params_est = total_edges * params_per_edge
 
     print(
-        f"    {model_type} data-aware architecture: {width} "
-        f"({total_edges} edges, ~{total_params_est} params for {n_train} samples, "
-        f"ratio={n_train/max(total_params_est,1):.1f}x)"
+        f"    {model_type} architecture: {width} "
+        f"[{arch_source}]"
     )
+    print(
+        f"    {total_edges} edges, ~{total_params_est} params for {n_train} samples, "
+        f"ratio={n_train/max(total_params_est,1):.1f}x"
+    )
+    if PYKAN_SYMBOLIC_DROP_WIDTH2 and tuned_kan_params is not None:
+        tuned_w2 = tuned_kan_params.get("width2", 0) or 0
+        if tuned_w2 > 0:
+            print(
+                f"    Note: dropped tuned width2={tuned_w2} "
+                f"(PYKAN_SYMBOLIC_DROP_WIDTH2=True for tractable formulas)."
+            )
+    if tuned_kan_params is not None:
+        tuned_grid = tuned_kan_params.get("grid")
+        if tuned_grid is not None and tuned_grid != PYKAN_SYMBOLIC_FORCE_GRID:
+            print(
+                f"    Note: forcing grid={PYKAN_SYMBOLIC_FORCE_GRID} "
+                f"(tuned grid={tuned_grid} overridden for symbolic clarity)."
+            )
 
     if n_train / max(total_params_est, 1) < 2:
         print(
@@ -434,9 +496,14 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2, use_multkan:
         )
 
     if use_multkan:
-        model = KANClass(width=width, grid=PYKAN_GRID_INIT, k=KAN_K, seed=42, mult_arity=2)
+        model = KANClass(
+            width=width, grid=PYKAN_SYMBOLIC_FORCE_GRID, k=KAN_K,
+            seed=42, mult_arity=2,
+        )
     else:
-        model = KANClass(width=width, grid=PYKAN_GRID_INIT, k=KAN_K, seed=42)
+        model = KANClass(
+            width=width, grid=PYKAN_SYMBOLIC_FORCE_GRID, k=KAN_K, seed=42,
+        )
 
     criterion = nn.CrossEntropyLoss()
 
@@ -501,8 +568,8 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2, use_multkan:
     if PYKAN_GRID_EXTEND and n_train > 1000:
         try:
             model = model.refine(KAN_GRID)
-            logger.info("Grid extended: %d → %d", PYKAN_GRID_INIT, KAN_GRID)
-            print(f"    Grid extended: {PYKAN_GRID_INIT} → {KAN_GRID}")
+            logger.info("Grid extended: %d → %d", PYKAN_SYMBOLIC_FORCE_GRID, KAN_GRID)
+            print(f"    Grid extended: {PYKAN_SYMBOLIC_FORCE_GRID} → {KAN_GRID}")
             _log_diagnostic("After grid extend", model, X_t, y_t, X_val_t, y_val_t)
         except (AttributeError, TypeError, Exception) as e:
             logger.warning("Grid extension failed (%s).", e)
@@ -510,7 +577,7 @@ def train_pykan(dataset: dict, n_features: int, n_classes: int = 2, use_multkan:
     else:
         print(
             f"    Grid extension SKIPPED (n_train={n_train}, "
-            f"grid stays at {PYKAN_GRID_INIT}). "
+            f"grid stays at {PYKAN_SYMBOLIC_FORCE_GRID}). "
             f"Too few samples for finer grid."
         )
 
@@ -1286,9 +1353,20 @@ def run_symbolic_extraction(
     print(f"  CPCV model: efficient-kan | Extraction model: {model_label}")
     print("=" * 60)
 
-    # 1. select best fold
     # 1. select fold
     best_split, prep_info = select_extraction_fold(cpcv_results, fold_selection=fold_selection)
+
+    # 1b. retrieve tuned KAN params for this fold (if available)
+    tuned_kan_params = None
+    tuning_results = cpcv_results.get("tuning_results", {})
+    if tuning_results and best_split in tuning_results:
+        kan_tuning = tuning_results[best_split].get("kan", {})
+        tuned_kan_params = kan_tuning.get("best_params")
+    if tuned_kan_params:
+        print(f"\n  Tuned KAN params for split {best_split}: {tuned_kan_params}")
+    else:
+        print(f"\n  No tuned KAN params found for split {best_split} "
+              f"(falling back to data-aware sizing).")
 
     # 2. rank features and select top N if requested
     feature_subset = None
@@ -1317,7 +1395,12 @@ def run_symbolic_extraction(
 
     # 3. train model from scratch
     print(f"\n  Step 1: Training {model_label} (Adam → grid extend → LBFGS)...")
-    model = train_pykan(dataset, n_features=len(feature_names), use_multkan=use_multkan)
+    model = train_pykan(
+        dataset,
+        n_features=len(feature_names),
+        use_multkan=use_multkan,
+        tuned_kan_params=tuned_kan_params,
+    )
 
     # 4. prune
     print("\n  Step 2: Pruning...")
