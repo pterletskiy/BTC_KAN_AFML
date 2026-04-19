@@ -406,11 +406,11 @@ By Petr Terletskiy\\
 % Topics:
 %
 %   - RQ1 (from Problem 1 — interpretability + features):
-%     Can interpretable symbolic decision functions be extracted from
-%     a KAN trained on BTC daily direction data, and which features
-%     (technical, mathematical, macro, on-chain) survive in the
-%     resulting formula?
-%     → Answered by: symbolic extraction pipeline (Section 3.12)
+%     Can a trained KAN produce interpretable symbolic decision
+%     functions for BTC daily direction prediction, and which
+%     features survive the extraction process?
+%     → Answered by: symbolic extraction pipeline (Section 3.10),
+%       results in Section 4.5
 %
 %   - RQ2 (from Problem 2 — complexity vs value):
 %     Does KAN predictive performance justify its architectural
@@ -862,117 +862,1930 @@ By Petr Terletskiy\\
 % Target: min 70% of textual part together with Results/Discussion.
 % Present the pipeline sequentially, matching the code structure.
 % Only present what the reader needs to understand the results.
+% Cochrane: "There should be nothing before the main result that a
+% reader does not need to know in order to understand the main result."
+%
+% Pipeline order: data → labeling → weights → features (+ alignment)
+% → CPCV → preprocessing (FFD + scaling + selection) → models
+% → training pipeline (calibration + tuning) → evaluation → symbolic
 
+
+% ------------------------------------------------------------------
 \subsection{Data}\label{subsec:data}
+% ------------------------------------------------------------------
+%
+% Cochrane: "Do not do extensive data description of well-known datasets."
+% BTC-USD daily OHLCV is well-known. Keep this section tight: source,
+% range, quality controls, external sources overview. ~1 page max.
+%
+%
+% ── Opening paragraph ─────────────────────────────────────────────
+%
+% Topics:
+%   - The primary dataset consists of BTC-USD daily OHLCV prices
+%     downloaded from Yahoo Finance via the yfinance Python library
+%   - Date range: September 17, 2014, to April 12, 2026 (~4,200
+%     daily observations)
+%   - Start date chosen to begin after BTC's early illiquid period
+%     (pre-2014 data is dominated by Mt. Gox and thin order books)
+%   - Unlike equities, BTC trades 24/7 on global exchanges with no
+%     weekend or holiday closures, so the daily bar calendar is
+%     continuous
+%
+%
+% ── Data quality ──────────────────────────────────────────────────
+%
+% Topics:
+%   - Gaps: yfinance occasionally returns missing dates due to
+%     exchange-level data issues; gaps of up to 3 calendar days are
+%     forward-filled; gaps longer than 3 days raise an error (none
+%     observed in the BTC-USD series)
+%   - OHLCV consistency checks applied to every row:
+%     (a) High >= max(Open, Close)
+%     (b) Low <= min(Open, Close)
+%     (c) Volume >= 0
+%   - Rows with NaN Close are dropped before any downstream computation
+%   - Index normalized to timezone-naive daily timestamps
+%   - Adjusted prices used (auto_adjust=True in yfinance), so no
+%     separate adjustment for splits is needed (BTC has no corporate
+%     actions, but the flag ensures consistency)
+%
+%
+% ── External data sources (brief overview) ────────────────────────
+%
+% Topics:
+%   - Three categories of external data supplement the OHLCV features
+%     (detailed in Section 3.4):
+%     (a) Macro (13 features): traditional finance indicators from
+%         yfinance and FRED (dollar index, treasury yields, VIX,
+%         equity indices, commodities)
+%     (b) Crypto-macro (2 features): cross-crypto market signals
+%         from yfinance and CoinGecko (ETH/BTC ratio, BTC dominance)
+%     (c) On-chain (8 features): blockchain network fundamentals
+%         from CoinMetrics Community API (active addresses, hash rate,
+%         MVRV, exchange flows, fees, supply)
+%   - All external series are aligned to BTC's daily calendar using
+%     merge_asof(direction='backward'), ensuring each BTC day uses
+%     the most recent available value from each source without
+%     look-ahead bias
+%   - On-chain data is shifted by 1 day to account for CoinMetrics'
+%     end-of-day reporting convention
+%
+%
+% ── Figure suggestion ─────────────────────────────────────────────
+%
+%   Figure X: BTC-USD Close price (log scale) over the full sample
+%   period (2014-2026), with CPCV group boundaries overlaid. This
+%   figure can be reused from the notebook (cell 48) and serves
+%   double duty: data overview + CPCV partition preview.
 
-% BTC-USD daily OHLCV, yfinance, date range, gap filling,
-% OHLCV consistency checks. External data sources (macro, crypto,
-% on-chain). Justify BTC over other assets.
 
-
+% ------------------------------------------------------------------
 \subsection{Labeling}\label{subsec:labeling}
+% ------------------------------------------------------------------
+%
+% This section describes the three-step process that converts raw
+% price data into classified events: volatility estimation, event
+% filtering, and label assignment. Each step is an AFML component
+% with specific parameter choices that require justification.
+%
+% Thatcher R5 (thread the construct): use "event" consistently to
+% mean a CUSUM-triggered timestamp, "label" for the TBL output,
+% and "observation" for the final aligned sample.
+%
+%
+% ── 3.2.1 Daily Volatility Estimation ────────────────────────────
+%
+% Topics:
+%   - Exponentially weighted moving standard deviation of log returns
+%     (AFML Snippet 3.1):
+%       log_ret_t = log(Close_t / Close_{t-1})
+%       daily_vol_t = EWMA_std(log_ret, span=50)
+%   - The span parameter controls how quickly the volatility estimate
+%     adapts to new information; smaller span = faster adaptation
+%   - This thesis uses span=50 (vs Lopez de Prado's default of 100
+%     for equities); justification:
+%     (a) BTC exhibits faster regime transitions than equities
+%         (halving cycles, regulatory shocks, sentiment-driven
+%         rallies/crashes occur on shorter timescales)
+%     (b) A 50-day window captures approximately 2 months of
+%         activity, balancing responsiveness against noise
+%     (c) Sensitivity analysis: span=50 produces a volatility
+%         estimate that tracks BTC's well-known regime changes
+%         (e.g., 2017 bubble, 2020 COVID crash, 2021 bull run)
+%   - The daily volatility series has the same index as Close and
+%     contains leading NaNs from the EWMA warm-up period
+%   - This estimate serves two roles downstream:
+%     (a) Target width for TBL horizontal barriers (Section 3.2.3)
+%     (b) CUSUM threshold calibration (Section 3.2.2)
+%
+%   Cite: \cite{lopez_de_prado_2018}, Snippet 3.1
+%
+%
+% ── 3.2.2 CUSUM Event Filter ─────────────────────────────────────
+%
+% Topics:
+%   - Purpose: reduce the full daily timeline to a subset of
+%     structurally meaningful events, discarding periods where
+%     cumulative price change is insufficient to warrant a label
+%   - Symmetric CUSUM (AFML Snippet 2.4):
+%       s_pos = max(0, s_pos + log_ret_t)
+%       s_neg = min(0, s_neg + log_ret_t)
+%     An event fires when s_pos >= h or s_neg <= -h, then the
+%     respective accumulator resets to zero
+%   - Threshold: h = CUSUM_MULT * mean(daily_vol), where
+%     CUSUM_MULT = 1.5
+%   - Justification for 1.5x multiplier:
+%     (a) A multiplier of 1.0 would fire too frequently (nearly
+%         every other day), producing highly overlapping labels
+%     (b) A multiplier of 2.0+ would produce too few events for
+%         meaningful model training (< 500 events over 11 years)
+%     (c) 1.5x is a moderate choice that balances event count
+%         against informativeness; similar multipliers are used
+%         in the AFML examples
+%   - Effect on sample size: approximately 4,200 daily bars reduce
+%     to approximately 900 CUSUM events (exact count depends on
+%     the data range and should be reported from the actual run)
+%   - The filtered event timestamps (t_events) serve as the index
+%     for the TBL step below
+%
+%   Cite: \cite{lopez_de_prado_2018}, Snippet 2.4
+%
+%   Figure suggestion: CUSUM filter visualization showing the
+%   positive and negative accumulators alongside BTC price, with
+%   event markers at threshold crossings (notebook cell 15 has this)
+%
+%
+% ── 3.2.3 Triple Barrier Labeling ────────────────────────────────
+%
+% Topics:
+%   - For each CUSUM event at time t0, three barriers define the
+%     label (AFML Snippets 3.2, 3.4, 3.5):
+%
+%     Upper barrier (take-profit):
+%       p_upper = Close_{t0} * (1 + pt * daily_vol_{t0})
+%     Lower barrier (stop-loss):
+%       p_lower = Close_{t0} * (1 - sl * daily_vol_{t0})
+%     Vertical barrier (time limit):
+%       t1_max = t0 + num_days calendar days
+%
+%   - The label is determined by which barrier the price path
+%     touches first:
+%       +1 if upper barrier touched first (bullish event)
+%       -1 if lower barrier touched first (bearish event)
+%       sign(return) at vertical barrier if neither horizontal
+%         barrier is touched, or 0 if |return| < min_return
+%
+%   - Parameter choices:
+%     pt_sl = (1.5, 1.5): symmetric barriers
+%       Justification: no directional bias; equal penalty for
+%       missed upside and missed downside; symmetric barriers are
+%       the standard in the AFML literature for unbiased evaluation
+%
+%     num_days = 10: approximately two trading weeks
+%       Justification: short enough to capture actionable price moves
+%       (a trader would not hold a daily-frequency position for
+%       months), long enough to allow horizontal barriers to be
+%       touched (with 1.5x vol barriers, a 5-day window would
+%       rarely trigger; a 30-day window creates excessive label
+%       overlap, complicating sample weights and purging)
+%
+%     min_return = 0.0: any non-zero return at the vertical barrier
+%       receives a directional label
+%
+%   - The output DataFrame contains three columns:
+%     ret: return at the first barrier touch
+%     bin: class label {-1, 0, +1}
+%     t1: timestamp when the label was resolved (first barrier touch)
+%   - The t1 column is critical: it defines the label's temporal
+%     span [t0, t1], which CPCV uses for purging (Section 3.5)
+%
+%   Cite: \cite{lopez_de_prado_2018}, Snippets 3.2, 3.4, 3.5
+%
+%   Figure suggestion: Triple-barrier visualization for 2-3 example
+%   events showing the price path with the three barriers and the
+%   touch point (notebook cell 18 has this)
+%
+%
+% ── 3.2.4 Rare Label Removal ─────────────────────────────────────
+%
+% Topics:
+%   - Classes representing fewer than 5% of total samples are
+%     removed (AFML Snippet 3.8)
+%   - In practice, with pt_sl=(1.5,1.5) and num_days=10, class 0
+%     (vertical barrier touch with ambiguous direction) typically
+%     falls below the 5% threshold and is dropped
+%   - The result is a binary classification problem: {-1, +1},
+%     mapped to {0, 1} inside the pipeline for sklearn compatibility
+%   - Report the final class distribution (counts and proportions)
+%     after rare label removal; approximate balance between Up and
+%     Down is expected given the symmetric barrier configuration
+%   - Final labeled event count: approximately 911 events (exact
+%     count to be confirmed from the actual run)
+%
+%   Cite: \cite{lopez_de_prado_2018}, Snippet 3.8
+%
+%   Table suggestion: Label distribution table showing class counts,
+%   proportions, and the number of events dropped as rare
 
-% Daily volatility (EWMA span=50, BTC calibration vs AFML's 100).
-% CUSUM filter (symmetric, h=1.5x mean daily vol).
-% Triple Barrier Labeling (pt_sl=(1.5,1.5), num_days=10, binary).
-% Drop rare labels. Justify parameter choices.
 
-
+% ------------------------------------------------------------------
 \subsection{Sample Weights}\label{subsec:weights}
+% ------------------------------------------------------------------
+%
+% Thatcher R3: open with the claim, not background.
+% "Overlapping labels create redundancy that biases training."
+%
+% This section can be ~1 page. The four computation steps are
+% sequential and can be presented as a single narrative flow.
+%
+%
+% ── Opening: the problem ──────────────────────────────────────────
+%
+% Topics:
+%   - TBL labels span from t0 to t1 (barrier touch), and these
+%     intervals frequently overlap: multiple labels are "alive"
+%     simultaneously at any given bar
+%   - Training a classifier on equally-weighted overlapping labels
+%     inflates the effective sample size: the model sees the same
+%     market regime multiple times through different but correlated
+%     labels
+%   - This biases the model toward crowded periods (high overlap
+%     = high effective weight) at the expense of unique, potentially
+%     more informative events
+%   - AFML Chapter 4 proposes a four-step weighting scheme that
+%     corrects for this redundancy
+%
+%
+% ── Step 1: Concurrent label count (Snippet 4.1) ─────────────────
+%
+% Topics:
+%   - For each bar t in the full daily timeline, count the number
+%     of active labels: c_t = |{i : t0_i <= t <= t1_i}|
+%   - c_t is computed over the entire BTC daily index (not just
+%     CUSUM events) to capture the true concurrency structure
+%   - Bars with c_t = 0 fall outside any label's span
+%   - Bars with high c_t indicate crowded periods where multiple
+%     overlapping positions resolve simultaneously
+%
+%
+% ── Step 2: Average uniqueness (Snippet 4.2) ──────────────────────
+%
+% Topics:
+%   - For label i spanning [t0_i, t1_i]:
+%       uniqueness_i = mean(1 / c_t) for t in [t0_i, t1_i]
+%   - Interpretation: uniqueness near 1.0 means the label is the
+%     only active label during its lifespan (highly informative);
+%     uniqueness near 0 means many labels overlap (redundant)
+%   - Labels that are entirely unique provide independent information
+%     that the model should prioritize
+%
+%
+% ── Step 3: Return-attribution weights (Snippet 4.10) ─────────────
+%
+% Topics:
+%   - Combine the magnitude of the label's return with its uniqueness:
+%       w_i = |ret_i| * uniqueness_i
+%   - Normalization: weights are scaled so that sum(w) = len(w),
+%     meaning the average weight equals 1.0; this is compatible
+%     with sklearn's sample_weight convention
+%   - Effect: high-return, unique events (rare, informative price
+%     moves) receive the highest weights; low-return, overlapping
+%     events (noise in crowded periods) receive the lowest
+%   - This is the stronger variant from AFML; the simpler alternative
+%     (uniqueness-only weights, Snippet 4.2) ignores return magnitude
+%
+%
+% ── Step 4: Time decay (Snippet 4.11) ─────────────────────────────
+%
+% Topics:
+%   - Linear decay applied chronologically: the oldest observation
+%     receives a weight multiplied by oldest_weight = 0.5, the newest
+%     receives a multiplier of 1.0, with linear interpolation between
+%   - After decay, weights are re-normalized to maintain sum(w) = len(w)
+%   - Justification: BTC's market microstructure evolves over time
+%     (increasing institutional participation, new derivative products,
+%     regulatory changes); weighting recent observations more heavily
+%     prioritizes the current regime without discarding history entirely
+%   - oldest_weight = 0.5: the oldest sample receives half the
+%     influence of the newest; this is a moderate decay (1.0 = no decay,
+%     0.0 = ignore old data entirely)
+%
+%
+% ── Step 5: Outlier capping ───────────────────────────────────────
+%
+% Topics:
+%   - After time decay, extreme weights are clipped at the 99th
+%     percentile (weight_cap_quantile = 0.99)
+%   - This prevents single extreme events (e.g., flash crashes with
+%     very high |ret| and high uniqueness) from dominating training
+%   - The number of capped weights is logged for transparency
+%
+%
+% ── Integration with classifiers ──────────────────────────────────
+%
+% Topics:
+%   - Sklearn models (LR, RF, XGBoost): weights passed via the
+%     sample_weight parameter in .fit()
+%   - Neural models (LSTM, KAN): weights integrated as per-sample
+%     multipliers in the cross-entropy loss:
+%       L = mean(w_i * CE(logits_i, y_i))
+%     This is equivalent to sample_weight but implemented at the
+%     loss function level for PyTorch compatibility
+%   - Both approaches ensure that the model sees each observation
+%     with influence proportional to its informativeness
+%
+%   Cite: \cite{lopez_de_prado_2018}, Chapter 4 (Snippets 4.1,
+%   4.2, 4.10, 4.11)
+%
+%   Figure suggestion: Sample weights over time, with notable BTC
+%   events annotated (COVID crash March 2020, 2021 ATH, 2022 FTX
+%   collapse). Notebook cell 25 has this.
 
-% Concurrent labels, average uniqueness, return-attribution weights,
-% time decay (factor=0.5), outlier capping (99th percentile).
 
-
+% ------------------------------------------------------------------
 \subsection{Feature Engineering}\label{subsec:features}
+% ------------------------------------------------------------------
+%
+% This section describes the 55 features organized in three groups:
+% technical analysis (23), mathematical/microstructure (9), and
+% external (23). A full feature list with descriptions belongs in
+% Appendix E; the main text covers the design rationale, grouping
+% logic, and anti-leakage measures.
+%
+% Thatcher R4 (one construct, one paragraph): each feature group
+% gets its own block. Don't describe all 55 individually in prose;
+% group them by function and reference the appendix table.
+%
+%
+% ── Opening paragraph ─────────────────────────────────────────────
+%
+% Topics:
+%   - 55 features organized in three groups reflecting different
+%     information sources:
+%     (a) Technical analysis (23): price and volume patterns
+%         computed from OHLCV data (Section 3.4.1)
+%     (b) Mathematical microstructure (9): AFML-inspired structural
+%         features capturing entropy, complexity, stationarity,
+%         and bubble dynamics (Section 3.4.2)
+%     (c) External (23): macro, crypto-macro, and on-chain signals
+%         from sources outside the BTC price series (Section 3.4.3)
+%   - All features are computed over the full daily timeline, not
+%     just at CUSUM events; restriction to labeled events happens
+%     later in the alignment step (Section 3.4.5)
+%   - All features are backward-looking: each value at time t depends
+%     only on information available at or before t
+%
+%   Table suggestion: Summary table with three rows (TA, Math,
+%   External), columns for count, source, and purpose. Detailed
+%   per-feature table in Appendix E.
+%
+%
+% ── 3.4.1 Technical Analysis Features (23) ────────────────────────
+%
+% Topics:
+%   - Computed from OHLCV using standard TA formulas; no external
+%     data required
+%   - Grouped by function (not alphabetically) for readability:
+%
+%     Returns and volatility (6):
+%       log_returns: log(Close_t / Close_{t-1}); the fundamental
+%         return measure; also used by AR Logistic as input
+%       realized_vol: rolling 21-day std of log_returns, annualized
+%         (* sqrt(365)); captures short-term volatility level
+%       gk_vol: Garman-Klass (1980) volatility estimator; uses
+%         OHLC data for more efficient estimation than close-to-close
+%       yz_vol: Yang-Zhang (2000) volatility; best unbiased OHLC
+%         estimator, combines overnight, open-to-close, and
+%         Rogers-Satchell components
+%       atr: Average True Range (EWMA smoothed, span=14); measures
+%         typical price range per bar; log-transformed (Section 3.4.4)
+%       bb_width: Bollinger Band width (20-day); dimensionless
+%         measure of price dispersion relative to its moving average
+%
+%     Momentum and trend (9):
+%       rsi: Relative Strength Index (14-day, Wilder smoothing)
+%       macd, macd_signal, macd_hist: MACD system (12/26/9)
+%       roc_14: Rate of Change; identified as a top predictor for
+%         BTC in the Confluence paper (Mate et al., 2023)
+%       stoch_k, stoch_d: Stochastic oscillator (14-day, 3-day smooth)
+%       williams_r: Williams %R (momentum confirmation)
+%       cci_14: Commodity Channel Index (14-day)
+%
+%     Volume (3):
+%       obv: On-Balance Volume; cumulative, log-transformed
+%         (Section 3.4.4) to compress the exponential growth
+%       chaikin_osc: Chaikin Oscillator (3/10 EMA of ADL);
+%         volume-weighted price momentum
+%       mfi_14: Money Flow Index (14-day); volume-weighted RSI
+%
+%     Distribution shape (2):
+%       skewness: rolling 21-day skewness of log returns
+%       kurtosis: rolling 21-day excess kurtosis of log returns
+%
+%     Trend ratios (3):
+%       ema_ratio_20_50: short vs medium trend strength
+%       ema_ratio_50_200: golden/death cross signal
+%       vwma_ratio_20_50: volume-weighted trend confirmation
+%
+%   - All rolling windows use 21 days (~1 trading month for BTC)
+%     unless the indicator has a standard period (RSI=14, MACD=12/26/9)
+%   - Parameters follow standard TA conventions; no optimization
+%     of indicator periods is performed (this is deliberate: optimizing
+%     TA parameters would introduce another layer of overfitting risk)
+%
+%   Cite: \cite{garman_klass_1980}, \cite{yang_zhang_2000},
+%   \cite{mate_confluence_2023} for ROC as top BTC predictor
+%
+%
+% ── 3.4.2 Mathematical Features (9) ──────────────────────────────
+%
+% Topics:
+%   - AFML Part 4 introduces structural features that capture
+%     properties of the return-generating process itself, rather
+%     than specific price or volume patterns
+%   - These features are computationally expensive (O(n^2) for
+%     SADF and SMT) and cached to Parquet after first computation
+%
+%     Information-theoretic (3):
+%       shannon_entropy (window=21): quantile-encoded Shannon entropy
+%         of log returns; measures randomness/predictability; higher
+%         values = more random, lower = more structured
+%       lz_complexity (window=63): Lempel-Ziv-76 complexity;
+%         measures compressibility of the binary return sequence
+%         (positive/negative); normalized by window/log2(window)
+%       gaussian_entropy (window=21): H_gauss = 0.5*ln(2*pi*e*var);
+%         the entropy a Gaussian with the same variance would have;
+%         the gap between this and Shannon entropy quantifies
+%         non-Gaussianity of the return distribution
+%
+%     Random walk tests (2):
+%       hurst (window=126): R/S Hurst exponent estimated via
+%         rescaled range analysis at sub-periods [10, 21, 42, 63];
+%         H > 0.5 indicates trending/momentum, H < 0.5 indicates
+%         mean reversion, H = 0.5 is consistent with a random walk
+%       variance_ratio (window=63, lag=5): Lo-MacKinlay (1988)
+%         VR(q) = Var(r_q) / (q * Var(r_1)); VR > 1 indicates
+%         momentum, VR < 1 indicates mean reversion, VR = 1 is
+%         consistent with a random walk
+%
+%     Normality test (1):
+%       jarque_bera (window=63): JB = (n/6)*(S^2 + K^2/4);
+%         measures departure from normality; higher values indicate
+%         stronger fat tails and asymmetry (tail risk indicator)
+%
+%     Structural break detection (3):
+%       sadf: Supremum ADF (AFML Snippet 17.1); the maximum ADF
+%         t-statistic over all expanding sub-windows starting from
+%         SADF_MIN_SL=63; detects explosive behaviour (bubbles)
+%         in log prices
+%       smt_poly1, smt_exp: Sub/Super-Martingale tests (AFML
+%         Section 17.4.3); supremum of normalized t-statistics for
+%         polynomial and exponential trend specifications; detect
+%         whether the price process departs from a martingale
+%
+%   Cite: \cite{lopez_de_prado_2018} Part 4, \cite{lo_mackinlay_1988}
+%
+%
+% ── 3.4.3 External Features (23) ─────────────────────────────────
+%
+% Topics:
+%   - Three sub-groups representing different information layers
+%     beyond BTC's own price and volume history:
+%
+%     Macro (13): traditional finance signals reflecting the
+%     broader economic environment
+%       dxy_roc_21: US Dollar Index 21-day rate of change (%);
+%         dollar strength inversely correlated with BTC in many periods
+%       us2y, us10y: Treasury yields (levels); from FRED DGS2
+%         (with T10Y2Y spread fallback if FRED is unavailable)
+%         and yfinance ^TNX
+%       yield_curve_2y10y: us10y - us2y; slope of the yield curve;
+%         inversion signals recession expectations
+%       yield_curve_10y30y: us30y - us10y; long-end term premium
+%       vix: CBOE Volatility Index (level); "fear gauge" for
+%         equity markets, often inversely correlated with risk assets
+%       sp500_ret_21, nasdaq_ret_21: 21-day log returns of S\&P 500
+%         and Nasdaq; capture equity market momentum
+%       gold_ret_21, silver_ret_21, copper_ret_21: commodity
+%         momentum; gold as safe haven, copper as growth proxy
+%       oil_ret_21, natgas_ret_21: energy momentum; energy costs
+%         affect mining economics and broader risk appetite
+%
+%     Crypto-macro (2): market-level cross-crypto signals (not
+%     blockchain fundamentals)
+%       eth_btc_ratio: ETH price / BTC price; captures relative
+%         strength between the two largest cryptocurrencies;
+%         falling ratio suggests BTC dominance
+%       btc_dominance: BTC market capitalization share; fetched
+%         from CoinGecko (with ETH/BTC inverse proxy as fallback);
+%         the absolute market cap carries the same signal after
+%         feature scaling
+%
+%     On-chain (8): blockchain network activity from CoinMetrics
+%     Community API
+%       active_addr_roc_14: 14-day rate of change in active
+%         addresses; rising = growing network adoption
+%       tx_count_roc_14: 14-day rate of change in transaction count;
+%         rising = increasing usage
+%       hashrate_roc_30: 30-day rate of change in hash rate;
+%         rising = increasing mining investment / network security
+%       mvrv: Market Value to Realized Value ratio (level);
+%         MVRV > 1 = market overvalued relative to cost basis,
+%         MVRV < 1 = undervalued; mean-reverting, already stationary
+%       net_exchange_flow: daily exchange inflows minus outflows (BTC);
+%         positive = coins moving to exchanges (selling pressure),
+%         negative = coins leaving exchanges (accumulation)
+%       fee_per_tx: total fees / transaction count; proxy for
+%         network congestion and user willingness to pay for
+%         block space
+%       exchange_supply_pct: (supply on exchanges / total supply) * 100;
+%         declining trend suggests long-term holding behaviour
+%       issuance_ntv: daily BTC issuance; changes discretely at
+%         halving events (approximately every 4 years)
+%
+%   - Anti-leakage measures for external data:
+%     (a) All external series aligned to BTC's daily calendar via
+%         merge_asof(direction='backward'): each BTC day uses the
+%         most recent available value from the external source,
+%         never a future value
+%     (b) CoinMetrics data shifted by 1 day inside the fetch function:
+%         CoinMetrics reports end-of-day aggregates, so the raw
+%         value at date t summarizes activity through t; shifting
+%         ensures the model sees this only from t+1 onward
+%     (c) FRED treasury data falls on business days only; merge_asof
+%         forward-fills the last available business day value into
+%         weekends and holidays
+%
+%   Cite: CoinMetrics Community API (free tier, no API key required)
+%
+%
+% ── 3.4.4 Log Transforms ─────────────────────────────────────────
+%
+% Topics:
+%   - Two features require log transformation to compress their
+%     scale before downstream scaling:
+%     (a) ATR: log(|x| + 1e-8); ATR is always positive and varies
+%         by orders of magnitude across BTC's price history
+%         ($100 ATR in 2015 vs $5,000 ATR in 2024)
+%     (b) OBV: sign(x) * log(|x| + 1); OBV is cumulative and grows
+%         exponentially; the signed log preserves the direction
+%         of volume flow while compressing the scale
+%   - Log transforms are applied after feature computation and
+%     before alignment; they affect only these two columns
+%
+%
+% ── 3.4.5 Alignment ──────────────────────────────────────────────
+%
+% Topics:
+%   - The feature matrix (55 columns, ~4,200 rows covering every
+%     daily bar) must be restricted to the ~911 CUSUM-filtered events
+%     that have labels and weights
+%   - Alignment computes the date intersection of three objects:
+%     features (full daily index), labels/bins (CUSUM subset), and
+%     sample weights (same CUSUM subset)
+%   - Produces four aligned objects that enter the CPCV loop:
+%     X: pd.DataFrame (911 x 55) feature matrix
+%     y: pd.Series (911) class labels {-1, +1}
+%     w: pd.Series (911) sample weights
+%     t1: pd.Series (911) barrier touch timestamps
+%   - Post-alignment validation checks:
+%     (a) No duplicate dates
+%     (b) Monotonically increasing index
+%     (c) No entirely NaN feature columns
+%     (d) t1 completeness (no NaN values; required for CPCV purging)
+%     (e) Shape consistency across X, y, w, t1
+%   - Remaining NaN values in individual feature columns (from
+%     rolling window warm-up or external data gaps) are logged
+%     as warnings; they are handled by forward/back-fill inside
+%     the per-fold preprocessing step (Section 3.6)
+%   - The aligned sample size (~911 observations) is the effective
+%     dataset for all model training and evaluation
+%
+%   Table suggestion: Alignment summary showing total daily bars,
+%   CUSUM events, labeled events, aligned sample size, date range,
+%   class distribution
 
-% Three groups: TA (23), mathematical (9), external (23).
-% Total: 55 features. Log transforms on ATR and OBV.
-% Anti-leakage: merge_asof(backward) for external,
-% CoinMetrics EOD shift for on-chain.
+
+% ------------------------------------------------------------------
+\subsection{Cross-Validation Framework}\label{subsec:cpcv}
+% ------------------------------------------------------------------
+%
+% Thatcher R3: open with the claim.
+% "Standard k-fold CV is invalid for financial time series with
+% overlapping labels; CPCV prevents the resulting information leakage."
+%
+% This section is critical: CPCV is the backbone of the evaluation.
+% A committee member who doesn't understand purging and embargo
+% cannot evaluate the results. Invest 1.5-2 pages here.
+%
+%
+% ── Opening: why standard CV fails ────────────────────────────────
+%
+% Topics:
+%   - In standard k-fold CV, observations are randomly assigned to
+%     folds; the model trains on fold A and predicts fold B
+%   - This is invalid when labels overlap in time: a TBL label at
+%     t0 with barrier touch at t1 spans a multi-day interval [t0, t1]
+%   - If a training observation's label span overlaps with a test
+%     observation's label span, the training set contains information
+%     about the test period's price path
+%   - This leakage inflates metrics: the model appears to predict
+%     the future, but it is merely recognizing patterns from
+%     overlapping training labels
+%   - CPCV (Lopez de Prado, 2018, Chapters 7 and 12) addresses this
+%     through three mechanisms: combinatorial splitting, purging,
+%     and embargo
+%
+%   Cite: \cite{lopez_de_prado_2018}, Chapters 7 and 12
+%
+%
+% ── CPCV configuration ───────────────────────────────────────────
+%
+% Topics:
+%   - The aligned dataset of T observations (~911) is partitioned
+%     into N = 6 contiguous chronological groups
+%   - Group construction: groups 0 through 4 contain floor(T/6)
+%     observations each; group 5 absorbs the remainder
+%   - For each split, k = 2 groups are designated as the test set,
+%     and the remaining N - k = 4 groups form the initial training set
+%   - Total splits: C(N, k) = C(6, 2) = 15
+%   - Each group appears in C(N-1, k-1) = C(5, 1) = 5 test sets
+%   - The 15 splits generate phi[N, k] = C(N-1, k-1) = 5 non-overlapping
+%     backtest paths; each path covers all N groups exactly once,
+%     drawing predictions from different splits
+%
+%   - Justification for N=6, k=2:
+%     (a) N=6 with ~911 observations yields ~152 observations per group,
+%         providing enough test data per fold for meaningful metrics
+%     (b) k=2 keeps the test set at ~304 observations (~33% of data),
+%         leaving ~607 for training (~67%); this ratio balances
+%         training capacity against test set statistical power
+%     (c) 15 splits and 5 paths provide sufficient combinatorial
+%         diversity for PBO computation without excessive computation
+%     (d) Increasing N would shrink groups and reduce per-group
+%         sample size; decreasing N would reduce the number of
+%         splits and paths available for distributional analysis
+%
+%   Table suggestion: Group boundaries table showing group ID,
+%   positional index range [start, end), date range, and number
+%   of observations per group
+%
+%
+% ── Purging (AFML Snippet 7.1) ───────────────────────────────────
+%
+% Topics:
+%   - For each of the 15 splits, training observations whose labels
+%     temporally overlap with the test period are removed
+%   - Three overlap conditions are checked for each training
+%     observation i with label span [t0_i, t1_i] against each
+%     test group spanning [t_test_start, t_test_end]:
+%
+%     Condition 1: training observation starts within test period
+%       t_test_start <= t0_i <= t_test_end
+%       (the observation itself falls in the test window)
+%
+%     Condition 2: training label resolves within test period
+%       t_test_start <= t1_i <= t_test_end
+%       (the label's barrier touch timestamp falls in the test
+%       window, meaning the price path during the test period
+%       determined this training label's outcome)
+%
+%     Condition 3: training label spans the entire test period
+%       t0_i <= t_test_start AND t_test_end <= t1_i
+%       (the label's span encompasses the full test window)
+%
+%   - Any training observation satisfying at least one condition
+%     is purged from the training set for that split
+%   - Purging is the primary defense against information leakage;
+%     without it, the model could learn from training labels whose
+%     outcomes depend on test-period price movements
+%
+%   Cite: \cite{lopez_de_prado_2018}, Snippet 7.1
+%
+%
+% ── Embargo (AFML 7.4.2) ────────────────────────────────────────
+%
+% Topics:
+%   - After purging, a buffer zone of training observations
+%     immediately following each test group is removed
+%   - embargo_pct = 0.01 (1% of T); with T ~= 911, this removes
+%     approximately 9 observations after each test group boundary
+%   - Purpose: prevent serial correlation leakage; even after
+%     purging, training observations immediately after the test
+%     period may be correlated with test observations through
+%     shared market microstructure (autocorrelation in volatility,
+%     momentum spillover)
+%   - Embargo is applied only after the test group (not before),
+%     following AFML 7.4.2: training labels that resolve before
+%     the test period begins contain no future information about
+%     the test period and should not be removed
+%   - The combined effect of purging + embargo reduces the training
+%     set by approximately 10-30 observations per split (depending
+%     on label overlap density near group boundaries)
+%
+%   Cite: \cite{lopez_de_prado_2018}, Section 7.4.2
+%
+%
+% ── Path matrix (AFML 12.4.1) ────────────────────────────────────
+%
+% Topics:
+%   - The 15 splits and 6 groups produce 5 backtest paths
+%   - Each path assigns each group to exactly one split, such that
+%     the path's predictions cover the entire timeline without gaps
+%     or overlaps
+%   - Construction: for each group g, there are exactly 5 splits
+%     that include g in their test set; path p uses the p-th such
+%     split for group g
+%   - The result is 5 independent backtest trajectories, each
+%     producing its own Sharpe ratio, drawdown, and cumulative return
+%   - This enables distribution-level performance analysis: instead
+%     of reporting a single Sharpe ratio (which is a point estimate
+%     with unknown sampling error), the thesis reports the median,
+%     standard deviation, and range of Sharpe ratios across 5 paths
+%   - The path Sharpe matrix (n_models x n_paths) feeds into both
+%     DSR and PBO computation (Section 3.9)
+%
+%   Cite: \cite{lopez_de_prado_2018}, Section 12.4.1
+%
+%   Figure suggestion: CPCV split visualization showing 3
+%   representative splits (e.g., splits 0, 6, 14) with train/test
+%   regions, purged zones, and embargo zones marked. Notebook cell 50.
+%
+%
+% ── Leakage verification ─────────────────────────────────────────
+%
+% Topics:
+%   - An empirical leakage audit verifies that purging and embargo
+%     work correctly across all 15 splits
+%   - For each split, the audit checks: are there any training
+%     observations whose t1 (barrier touch timestamp) falls within
+%     a test group's date range?
+%   - Result: zero leaks detected across all 15 splits
+%   - This is reported as a table (split ID, test groups, train size,
+%     test size, leak count, status) to provide transparent evidence
+%     that the anti-leakage machinery operates as designed
+%   - The audit is a deliberate methodological safeguard: it verifies
+%     the implementation empirically, not just the algorithm's
+%     theoretical correctness
+%
+%   Table suggestion: Leakage audit table (15 rows, one per split)
+%   with columns: split, test groups, train count, test count,
+%   leaks, status (all should show 0 leaks). Notebook cell 54.
 
 
-\subsection{Alignment and Stationarity}\label{subsec:alignment}
-
-% Date intersection, validation assertions.
-% ADF test results, FFD on ATR only (empirical justification).
-
-
-\subsection{Combinatorial Purged Cross-Validation}\label{subsec:cpcv}
-
-% CPCV (N=6, k=2): 15 splits, 5 paths.
-% Purging (3 overlap conditions from AFML 7.1).
-% Embargo (1% of T, after test only).
-% Leakage verification (zero leaks across all splits).
-
-
+% ------------------------------------------------------------------
 \subsection{Preprocessing}\label{subsec:preprocessing}
+% ------------------------------------------------------------------
+%
+% Thatcher R3: open with the claim.
+% "Three transformations happen inside the CPCV loop, fitted on
+% training data only, to prevent information leakage from test
+% fold statistics entering the training pipeline."
+%
+% This is a per-fold pipeline. Emphasize that each of the 15 splits
+% gets its own d*, its own scaler, and its own feature selection.
+% The reader must understand that nothing from the test fold leaks
+% into these steps.
+%
+%
+% ── Opening paragraph ─────────────────────────────────────────────
+%
+% Topics:
+%   - The preprocessing pipeline runs independently for each of the
+%     15 CPCV splits, producing fold-specific transformations
+%   - Three sequential steps: fractional differentiation (stationarity),
+%     feature scaling (normalization), and feature selection (dimensionality
+%     reduction)
+%   - Each step is fitted exclusively on the training fold's data;
+%     the test fold receives the same transformation using the
+%     training-derived parameters (d*, scaler statistics, selected
+%     feature list)
+%   - This per-fold architecture prevents two forms of leakage:
+%     (a) test-fold statistics influencing transformations (e.g.,
+%         scaling by test-fold mean/std)
+%     (b) feature selection informed by test-fold performance
+%
+%
+% ── 3.6.1 Fractional Differentiation (FFD) ───────────────────────
+%
+% Topics:
+%   - Motivation: before training any model, features should be
+%     stationary (no unit root); non-stationary features produce
+%     spurious correlations that don't generalize
+%   - An ADF test across all 55 features at the 5% significance
+%     level identifies ATR as the only non-stationary feature
+%     (notebook cell 38); all other features (returns, ratios,
+%     bounded oscillators, rate-of-change measures) are already
+%     stationary by construction
+%   - FFD is therefore applied to ATR only; this is an empirical
+%     finding, not an arbitrary design choice
+%
+%   - FFD procedure (AFML Chapter 5, Snippets 5.1-5.3):
+%     (a) Compute FFD weights recursively:
+%         w_0 = 1, w_k = -w_{k-1} * (d - k + 1) / k
+%         Truncate when |w_k| < tau = 1e-4 or k >= 200
+%     (b) Apply as a convolution: FFD(x_t) = sum(w_k * x_{t-k})
+%     (c) The first K-1 values become NaN (lookback warm-up);
+%         these rows are dropped from both train and test
+%
+%   - d* estimation (per fold, training data only):
+%     (a) Sweep d from 0.0 to 1.0 in steps of 0.05
+%     (b) For each d, apply FFD to the training fold's ATR series,
+%         then run an ADF test (maxlag=14, autolag="AIC")
+%     (c) Select the minimum d where ADF p-value < 0.05
+%     (d) If no d achieves stationarity, default to d* = 1.0
+%         (full integer differentiation)
+%
+%   - Application scope: FFD is applied to the FULL ATR series
+%     (not just the training fold), using the training-derived d*;
+%     this ensures test observations have valid lookback history
+%     from preceding (training) values
+%   - Anti-leakage argument: FFD is a strictly backward-looking
+%     convolution; each output depends only on current and past
+%     input values; the only parameter estimated from training
+%     is the scalar d*, which does not encode any test-fold
+%     information
+%
+%   - Non-FFD columns: remaining NaN values in non-FFD features
+%     (from external data availability gaps or rolling window
+%     warm-up) are forward-filled then back-filled within each
+%     fold independently
+%
+%   Cite: \cite{lopez_de_prado_2018}, Chapter 5;
+%   \cite{slepaczuk_bieganowski_2024} for walk-forward FFD validation
+%
+%
+% ── 3.6.2 Feature Scaling ────────────────────────────────────────
+%
+% Topics:
+%   - RobustScaler from sklearn: transforms each feature to
+%     (x - median) / IQR, where median and IQR are computed from
+%     the training fold only
+%   - Choice over StandardScaler: BTC features exhibit fat tails
+%     and occasional extreme values (flash crashes, halving events);
+%     median/IQR is resistant to these outliers, while mean/std
+%     is heavily influenced by them
+%   - Applied to all 55 features (including the FFD-transformed ATR)
+%   - The fitted scaler object is stored in prep_info for potential
+%     inverse transformation and for reproducibility documentation
+%   - Test fold is transformed using the training-derived median/IQR;
+%     test values may fall outside the training range, which
+%     RobustScaler handles gracefully (no clipping)
+%
+%
+% ── 3.6.3 Feature Selection: Multi-Model MDA ─────────────────────
+%
+% Topics:
+%   - Purpose: reduce the 55 features to a stable, informative
+%     subset that generalizes across model architectures
+%   - Method: Mean Decrease Accuracy (MDA), also known as
+%     permutation importance (AFML Chapter 8, Section 8.4)
+%   - For each feature, permute its values in the test fold and
+%     measure the drop in macro-averaged F1 score; larger drop =
+%     more important feature
+%
+%   - Multi-model design (novel relative to standard single-model MDA):
+%     (a) MDA computed independently using a Random Forest
+%         (500 trees, balanced class weights, captures nonlinear
+%         feature interactions and ensemble effects)
+%     (b) MDA computed independently using a Logistic Regression
+%         (balanced class weights, captures linear effects)
+%     (c) Final MDA = average of RF MDA and LR MDA per feature
+%     (d) Rationale: a feature ranks high only if it demonstrably
+%         contributes to both a linear and a nonlinear classifier;
+%         this prevents the selection from being biased toward any
+%         single model architecture (e.g., RF might favor
+%         interaction-heavy features that LR cannot exploit, and
+%         vice versa)
+%
+%   - Inner CV for MDA: purged 3-fold cross-validation
+%     (a) The training fold is divided into 3 chronological blocks
+%     (b) For each inner fold, purging is applied using the same
+%         t1-based overlap conditions as the outer CPCV
+%     (c) This ensures the MDA estimates are not inflated by
+%         information leakage within the selection step itself
+%
+%   - Selection rule (two-stage):
+%     Stage 1: keep all features with averaged MDA > 0 (permuting
+%       them hurts performance on average across both models)
+%     Stage 2: cap at TOP_K_FRAC = 0.40 (top 40% of total features
+%       by MDA rank); with 55 features, this caps at 22 features
+%     Minimum floor: if fewer than 5 features pass Stage 1,
+%       the top 5 by MDA value are kept regardless
+%
+%   - AR Logistic exception: the AR Logistic model bypasses MDA
+%     selection entirely; it constructs its own features (lagged
+%     log returns) and receives the pre-selection DataFrame with
+%     the log_returns column intact
+%
+%   - Output: a list of selected feature names, used to subset
+%     X_train and X_test before model training; the list is stored
+%     in prep_info for stability analysis across folds (Section 3.9)
+%
+%   Cite: \cite{lopez_de_prado_2018}, Chapter 8 (Section 8.4)
+%
+%   Table suggestion: Example MDA ranking from one fold showing
+%   feature name, MDA_RF, MDA_LR, MDA (average), and selected
+%   (yes/no). This illustrates how the dual-model approach works
+%   in practice.
 
-% Per-fold pipeline: FFD (d* from train only, applied to full series)
-% → RobustScaler (fit train, transform test)
-% → Multi-model MDA feature selection (RF + LR, top 40%, purged inner CV).
-% Defend: FFD full-series-with-train-d* (no leakage argument),
-% dual-model MDA over RF-only, 80/20 train/calibration split.
 
-
+% ------------------------------------------------------------------
 \subsection{Models}\label{subsec:models}
-
-\subsubsection{AR Logistic (Econometric Baseline)}\label{subsubsec:ar}
-% Lagged log returns [1,2,3,5,10,21], bypasses MDA-selected features.
-
-\subsubsection{Logistic Regression}\label{subsubsec:logistic}
-% Linear baseline on selected features, balanced + sample weights.
-
-\subsubsection{Random Forest}\label{subsubsec:rf}
-% 500 trees, balanced_subsample + sample weights.
-
-\subsubsection{XGBoost}\label{subsubsec:xgboost}
-% 300 estimators, early stopping on calibration set.
-
-\subsubsection{LSTM}\label{subsubsec:lstm}
-% Window=21, 2 layers, hidden=64, dropout=0.2.
-% Sliding-window index alignment.
-
-\subsubsection{KAN}\label{subsubsec:kan}
-% efficient-kan for CPCV, [n_features, 5, 2], grid=5, k=3.
-% Tanh normalization, AdamW, full-batch.
-% Dual-library strategy: efficient-kan (training) vs PyKAN (extraction).
-
-
-\subsection{Calibration}\label{subsec:calibration}
-
-% Platt scaling (sklearn models), temperature scaling (LSTM, KAN).
-% Motivation: bet sizing via S-curve requires calibrated probabilities.
-
-
-\subsection{Hyperparameter Tuning}\label{subsec:tuning}
-
-% Nested per-split: Optuna TPE + Purged K-Fold (K=3, embargo=10).
-% 30 trials classical, 25 neural. Test fold never seen.
-% DSR/PBO remain valid under nested architecture.
+% ------------------------------------------------------------------
+%
+% Present all six models grouped by family. A summary table (Table X)
+% at the end lists architecture, key hyperparameters, and what each
+% model tests. Prose in three subsubsections covers what's unique
+% about each family.
+%
+% Cochrane: "Simple is better. The less math used, the better."
+% Only describe what differs across models; shared elements (sample
+% weights, class balancing, calibration) are covered in Section 3.8.
+%
+%
+% ── Opening paragraph ─────────────────────────────────────────────
+%
+% Topics:
+%   - Six models are evaluated, spanning four families: econometric,
+%     linear ML, ensemble, and neural
+%   - This range tests whether model complexity translates into
+%     predictive value (RQ2): the simplest model (AR Logistic)
+%     uses 6 lagged features and trains in seconds; the most complex
+%     (LSTM) uses 21-day sliding windows over 22 selected features
+%     and trains in minutes per fold
+%   - All models implement a common interface (BaseModel) with
+%     methods for fit, predict_proba, predict_logits, and get_name;
+%     this ensures identical training/evaluation conditions across
+%     architectures
+%   - All models receive AFML sample weights and balanced class
+%     weights; the integration differs by framework (sklearn
+%     sample_weight parameter vs PyTorch per-sample loss multiplier)
+%     but the effect is equivalent
+%   - Table X summarizes the six models; the subsections below
+%     describe what is unique about each family
 
 
+\subsubsection{Econometric Baseline: AR Logistic}\label{subsubsec:ar}
+
+% Topics:
+%   - This model tests a specific hypothesis: can simple price
+%     momentum, captured by lagged log returns, match or exceed
+%     the predictive power of 55 engineered features?
+%   - Feature construction: the model builds its own input from
+%     lagged log returns at [1, 2, 3, 5, 10, 21] calendar days,
+%     producing 6 features
+%   - The lag set covers multiple timescales: daily (1), weekly (2-3),
+%     bi-weekly (5), monthly (10), and quarterly-proxy (21)
+%   - The longest lag (21) matches the LSTM sliding window length,
+%     ensuring both models access the same temporal depth
+%   - The model bypasses the MDA-selected feature set entirely;
+%     it receives the pre-selection DataFrame and extracts the
+%     log_returns column to construct its own lagged features
+%   - Architecture: sklearn LogisticRegression with C=1.0 (tunable),
+%     L2 penalty (tunable to L1), class_weight="balanced",
+%     solver="lbfgs", max_iter=1000
+%   - NaN rows from the longest lag (21 days of warm-up) are
+%     dropped from training; prediction uses forward/back-fill
+%     for edge rows
+%   - If this model matches or beats the feature-engineered models,
+%     the entire feature engineering pipeline (55 features, 3 external
+%     data sources, MDA selection) adds no value beyond simple
+%     price momentum for BTC direction prediction
+%
+%   Cite: Standard econometric baseline; no specific citation needed
+
+
+\subsubsection{Classical ML Models}\label{subsubsec:classical}
+
+% Topics:
+%
+% ── Logistic Regression ──────────────────────────────────────────
+%
+%   - Standard logistic regression on the MDA-selected feature set
+%   - The simplest model that uses the full feature engineering pipeline;
+%     serves as the linear ML baseline
+%   - If ensemble or neural models cannot beat it, nonlinear
+%     complexity adds no value for this prediction task
+%   - class_weight="balanced": adjusts the loss function to
+%     compensate for class imbalance, if present
+%   - sample_weight: AFML return-attribution weights (Section 3.3)
+%     passed to sklearn's .fit()
+%   - Dual weighting: both class_weight and sample_weight are active
+%     simultaneously; class_weight adjusts for label imbalance,
+%     sample_weight adjusts for label informativeness
+%   - Hyperparameters tuned via Optuna (Section 3.8.3):
+%     C (regularization strength), penalty (L1 or L2)
+%   - Solver: "liblinear" for L1, "lbfgs" for L2 (selected
+%     automatically based on the tuned penalty)
+%
+%
+% ── Random Forest ────────────────────────────────────────────────
+%
+%   - Ensemble of 500 decision trees trained via bagging with
+%     random feature subsets at each split
+%   - Captures nonlinear feature interactions through ensemble
+%     averaging; reduces variance relative to individual trees
+%   - class_weight="balanced_subsample": computes class weights
+%     per bootstrap sample, adapting to each tree's resampled
+%     distribution
+%   - max_features="sqrt" (default): each split considers
+%     sqrt(n_features) candidates, de-correlating trees
+%   - min_samples_leaf=5: prevents deep splits on few observations,
+%     providing implicit regularization
+%   - Hyperparameters tuned: max_depth (controls tree complexity),
+%     min_samples_leaf, max_features; n_estimators capped at 500
+%     rather than tuned (more trees rarely hurts, and tuning
+%     tree count wastes budget better spent on structural params)
+%
+%   Cite: \cite{breiman_2001}
+%
+%
+% ── XGBoost ──────────────────────────────────────────────────────
+%
+%   - Gradient-boosted ensemble of 300 trees trained sequentially;
+%     each tree corrects the residual errors of the previous
+%   - Objective: binary:logistic (outputs calibrated probabilities)
+%   - Early stopping: the calibration set (Section 3.8.1) serves as
+%     the evaluation set; training stops after 20 rounds with no
+%     improvement in eval_metric (logloss), preventing overfitting
+%   - Note: this means the calibration set is "touched" during
+%     XGBoost training for round-count selection (but not for
+%     feature or weight estimation); this is acknowledged as a
+%     mild dependency and is standard practice in boosting
+%   - Hyperparameters tuned: max_depth (capped at 6 to prevent
+%     memorization), learning_rate, subsample, colsample_bytree,
+%     gamma (minimum loss reduction), reg_alpha (L1), reg_lambda (L2)
+%   - min_child_weight tuned to control minimum instance weight
+%     per leaf, interacting with the sample weights
+%
+%   Cite: \cite{chen_guestrin_2016}
+
+
+\subsubsection{Neural Models}\label{subsubsec:neural}
+
+% Topics:
+%
+% ── LSTM ─────────────────────────────────────────────────────────
+%
+%   - Architecture: 2-layer LSTM with hidden_size=64, dropout=0.2
+%     between layers, followed by a dropout layer and a linear
+%     classification head (hidden_size -> n_classes)
+%   - Input: sliding window of LSTM_WINDOW=21 days creates 3D
+%     sequences of shape (T - 20, 21, n_features); each sequence
+%     captures one trading month of feature history
+%   - The sliding window reduces the effective sample count: from
+%     ~N training observations to ~N-20 sequences; the
+%     last_valid_indices array tracks which original indices
+%     correspond to each sequence, enabling correct re-alignment
+%     of predictions with test timestamps and returns
+%   - Optimizer: Adam (lr=1e-3), with ReduceLROnPlateau scheduler
+%     (factor=0.5, patience=5); halves the learning rate when
+%     validation loss plateaus
+%   - Training: mini-batch (batch_size=64), shuffled; up to
+%     LSTM_EPOCHS=100 epochs with early stopping (patience=10
+%     epochs without validation loss improvement)
+%   - Loss: CrossEntropyLoss with class weights (inversely
+%     proportional to class frequency) and per-sample AFML weights
+%     applied as multipliers: L = mean(w_i * CE(logits_i, y_i))
+%   - Best model state (lowest validation loss) is restored after
+%     training completes
+%   - Hyperparameters tuned: hidden_size (capped at 64), num_layers,
+%     dropout, learning_rate
+%
+%   Cite: \cite{hochreiter_schmidhuber_1997}
+%
+%
+% ── KAN ──────────────────────────────────────────────────────────
+%
+%   - Architecture: efficient-kan library (Blealtan implementation),
+%     which wraps KAN as a standard PyTorch nn.Module
+%   - Default architecture: [n_features, 5, 2] (input, one hidden
+%     layer with 5 nodes, binary output)
+%   - Each edge is parameterized as a B-spline with grid_size=5
+%     and spline_order=3 (cubic); the spline is defined over
+%     grid_range=[-1, 1]
+%   - Input normalization: tanh normalization fitted on training data
+%       z = tanh((x - mean_train) / (std_train + 1e-8))
+%     This maps features into [-1, 1], matching the spline grid_range;
+%     note this is a second normalization on top of RobustScaler
+%     (Section 3.6.2), specific to KAN's spline parameterization
+%   - Optimizer: AdamW (lr=1e-3, weight_decay=1e-4); the L2
+%     penalty prevents spline coefficient explosion
+%   - Training: full-batch (all training observations per step);
+%     justified by the small effective sample size (~700 training
+%     observations per fold after the 80/20 calibration split);
+%     up to KAN_EPOCHS=200 with early stopping (patience=20)
+%   - Loss: same dual-weighted CrossEntropyLoss as LSTM
+%   - Dual-library strategy: efficient-kan is used for all 15 CPCV
+%     folds (fast, stable, standard nn.Module); PyKAN is used
+%     separately for symbolic extraction (Section 3.10) because
+%     only PyKAN exposes the prune(), suggest_symbolic(),
+%     fix_symbolic(), and symbolic_formula() APIs
+%   - Both libraries share the same B-spline basis and architecture
+%     notation; the difference is in training API and symbolic
+%     manipulation capabilities
+%   - Hyperparameters tuned: width1 (1st hidden layer, range [3, 12]),
+%     width2 (2nd hidden layer, range [0, 10]; 0 = single hidden
+%     layer), grid size ({3, 5}), learning rate, weight_decay
+%
+%   Cite: \cite{liu_kan_2024}
+%
+%
+% ── Shared neural design ─────────────────────────────────────────
+%
+% Topics:
+%   - Both LSTM and KAN use dual weighting in the loss function:
+%     (a) Class weights: inversely proportional to class frequency,
+%         normalized to sum to n_classes; compensates for imbalance
+%     (b) Sample weights: AFML return-attribution weights from
+%         Section 3.3, applied as per-sample multipliers in the
+%         CrossEntropyLoss
+%   - Seed count: LSTM and KAN use 2 seeds per fold; AR Logistic,
+%     LR, RF, and XGBoost use 3 seeds per fold
+%   - Justification for the asymmetry: neural models are
+%     computationally more expensive (LSTM: ~36 min total across
+%     15 folds; KAN: ~25 min); 2 seeds provide enough variance
+%     estimation while keeping total runtime under 2 hours;
+%     classical models are cheap enough for 3 seeds
+%   - Split-level classification metrics are averaged across
+%     available seeds per model; the evaluation code silently
+%     handles the asymmetry by skipping missing seed entries
+%   - All models use the same reproducibility protocol: fixed
+%     random seeds (torch.manual_seed, np.random.seed, random.seed)
+%     and deterministic CUDA settings when available
+%
+%
+% ── Summary Table (Table X) ──────────────────────────────────────
+%
+% Self-contained caption per Cochrane: "each table should have a
+% self-contained caption so that a skimming reader can understand
+% the fact presented without having to go searching through the text."
+%
+% Caption: "Summary of the six models evaluated under CPCV. All
+% models receive AFML sample weights and balanced class weights.
+% Hyperparameters listed under 'Tuned' are optimized per fold via
+% Optuna TPE (Section 3.8.3); 'Fixed' parameters are held constant
+% across all folds. The Role column describes what hypothesis each
+% model tests relative to the research questions."
+%
+% Columns: Model | Family | Architecture | Fixed Params |
+%          Tuned Params | Seeds | Role
+% Rows:
+%   AR Logistic | Econometric | LR on lagged log_returns
+%     [1,2,3,5,10,21] | max_iter=1000 | C, penalty |
+%     3 | Tests pure price momentum (RQ2)
+%   Logistic Regression | Linear ML | LR on selected features |
+%     max_iter=1000 | C, penalty | 3 | Linear baseline (RQ2)
+%   Random Forest | Ensemble | 500 trees, balanced_subsample |
+%     n_estimators=500 | max_depth, min_leaf, max_features |
+%     3 | Nonlinear ensemble (RQ2)
+%   XGBoost | Ensemble | 300 trees, early stopping |
+%     n_estimators=300, early_stop=20 | max_depth, lr, subsample,
+%     colsample, gamma, reg_alpha, reg_lambda | 3 |
+%     Gradient boosting (RQ2)
+%   LSTM | Neural | 2-layer, window=21, batch=64 |
+%     epochs=100, patience=10 | hidden, layers, dropout, lr |
+%     2 | Temporal dependencies (RQ2)
+%   KAN | Neural | [n, 5, 2], grid=5, k=3, full-batch |
+%     epochs=200, patience=20 | width1, width2, grid, lr, wd |
+%     2 | Interpretable architecture (RQ1, RQ2)
+
+
+% ------------------------------------------------------------------
+\subsection{Training Pipeline}\label{subsec:training}
+% ------------------------------------------------------------------
+%
+% This section describes the three components of the per-fold
+% training procedure that are shared across all models: the
+% train/calibration split, probability calibration, and
+% hyperparameter tuning. These are presented as a single subsection
+% because they form one integrated pipeline, not three independent steps.
+%
+%
+% ── Opening paragraph ─────────────────────────────────────────────
+%
+% Topics:
+%   - For each of the 15 CPCV splits, the training fold undergoes
+%     three steps after preprocessing (Section 3.6):
+%     (a) An 80/20 chronological split separating model training
+%         data from a calibration holdout
+%     (b) Nested hyperparameter tuning on the training portion
+%     (c) Probability calibration on the calibration holdout
+%   - These three steps, combined with the preprocessing pipeline,
+%     constitute the full per-fold training procedure; the test
+%     fold is never seen until prediction time
+%
+%
+% ── 3.8.1 Train/Calibration Split ────────────────────────────────
+%
+% Topics:
+%   - The preprocessed training fold (after FFD, scaling, and feature
+%     selection) is split chronologically at the 80th percentile:
+%     the first 80% becomes the model training set (X_model, y_model,
+%     w_model), and the last 20% becomes the calibration set
+%     (X_cal, y_cal)
+%   - Chronological (not random) split preserves temporal ordering,
+%     which is critical for time series data
+%   - The calibration set serves three purposes:
+%     (a) Fitting the probability calibrator (Section 3.8.2)
+%     (b) Providing the evaluation set for XGBoost's early stopping
+%     (c) Providing the validation set for LSTM/KAN's early stopping
+%         and learning rate scheduling
+%   - Approximate sizes per fold: with ~700 training observations
+%     (after purging/embargo from ~911 total), the model set contains
+%     ~560 observations and the calibration set ~140 observations
+%   - The calibration set is never used for feature selection (MDA)
+%     or FFD estimation (d* sweep); those use the full training fold
+%     before the 80/20 split
+%   - Design note: using the calibration set for both early stopping
+%     and probability calibration means the calibration data is
+%     "seen" during training for stopping decisions; this is a mild
+%     dependency (the calibration set influences when training stops,
+%     not what the model learns), and is standard practice in the
+%     literature
+%
+%   - Hyperparameter tuning (Section 3.8.3) operates on the full
+%     training fold (X_tr_sel) with its own inner purged K-fold,
+%     not on the 80/20 split; the best hyperparameters are then
+%     applied to the model trained on X_model
+%
+%
+% ── 3.8.2 Probability Calibration ────────────────────────────────
+%
+% Topics:
+%   - Motivation: the AFML bet sizing function (Section 3.9.1)
+%     converts predicted probabilities into position sizes via an
+%     S-curve; if a model outputs P(up)=0.70 but the true accuracy
+%     at that confidence level is 0.55, the resulting bet size is
+%     too large; calibration ensures that predicted confidence levels
+%     correspond to empirical accuracy
+%
+%   - Two calibration methods, one per model family:
+%
+%     Platt scaling (sklearn models: AR Logistic, LR, RF, XGBoost):
+%       - Fits a logistic regression mapping from raw log-odds to
+%         calibrated probabilities on the calibration set
+%       - For models that output 2D probability arrays, log-odds
+%         are computed as logits[:, 1] - logits[:, 0] before
+%         fitting the sigmoid
+%       - Effectively unregularized (C=1e10): the sigmoid mapping
+%         is purely data-driven with no shrinkage toward the identity
+%       - Calibrated probabilities: platt_model.predict_proba(logits)
+%
+%     Temperature scaling (PyTorch models: LSTM, KAN):
+%       - Learns a single scalar T > 0 that minimizes the negative
+%         log-likelihood of softmax(logits / T) on the calibration set
+%       - T is optimized via bounded scalar minimization (T in [0.1, 10])
+%       - T > 1 softens the probability distribution (increases
+%         entropy, reduces overconfidence); T < 1 sharpens it
+%       - Calibrated probabilities: softmax(logits / T)
+%       - LSTM uses a separate fit_from_logits pathway: because
+%         the sliding window produces fewer output sequences than
+%         input observations, the calibration set indices must be
+%         re-aligned using last_valid_indices before fitting T
+%
+%   Cite: \cite{platt_1999} for Platt scaling,
+%   \cite{guo_temperature_2017} for temperature scaling
+%
+%
+% ── 3.8.3 Hyperparameter Tuning ──────────────────────────────────
+%
+% Topics:
+%   - Architecture: nested per-split tuning; inside each of the 15
+%     CPCV splits, an Optuna study explores the hyperparameter space
+%     using only the training data of that split
+%   - This is the correct nested CV architecture per Lopez de Prado
+%     (2018, Chapter 7): the outer CPCV provides unbiased test folds,
+%     and the inner tuning loop operates entirely within the training
+%     fold; the test fold is never seen during tuning
+%   - Each of the 15 splits gets its own optimal hyperparameters,
+%     simulating how an algorithm would adapt to new data in live
+%     trading (the parameters that work best on 2014-2020 data
+%     may differ from those that work best on 2016-2022 data)
+%
+%   - Inner CV for tuning: Purged K-Fold
+%     (a) K=3 chronological folds within the training set
+%     (b) Embargo = 10 observations between train and validation
+%         folds, matching TBL num_days=10; this ensures the inner
+%         tuning loop respects the same anti-leakage discipline
+%         as the outer CPCV
+%     (c) Each Optuna trial trains the model on 2 inner folds and
+%         evaluates on the 3rd, rotating through all 3 combinations;
+%         the trial score is the mean log-loss across inner folds
+%
+%   - Optuna configuration:
+%     Sampler: TPE (Tree-structured Parzen Estimator); adaptively
+%       concentrates trials in promising regions of the search space
+%     Pruner: MedianPruner; terminates underperforming trials after
+%       evaluating each inner fold, cutting computation on clearly
+%       bad configurations
+%     Seed: OPTUNA_SEED=42 for reproducibility
+%     Verbosity: WARNING level (suppresses per-trial output)
+%
+%   - Trial budgets:
+%     Classical models (LR, RF, XGBoost): 30 trials per split
+%     Neural models (LSTM, KAN): 25 trials per split
+%     Justification: neural models are 5-10x more expensive per
+%       trial; 25 trials provide sufficient exploration while
+%       keeping total tuning time manageable (~25 min for KAN
+%       across 15 splits)
+%
+%   - How tuned parameters are applied: the best_params from each
+%     split's Optuna study are written to module-level constants
+%     (e.g., tree_models.RF_MAX_DEPTH, kan_model.KAN_HIDDEN)
+%     before the model training loop for that split; this is
+%     equivalent to constructing the model with those parameters
+%     directly
+%
+%   - DSR/PBO validity: because the test fold is never seen during
+%     tuning, and because tuning operates within the training fold
+%     using its own anti-leakage inner CV, the DSR and PBO computed
+%     from test-fold predictions remain valid measures of
+%     out-of-sample performance; the n_trials parameter in DSR
+%     counts the number of models compared (6), not the number of
+%     Optuna trials (25-30 per split)
+%
+%   Cite: \cite{akiba_optuna_2019} for Optuna,
+%   \cite{lopez_de_prado_2018} Chapter 7 for nested CV validity
+%
+%   Table suggestion: Search spaces for all models (Appendix C).
+%   Columns: Model, Parameter, Range/Candidates, Scale.
+%   Include a note that grid search is NOT used; TPE is a Bayesian
+%   method that does not exhaustively enumerate the space.
+
+
+% ------------------------------------------------------------------
 \subsection{Evaluation Framework}\label{subsec:evaluation}
+% ------------------------------------------------------------------
+%
+% Thatcher R3: open with the claim.
+% "The evaluation framework translates raw model predictions into
+% financially meaningful performance metrics, corrected for
+% selection bias and multiple testing."
+%
+% This section describes the full chain from calibrated probabilities
+% to final model ranking. It is the bridge between the CPCV pipeline
+% (Section 3.5-3.8) and the Results chapter (Section 4).
+%
+%
+% ── Opening paragraph ─────────────────────────────────────────────
+%
+% Topics:
+%   - Raw model output: calibrated probabilities P(up), P(down) for
+%     each test-fold observation, per model, per split, per seed
+%   - These probabilities pass through five evaluation stages:
+%     (a) Bet sizing: convert probabilities into position sizes
+%     (b) Strategy returns: compute net returns after transaction costs
+%     (c) Path stitching: assemble full-span backtests from CPCV paths
+%     (d) Performance metrics: Sharpe, drawdown, DSR, PBO
+%     (e) Statistical tests: DeLong pairwise AUC significance
+%   - Additionally, stability diagnostics assess whether the
+%     preprocessing decisions (feature selection, FFD d*) are
+%     consistent across folds
+%
+%
+% ── 3.9.1 Bet Sizing (AFML Chapter 10) ──────────────────────────
+%
+% Topics:
+%   - Purpose: convert calibrated probabilities into signed position
+%     sizes that reflect both the predicted direction and the model's
+%     confidence in that prediction
+%   - This is where calibration (Section 3.8.2) matters: the bet
+%     size is a direct function of the probability, so miscalibrated
+%     probabilities produce systematically wrong position sizes
+%
+%   - Procedure:
+%     (a) Predicted direction: sign = +1 if P(up) > P(down), else -1
+%     (b) Confidence: p = max(P(up), P(down)), the probability
+%         assigned to the predicted class; p is in [0.5, 1.0]
+%     (c) Z-score transform:
+%           z = (p - 0.5) / sqrt(p * (1 - p) + 1e-10)
+%         This maps the probability space into a standard normal
+%         scale; higher confidence -> larger z
+%     (d) S-curve mapping (AFML Eq. 10.3):
+%           raw_bet = 2 * Phi(z) - 1
+%         where Phi is the standard normal CDF; this produces a
+%         smooth mapping from probability to bet size in [0, 1]
+%     (e) Minimum threshold: if |raw_bet| < 0.10, set bet to 0
+%         (no trade); this prevents the model from trading on
+%         near-random predictions where P(up) is close to 0.50
+%     (f) Apply direction: signed_bet = sign * |raw_bet|
+%     (g) Discretization: round to the nearest value in
+%         {0.0, 0.25, 0.50, 0.75, 1.0} for realistic position
+%         sizing; a portfolio manager cannot take a 0.37-unit position
+%
+%   - The bet sizing function acts as an implicit abstention mechanism:
+%     low-confidence predictions (P close to 0.5) produce zero or
+%     very small bets, while high-confidence predictions produce
+%     full-sized positions; this is philosophically aligned with the
+%     Conservative Predictions approach (Nabar and Shroff, 2023)
+%
+%   Cite: \cite{lopez_de_prado_2018}, Chapter 10;
+%   \cite{nabar_shroff_2023} for the abstention parallel
+%
+%   Equation suggestion: present the S-curve as a numbered equation
+%   in the thesis; it is the only evaluation-stage equation that
+%   the reader needs to understand the financial performance metrics
+%
+%
+% ── 3.9.2 Strategy Returns ──────────────────────────────────────
+%
+% Topics:
+%   - For each test-fold observation, the strategy return is computed
+%     as the product of the bet size and the realized label return
+%     (the return at barrier touch, stored in bins['ret']):
+%       gross_return_t = bet_size_t * label_return_t
+%
+%   - Transaction costs:
+%     (a) Cost per unit of turnover: 0.1% (TRANSACTION_COST = 0.001)
+%     (b) Turnover at time t: |bet_size_t - bet_size_{t-1}|
+%         (absolute change in position size; first trade's turnover
+%         is the initial position size)
+%     (c) Transaction cost_t = 0.001 * turnover_t
+%     (d) Net return_t = gross_return_t - transaction_cost_t
+%   - Justification for 0.1% cost: conservative estimate for BTC
+%     trading on major exchanges (Binance, Coinbase Pro); maker fees
+%     are typically 0.02-0.10%, taker fees 0.04-0.10%; the 0.1%
+%     round-trip assumption accounts for both sides of the trade
+%     plus potential slippage
+%
+%   - Annualization: Sharpe and return metrics use ANNUALIZATION_FACTOR
+%     = 365 (BTC trades every calendar day, unlike equities at 252)
+%   - Risk-free rate: RISK_FREE_RATE = 0.0 (standard for crypto;
+%     no universally accepted risk-free rate exists for digital assets)
+%
+%
+% ── 3.9.3 Path Stitching (AFML Chapter 12.4) ─────────────────────
+%
+% Topics:
+%   - Purpose: assemble full-span backtests by combining test-fold
+%     predictions from different splits according to the path matrix
+%   - For each of the 5 backtest paths, the procedure:
+%     (a) Retrieves the path's group-to-split assignments from the
+%         path matrix (e.g., path 0 uses split 3 for group 0,
+%         split 7 for group 1, etc.)
+%     (b) Extracts the calibrated probabilities, true labels, and
+%         realized returns from each assigned split's test-fold
+%         predictions
+%     (c) Concatenates chronologically and sorts by timestamp
+%     (d) Applies bet sizing to the concatenated probabilities
+%     (e) Computes strategy returns for the full path
+%
+%   - Each path covers all N=6 groups exactly once, producing a
+%     backtest that spans the entire sample period (2014-2026)
+%   - Different paths use predictions from different splits for the
+%     same time period, so their performance varies; this variation
+%     captures the sensitivity of results to the specific train/test
+%     partition
+%   - Financial metrics are computed per path using seed=0 (the
+%     primary seed); classification metrics are averaged across
+%     all available seeds
+%
+%   - Per-path financial metrics computed:
+%     Annualized Sharpe ratio:
+%       SR = (mean(r) - rf/365) / std(r) * sqrt(365)
+%     Cumulative return: prod(1 + r_t) - 1
+%     Annualized return: (1 + cum_ret)^(365/n) - 1
+%     Maximum drawdown: max peak-to-trough decline in equity curve
+%     Time under water: longest consecutive period below previous peak
+%     Win rate: fraction of traded observations with positive return
+%     Profit factor: sum(positive returns) / |sum(negative returns)|
+%     Average bet size: mean(|bet_size|) among traded observations
+%     Skewness and kurtosis of strategy returns
+%
+%   Cite: \cite{lopez_de_prado_2018}, Section 12.4
+%
+%
+% ── 3.9.4 Deflated Sharpe Ratio (AFML Chapter 14) ────────────────
+%
+% Topics:
+%   - Problem: when multiple models are evaluated, the best-performing
+%     model's Sharpe ratio is upward-biased due to selection; even
+%     under the null hypothesis (all true Sharpes = 0), the maximum
+%     observed Sharpe is positive by chance
+%   - DSR corrects for this by testing the observed Sharpe against
+%     the expected maximum Sharpe under the null
+%
+%   - Computation:
+%     (a) Observed Sharpe: the median Sharpe across 5 paths for each
+%         model; the median is used rather than the mean because it
+%         is robust to outlier paths
+%     (b) Expected maximum Sharpe under null:
+%           E[max(SR)] = sqrt(2 * ln(N_trials)) *
+%             (1 - gamma / (2 * ln(N_trials))) +
+%             gamma / (2 * sqrt(2 * ln(N_trials)))
+%         where gamma = 0.5772 (Euler-Mascheroni constant) and
+%         N_trials = 6 (number of models compared)
+%     (c) Standard error of the Sharpe, corrected for non-normality:
+%           SE = sqrt((1 - skew*SR + (kurt-1)/4 * SR^2) / (n-1))
+%         where skew and kurt are pooled from path returns
+%     (d) DSR = Phi((observed_SR - E[max(SR)]) / SE)
+%
+%   - Interpretation:
+%     DSR > 0.95: the observed Sharpe is statistically significant
+%       at the 5% level after correcting for multiple model testing
+%     DSR near 0: the observed Sharpe is consistent with random
+%       chance; no model demonstrates genuine predictive ability
+%
+%   - n_trials = 6 (number of models): this is the correct count
+%     for model-selection multiplicity; the Optuna hyperparameter
+%     trials (25-30 per split) are NOT counted because they occur
+%     within the training fold and do not affect the test-fold
+%     Sharpe from which DSR is computed
+%
+%   Cite: \cite{lopez_de_prado_2018}, Chapter 14;
+%   \cite{sharpe_1966} for the original Sharpe ratio
+%
+%   Equation suggestion: present the DSR as a numbered equation;
+%   it is the primary evaluation metric (RQ3) and must be
+%   interpretable by the reader
+%
+%
+% ── 3.9.5 Probability of Backtest Overfitting (AFML Ch. 11) ──────
+%
+% Topics:
+%   - Problem: even if a model's in-sample Sharpe ratio is high,
+%     it may underperform out-of-sample due to overfitting to the
+%     specific training/test partition
+%   - PBO measures how likely the in-sample best model is to
+%     underperform the median model out-of-sample
+%
+%   - Computation:
+%     (a) Input: the Sharpe matrix S of shape (n_models, n_paths),
+%         where S[m, p] is the annualized Sharpe of model m on path p
+%     (b) For each combination of IS paths and OOS paths (splitting
+%         the n_paths = 5 paths into halves, IS_size = 2):
+%         - Compute the mean IS Sharpe per model across IS paths
+%         - Identify the IS-best model (highest mean IS Sharpe)
+%         - Compute the OOS Sharpe for the IS-best model
+%         - Compute the OOS median Sharpe across all models
+%         - Record whether IS-best underperforms OOS median
+%     (c) PBO = fraction of combinations where IS-best underperforms
+%
+%   - Interpretation:
+%     PBO near 0: in-sample model selection is reliable; the
+%       IS-best model tends to perform well OOS
+%     PBO = 0.5: random; IS selection is no better than chance
+%     PBO > 0.5: IS selection is adversarial; the IS winner tends
+%       to be the OOS loser (strong overfitting signal)
+%
+%   - With n_paths = 5 and IS_size = 2, there are C(5, 2) = 10
+%     IS/OOS combinations; PBO resolution is therefore 0.10
+%
+%   Cite: \cite{lopez_de_prado_2018}, Chapter 11
+%
+%
+% ── 3.9.6 Statistical Significance: DeLong Test ──────────────────
+%
+% Topics:
+%   - Purpose: test whether two models' AUC-ROC values are
+%     statistically different on the same test observations
+%   - The DeLong test (DeLong et al., 1988) is a non-parametric
+%     method for comparing correlated ROC curves
+%
+%   - Procedure:
+%     (a) Pool predictions across all 15 CPCV splits for each model
+%         (non-overlapping test sets make pooling valid)
+%     (b) For each pair of models (A, B):
+%         - Compute AUC_A and AUC_B on the pooled test set
+%         - Compute the variance of each AUC and their covariance
+%           using DeLong's structural components (placement values)
+%         - Z-statistic: z = (AUC_A - AUC_B) / sqrt(var_diff)
+%         - Two-sided p-value: p = 2 * Phi(-|z|)
+%     (c) Significant at alpha = 0.05 if p < 0.05
+%
+%   - Total pairwise tests: C(6, 2) = 15 model pairs
+%   - Note on LSTM alignment: LSTM produces fewer predictions than
+%     other models (due to the sliding window dropping the first 20
+%     observations); when comparing LSTM against another model, the
+%     shorter array length is used
+%   - No multiple testing correction (e.g., Bonferroni) is applied
+%     to the 15 pairwise tests; this is common in the CPCV literature
+%     but should be acknowledged as a limitation
+%
+%   Cite: \cite{delong_1988}
+%
+%   Table suggestion: DeLong test results as a table with columns
+%   model_a, model_b, AUC_a, AUC_b, delta_AUC, z_stat, p_value,
+%   significant (yes/no)
+%
+%
+% ── 3.9.7 Stability Diagnostics ──────────────────────────────────
+%
+% Topics:
+%   - Two stability metrics assess whether the preprocessing
+%     decisions are consistent across the 15 CPCV folds:
+%
+%   Feature selection stability:
+%     - For each feature, count how many of the 15 folds selected
+%       it (using seed=0 and the first model's prep_info)
+%     - Compute selection frequency = count / 15
+%     - Features with frequency > 0.80 (selected in 12+ of 15 folds)
+%       are classified as "stable"
+%     - Interpretation: if most features have high stability, the
+%       MDA selection is identifying a consistent signal; if stability
+%       is flat (many features near 50-60%), no compact feature subset
+%       dominates, suggesting diffuse or weak signal
+%     - A flat stability profile is itself a finding: it suggests
+%       that the information relevant to BTC direction prediction is
+%       distributed across many features rather than concentrated
+%       in a few
+%
+%   FFD stability:
+%     - For each FFD-transformed column (ATR in this thesis), compute
+%       the standard deviation of d* across all 15 folds
+%     - std(d*) < 0.1: the stationarity structure is consistent
+%       across time periods; the same degree of differentiation
+%       is needed regardless of which data partition is used
+%     - std(d*) > 0.1: the optimal differentiation order changes
+%       across folds, indicating that the feature's stationarity
+%       properties are time-varying (e.g., ATR might be more
+%       persistent during low-volatility regimes and less during
+%       high-volatility regimes)
+%
+%   - Both diagnostics are reported in the Results chapter
+%     (Section 4.4) and serve as quality checks on the pipeline's
+%     internal consistency
+%
+%
+% ── 3.9.8 Model Comparison and Ranking ───────────────────────────
+%
+% Topics:
+%   - The final model comparison aggregates all metrics into a
+%     single ranked table:
+%     Primary ranking criterion: median Sharpe ratio (descending)
+%     Tiebreaker: standard deviation of Sharpe (ascending; lower
+%       variability across paths is preferred)
+%   - Additional columns: DSR, mean F1-macro, mean accuracy,
+%     mean AUC-ROC, mean Brier score, median max drawdown,
+%     median cumulative return, median win rate, median profit factor
+%   - The table provides a comprehensive view: classification metrics
+%     (F1, AUC) and financial metrics (Sharpe, drawdown) do not
+%     always agree; a model can have decent F1 but poor Sharpe if
+%     it mispredicts on high-return events
+%
+%   Table suggestion: Model comparison table (Table X in Results).
+%   Self-contained caption describing all metrics and the ranking
+%   criterion. This is the "main result" table per Cochrane.
 
-% Bet sizing (AFML S-curve, min_bet=0.10, discretization).
-% Strategy returns (0.1% transaction cost, 365-day annualization).
-% Path stitching (AFML 12.4).
-% DSR (n_trials = number of models, not tuning trials).
-% PBO (CSCV, IS/OOS split of paths).
-% DeLong pairwise AUC tests.
-% Feature and FFD stability.
 
-
+% ------------------------------------------------------------------
 \subsection{Symbolic Extraction}\label{subsec:symbolic}
-
-% PyKAN retrained from scratch on best/last fold.
-% Data-aware architecture (5 samples/parameter rule).
-% Three-phase training: Adam (600 steps, noise injection)
-%   → LBFGS warmup → LBFGS sparsity.
-% Grid extension disabled (n < 1000).
-% Prune → Symbolify (R² ≥ 0.30, brute-force fallback) → Affine fine-tune.
-% Formula extraction with variable name substitution (1-based indexing).
-% sympy.simplify with 30s timeout.
+% ------------------------------------------------------------------
+%
+% Framed as exploratory analysis (per advisor guidance), not the
+% core contribution. Keep concise in the main text (~1.5 pages);
+% detailed training logs, edge-by-edge R^2 values, and unsimplified
+% formulas go to Appendix F.
+%
+% Thatcher R3: open with the purpose, not the procedure.
+% "Symbolic extraction produces a closed-form mathematical decision
+% function from a trained KAN, enabling direct inspection of which
+% features drive the prediction and how they combine."
+%
+%
+% ── Opening paragraph ─────────────────────────────────────────────
+%
+% Topics:
+%   - The symbolic extraction pipeline operates independently of the
+%     CPCV evaluation loop; it is applied after all 15 splits have
+%     been evaluated
+%   - Purpose: transform the trained KAN's learned B-spline
+%     activations into interpretable symbolic functions (e.g., sin,
+%     exp, x^2, tanh), producing a closed-form decision function
+%     that a human can read, audit, and validate against domain
+%     knowledge
+%   - This addresses RQ1: can a trained KAN produce interpretable
+%     symbolic decision functions for BTC daily direction prediction?
+%   - The CPCV pipeline uses efficient-kan (standard nn.Module,
+%     fast, stable); symbolic extraction uses PyKAN independently
+%     because only PyKAN exposes the prune(), suggest_symbolic(),
+%     fix_symbolic(), and symbolic_formula() APIs
+%   - Both libraries share the same B-spline basis and architecture
+%     notation ([n_features, hidden, n_classes], grid size, spline
+%     order k=3); the difference is in training API and symbolic
+%     manipulation capabilities
+%
+%
+% ── Fold selection ────────────────────────────────────────────────
+%
+% Topics:
+%   - Symbolic extraction is performed on a single CPCV fold, not
+%     on all 15 (PyKAN training is expensive and the extraction is
+%     exploratory)
+%   - fold_selection="last" (split 14): the fold whose test set
+%     covers the most recent data; closest to how a practitioner
+%     would deploy the model in a rolling-window scenario
+%   - Alternative: fold_selection="best" would select the fold with
+%     the highest KAN F1-macro; this maximizes the chance of
+%     meaningful symbolic output but biases toward the fold that
+%     happened to work best
+%   - Justification for "last": the most recent data reflects the
+%     current market regime; a formula extracted from 2024-2026 data
+%     is more actionable than one extracted from 2018-2020 data
+%   - This choice is acknowledged as a limitation: the formula is
+%     fold-specific and may change if a different fold is selected
+%
+%
+% ── Data preparation ──────────────────────────────────────────────
+%
+% Topics:
+%   - The selected fold's preprocessing is reconstructed: FFD
+%     (using the stored d*), scaling (using the stored RobustScaler),
+%     and feature selection (using the stored feature list)
+%   - An optional feature subset can further restrict the features
+%     to the top N most stable (by CPCV selection frequency); this
+%     thesis uses n_top_features=5 to produce a simpler, more
+%     interpretable formula
+%   - The training fold is split 80/20 (same as the CPCV pipeline)
+%     to provide a validation set for early stopping
+%   - Tanh normalization is applied: z = tanh((x - mean) / (std + 1e-8)),
+%     fitted on the training portion, applied to both; this matches
+%     both efficient-kan and PyKAN's expected input range [-1, 1]
+%
+%
+% ── PyKAN training (Algorithm 1, Step 1) ──────────────────────────
+%
+% Topics (cite: cho_lee_kim_2025 for Algorithm 1):
+%   - A fresh PyKAN model is trained from scratch on the selected
+%     fold's data (not a transfer from efficient-kan)
+%
+%   Architecture selection (priority order):
+%     1. If tuned CPCV params are available for the selected fold
+%        (from the Optuna study in Section 3.8.3), the tuned width1
+%        is used as the starting point, with three simplifications
+%        for symbolic tractability:
+%        (a) Width cap: width1 is capped at PYKAN_SYMBOLIC_WIDTH_CAP=8;
+%            a width-12 KAN produces ~24 summed terms pre-pruning,
+%            which overwhelms sympy during formula simplification
+%        (b) Drop width2: the second hidden layer is removed
+%            (PYKAN_SYMBOLIC_DROP_WIDTH2=True); two hidden layers
+%            produce nested f(g(x)) compositions that sympy cannot
+%            simplify in reasonable time
+%        (c) Force coarse grid: grid is set to PYKAN_SYMBOLIC_FORCE_GRID=3
+%            regardless of the tuned grid; coarser splines produce
+%            cleaner symbolic matches with fewer basis functions
+%     2. If no tuned params exist for this fold, falls back to
+%        data-aware sizing: hidden width chosen so that
+%        n_train / total_params >= 5 (PYKAN_MIN_SAMPLES_PER_PARAM)
+%     In both cases, the final width is additionally clamped by the
+%     data-aware safety floor to prevent memorization; with ~358
+%     training observations and ~6 parameters per edge (grid + k),
+%     this typically yields a hidden width of 3-5
+%
+%   - This design keeps the symbolic model architecturally linked
+%     to the benchmarked CPCV KAN (same width1 origin) while
+%     ensuring formulas remain tractable for sympy
+%
+%   - Three-phase training:
+%     Phase 1 (Adam, 600 steps): main learning phase; weight decay
+%       = 1e-3; Gaussian noise (std=0.05) injected into inputs each
+%       step and clipped to [-1, 1]; the noise acts as a dropout-like
+%       regularizer for small datasets; best validation state saved
+%     Phase 2a (LBFGS warmup, ~20 steps): light refinement with no
+%       sparsity regularization; best validation state saved
+%     Phase 2b (LBFGS sparsity, ~20 steps): L1 + entropy
+%       regularization (lamb=0.002) encourages sparse activations,
+%       which aids downstream pruning; early stopping patience=10
+%   - Grid extension is disabled: with ~358 training samples, refining
+%     the grid from 3 to 5 would add parameters and cause memorization;
+%     grid stays at 3 throughout
+%   - Minimum accuracy gate: if validation accuracy after Adam is
+%     below 53% (barely above random for binary classification),
+%     a warning is logged; the pipeline continues but symbolic
+%     output is likely to yield constant functions
+%
+%
+% ── Pruning (Algorithm 1, Step 2) ─────────────────────────────────
+%
+% Topics:
+%   - After training, edges with activation magnitude below
+%     PRUNE_THRESHOLD=0.01 are removed
+%   - The model.attribute() method computes per-edge importance scores
+%   - model.prune() removes dead edges and collapses nodes that lost
+%     all connections
+%   - Diagnostic: pre-prune and post-prune edge counts and survival
+%     rates are logged; very few active edges (< 3) indicate that
+%     regularization was too aggressive
+%   - Post-prune accuracy is checked: if it drops significantly,
+%     pruning removed signal-carrying edges
+%   - The pruned architecture (e.g., [5, 3, 2] → [5, 2, 2]) is
+%     recorded and reported in the results
+%
+%
+% ── Symbolification (Algorithm 1, Step 3) ─────────────────────────
+%
+% Topics:
+%   - For each surviving edge (l, i, j), the B-spline activation
+%     is replaced with a closed-form symbolic function
+%   - Candidate library (14 functions):
+%     x, x^2, x^3, x^4, exp, log, sqrt, tanh, sin, cos, abs,
+%     sgn, arctan, 0 (constant)
+%   - For each edge, model.suggest_symbolic() returns candidate
+%     functions ranked by a combination of R^2 fit and complexity
+%   - Selection criterion: accept the best non-constant candidate
+%     with R^2 >= 0.30 (SYMBOLIC_R2_THRESHOLD)
+%   - Brute-force fallback: when suggest_symbolic() returns "0"
+%     (constant function wins by total_loss due to zero complexity),
+%     the pipeline iterates through all 14 candidates manually,
+%     calls fix_symbolic() for each, parses the R^2 from PyKAN's
+%     printed output, and selects the best non-constant candidate
+%     above the R^2 threshold; model state is restored between
+%     each candidate trial
+%   - R^2 threshold of 0.30 (lowered from 0.50): empirical choice;
+%     0.50 was too aggressive for the weak-signal regime and rejected
+%     most edges, producing near-constant formulas; 0.30 allows more
+%     edges to be symbolified while maintaining a minimum fit quality
+%   - Symbolification rate: the fraction of total edges that are
+%     successfully replaced with symbolic functions; reported in
+%     the results alongside the edge-by-edge R^2 distribution
+%
+%
+% ── Affine fine-tuning (Algorithm 1, Step 4) ──────────────────────
+%
+% Topics:
+%   - After symbolification, the symbolic function's affine
+%     parameters (scale and shift: a*f(b*x + c) + d) are fine-tuned
+%     via 30 LBFGS steps at lr=0.0004 (from the VIX KAN paper)
+%   - This adjusts the symbolic fit without changing the function
+%     family (e.g., "tanh" stays "tanh" but its scale/shift may change)
+%   - If fine-tuning produces NaN loss, the pre-fine-tune state is
+%     restored
+%
+%
+% ── Formula extraction ────────────────────────────────────────────
+%
+% Topics:
+%   - model.symbolic_formula() returns sympy expressions for each
+%     output node
+%   - For binary classification, two expressions are returned:
+%     logit_bearish (class 0) and logit_bullish (class 1)
+%   - The decision function is: decision = logit_bullish - logit_bearish
+%   - The probability of an up move is:
+%     P(up) = 1 / (1 + exp(-decision)) = sigmoid(decision)
+%   - Variable substitution: PyKAN uses internal variable names
+%     (x_1, x_2, ...); these are replaced with the actual feature
+%     names (e.g., macd_hist, yield_curve_10y30y) via sympy.subs()
+%   - Variable naming convention: the pipeline tries 1-based (x1),
+%     1-based with underscore (x_1), and 0-based (x_0), selecting
+%     whichever convention PyKAN used internally
+%   - sympy.simplify with a 30-second timeout: complex expressions
+%     can cause sympy to hang; if the timeout triggers, the
+%     unsimplified expression is used
+%   - sympy.nsimplify with tolerance=1e-3 cleans up floating-point
+%     coefficients into rational approximations
+%
+%   - Output dictionary:
+%     decision_function: the sympy expression (human-readable formula)
+%     p_up_formula: "1 / (1 + exp(-(decision)))"
+%     surviving_features: list of feature names that appear as free
+%       symbols in the decision function (features that were pruned
+%       or symbolified to constants disappear from the formula)
+%     pre_symbolic_accuracy: validation accuracy before symbolification
+%     post_symbolic_accuracy: validation accuracy after symbolification
+%     symbolification_rate: fraction of edges symbolified
+%     pruned_architecture: the architecture after pruning
+%
+%
+% ── Limitations (acknowledged here, discussed in Section 5.3) ────
+%
+% Topics:
+%   - Fold-specific: the formula depends on which fold is selected;
+%     different folds may produce different formulas with different
+%     surviving features
+%   - Small sample: ~358 training observations after the 80/20 split;
+%     this limits the PyKAN architecture (hidden width constrained
+%     by the 5 samples/parameter rule) and prevents grid extension
+%   - Architectural simplifications: the symbolic extraction KAN is
+%     not identical to the CPCV-benchmarked KAN; width1 is capped
+%     at 8 (vs tuned values up to 12), width2 is dropped (single
+%     hidden layer forced), and grid is forced to 3 (vs tuned 5);
+%     these simplifications are necessary for sympy tractability
+%     but mean the symbolic formula approximates a simplified
+%     version of the CPCV model, not the exact model that produced
+%     the benchmarked predictions
+%   - R^2 threshold sensitivity: lowering the threshold from 0.50
+%     to 0.30 increases the symbolification rate but accepts
+%     lower-quality symbolic fits
+%   - Post-symbolic accuracy may be lower than pre-symbolic accuracy
+%     because the symbolic functions approximate but do not perfectly
+%     reproduce the learned B-spline activations
+%   - The brute-force fallback introduces computational cost and
+%     depends on PyKAN's internal output format, which varies
+%     across versions
+%   - These limitations are consistent with the advisor's guidance
+%     to frame symbolic extraction as exploratory rather than as
+%     the core contribution
+%
+%   Cite: \cite{cho_lee_kim_2025} for Algorithm 1,
+%   \cite{liu_kan_2024} for the symbolic extraction concept,
+%   \cite{practitioner_kan_2025} for training best practices
+%
+%   Appendix F: full PyKAN training logs, phase-by-phase accuracy,
+%   edge-by-edge R^2 values with function assignments, pruned
+%   architecture diagrams, unsimplified formulas before nsimplify
 
 
 % ==================================================================
@@ -981,24 +2794,477 @@ By Petr Terletskiy\\
 \newpage
 \section{Results}\label{sec:results}
 
-% Present findings. Lead with the main result (model comparison table),
-% then supporting evidence.
+% Cochrane: "Start with the main result."
+% Thatcher R3: "Lead with the contribution."
+% Thatcher R10: "Frame empirics as theory tests."
+%
+% Structure: main result table first (4.1), then supporting evidence
+% in decreasing order of importance. Each subsection answers a
+% specific RQ or provides evidence for the Discussion chapter.
+%
+% Placeholders use [VALUE] for numbers to be filled in from the
+% actual pipeline run.
+%
+%
+% ── Opening paragraphs (before any subsection) ───────────────────
+%
+% Topics:
+%   - State the headline finding immediately:
+%     "No model achieves a Deflated Sharpe Ratio above [VALUE],
+%      indicating that none of the six architectures demonstrates
+%      statistically significant predictive ability for BTC daily
+%      direction after correcting for multiple model testing."
+%   - Follow with the secondary finding:
+%     "The symbolic extraction pipeline successfully produces a
+%      closed-form decision function with [VALUE]% symbolification
+%      rate, identifying [FEATURE_1], [FEATURE_2], and [FEATURE_3]
+%      as the features that survive in the final formula."
+%   - Brief roadmap: Section 4.1 presents the model comparison,
+%     4.2 the classification detail, 4.3 the financial performance,
+%     4.4 the stability diagnostics, and 4.5 the symbolic results
+
 
 \subsection{Model Comparison}\label{subsec:results_comparison}
-% Comparison table: median Sharpe, DSR, F1, AUC, etc.
+
+% This is the "main result" per Cochrane: the table that answers
+% RQ2 (does KAN justify its complexity?) and RQ3 (does AFML change
+% conclusions?). Present it first, discuss it briefly, save
+% interpretation for Chapter 5.
+%
+%
+% ── Main comparison table (Table X) ───────────────────────────────
+%
+% Topics:
+%   - Present the full model comparison table described in Section 3.9.8
+%   - Ranked by median Sharpe ratio (descending)
+%
+%   Self-contained caption:
+%   "Model comparison across six architectures evaluated under
+%   CPCV (N=6, k=2, 15 splits, 5 backtest paths). Median Sharpe
+%   is computed across 5 paths. DSR corrects for multiple model
+%   testing (n_trials=6). Classification metrics (F1-macro, AUC,
+%   accuracy) are averaged across 15 splits and all available seeds.
+%   All models use AFML sample weights, balanced class weights,
+%   and per-split Optuna hyperparameter tuning."
+%
+%   Columns and placeholder values:
+%     Model | Med. Sharpe | Sharpe Std | DSR | F1-macro | AUC |
+%     Accuracy | Brier | Rank
+%
+%     AR Logistic      | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [RANK]
+%     Log. Regression  | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [RANK]
+%     Random Forest    | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [RANK]
+%     XGBoost          | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [RANK]
+%     LSTM             | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [RANK]
+%     KAN              | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [VALUE] | [RANK]
+%
+%
+% ── Key observations (state facts, save interpretation for Ch. 5) ─
+%
+% Topics:
+%   - DSR result: all models show DSR = [VALUE], below the 0.95
+%     significance threshold; no model demonstrates statistically
+%     significant predictive performance after correcting for
+%     the number of models tested
+%   - Ranking: [BEST_MODEL] achieves the highest median Sharpe
+%     ([VALUE]), followed by [2ND] ([VALUE]) and [3RD] ([VALUE]);
+%     KAN ranks [KAN_RANK]th with median Sharpe [VALUE]
+%   - Classification vs financial metrics: note any divergence
+%     (e.g., a model with higher AUC but lower Sharpe indicates
+%     that its errors concentrate on high-return events)
+%   - The AR Logistic baseline [matches/underperforms/outperforms]
+%     the feature-engineered models, suggesting that the 55
+%     engineered features [do/do not] add value beyond simple
+%     price momentum
+%   - All metrics should use 2-3 significant digits per Cochrane
+
 
 \subsection{Classification Metrics}\label{subsec:results_classification}
-% Confusion matrices, per-split F1, AUC significance (DeLong).
+
+% Supporting detail for the model comparison. This section provides
+% the evidence behind the summary metrics in Table X.
+%
+%
+% ── Per-split classification summary ──────────────────────────────
+%
+% Topics:
+%   - For each model, report the distribution of F1-macro across
+%     15 splits (mean, std, min, max)
+%   - Note whether performance is consistent across splits or
+%     highly variable; high variability suggests regime dependence
+%     (the model works in some time periods but not others)
+%
+%   Table suggestion: Per-split F1 distribution table
+%   Columns: Model | Mean F1 | Std F1 | Min F1 | Max F1
+%     AR Logistic      | [VALUE] | [VALUE] | [VALUE] | [VALUE]
+%     Log. Regression  | [VALUE] | [VALUE] | [VALUE] | [VALUE]
+%     Random Forest    | [VALUE] | [VALUE] | [VALUE] | [VALUE]
+%     XGBoost          | [VALUE] | [VALUE] | [VALUE] | [VALUE]
+%     LSTM             | [VALUE] | [VALUE] | [VALUE] | [VALUE]
+%     KAN              | [VALUE] | [VALUE] | [VALUE] | [VALUE]
+%
+%
+% ── AUC-ROC ──────────────────────────────────────────────────────
+%
+% Topics:
+%   - Pooled AUC per model (pooled across all 15 splits; valid
+%     because test sets are non-overlapping)
+%   - Report pooled AUC values:
+%     AR Logistic: [VALUE], LR: [VALUE], RF: [VALUE],
+%     XGBoost: [VALUE], LSTM: [VALUE], KAN: [VALUE]
+%   - Note whether any model's AUC significantly exceeds 0.50
+%     (random classifier baseline)
+%
+%
+% ── DeLong pairwise AUC test ──────────────────────────────────────
+%
+% Topics:
+%   - Report the DeLong test results for the [NUMBER] significant
+%     pairs out of 15 total pairwise comparisons
+%   - If few or no pairs are significant, state this explicitly:
+%     "No pairwise AUC difference reaches significance at
+%     alpha = 0.05, indicating that all models perform similarly
+%     in discriminative ability"
+%   - If some pairs are significant, report which models differ
+%     and the direction of the difference
+%
+%   Table suggestion: DeLong results (only significant pairs, or
+%   full 15-pair table if space permits)
+%   Columns: Model A | Model B | AUC_A | AUC_B | z | p-value | Sig.
+%
+%
+% ── Confusion matrices (optional, can go to appendix) ─────────────
+%
+% Topics:
+%   - Aggregated confusion matrix per model (summed across all 15
+%     splits, seed 0): TP, FP, TN, FN
+%   - Derive precision, recall per class from the confusion matrix
+%   - Note whether any model exhibits a strong bias toward one class
+%     (e.g., predicting "Up" for nearly all observations)
+%   - If all models show near-random class distributions (close to
+%     50/50 predicted), this is consistent with the DSR=0 finding
+%   - Detailed per-split confusion matrices go to Appendix D
+%
+%   Table suggestion: Aggregated confusion matrix per model
+%   or a compact table with columns:
+%   Model | Precision(Up) | Recall(Up) | Precision(Down) | Recall(Down)
+
 
 \subsection{Financial Performance}\label{subsec:results_financial}
-% Equity curves, Sharpe distribution across 5 paths, PBO.
+
+% This section presents the financial metrics that answer the
+% practical question: "Would a trader make money using these models?"
+% The answer (spoiler: no) is the evidence for RQ3.
+%
+%
+% ── Path-level Sharpe distribution ────────────────────────────────
+%
+% Topics:
+%   - For each model, report the Sharpe ratio across the 5 backtest
+%     paths: median, mean, std, min, max
+%   - Highlight whether any path achieves a positive Sharpe; if so,
+%     note that the DSR still rejects significance because the
+%     positive paths are offset by negative ones (or because the
+%     maximum is insufficient after n_trials correction)
+%
+%   Table suggestion: Path-level Sharpe table
+%   Columns: Model | Path 0 | Path 1 | Path 2 | Path 3 | Path 4 |
+%     Median | Std
+%     AR Logistic      | [V] | [V] | [V] | [V] | [V] | [V] | [V]
+%     Log. Regression  | [V] | [V] | [V] | [V] | [V] | [V] | [V]
+%     Random Forest    | [V] | [V] | [V] | [V] | [V] | [V] | [V]
+%     XGBoost          | [V] | [V] | [V] | [V] | [V] | [V] | [V]
+%     LSTM             | [V] | [V] | [V] | [V] | [V] | [V] | [V]
+%     KAN              | [V] | [V] | [V] | [V] | [V] | [V] | [V]
+%
+%
+% ── DSR computation detail ────────────────────────────────────────
+%
+% Topics:
+%   - Report the DSR inputs for the best-performing model:
+%     observed median Sharpe = [VALUE]
+%     expected max Sharpe under null (n_trials=6) = [VALUE]
+%     pooled skewness = [VALUE], pooled kurtosis = [VALUE]
+%     SE(SR) = [VALUE]
+%     DSR = [VALUE]
+%   - Repeat for all models (or present as a single table)
+%   - Key statement: "DSR = [VALUE] for all models, falling well
+%     below the 0.95 threshold for statistical significance"
+%
+%
+% ── PBO result ────────────────────────────────────────────────────
+%
+% Topics:
+%   - Report PBO = [VALUE] (out of 10 IS/OOS combinations)
+%   - Interpretation:
+%     If PBO near 0: in-sample model selection is reliable, but
+%       the selected model still has DSR=0 (reliable selection of
+%       a model that doesn't work is not useful)
+%     If PBO near 0.5: random; model selection adds no value
+%     If PBO > 0.5: overfitting; the IS winner underperforms OOS
+%   - Note that PBO near 0 combined with DSR=0 is the most
+%     intellectually honest outcome: it means the pipeline is not
+%     overfitting (good methodology), but also not finding signal
+%     (the market is efficient relative to these features)
+%
+%
+% ── Equity curves ─────────────────────────────────────────────────
+%
+% Topics:
+%   - Plot cumulative strategy return for each model across the
+%     best path (or median path)
+%   - Overlay BTC buy-and-hold cumulative return for comparison
+%   - Note whether any model's equity curve stays above 1.0
+%     (positive cumulative return) for sustained periods, or
+%     whether all curves oscillate around the zero-return line
+%
+%   Figure suggestion: Equity curves for all 6 models + buy-and-hold,
+%   one panel per model or all on the same chart (depends on
+%   readability). Notebook cell [NUMBER].
+%
+%
+% ── Additional financial metrics (compact table) ──────────────────
+%
+% Topics:
+%   - For each model (median across paths):
+%     Cumulative return: [VALUE]%
+%     Annualized return: [VALUE]%
+%     Max drawdown: [VALUE]%
+%     Time under water: [VALUE] days
+%     Win rate: [VALUE]%
+%     Profit factor: [VALUE]
+%     Average bet size: [VALUE]
+%     Fraction of observations traded (bet != 0): [VALUE]%
+%
+%   Table suggestion: Financial performance summary
+%   Self-contained caption: "Financial performance metrics for each
+%   model, computed as the median across 5 CPCV backtest paths.
+%   Strategy returns include 0.1% per-trade transaction costs and
+%   are annualized at 365 days."
+
 
 \subsection{Feature Selection Stability}\label{subsec:results_features}
-% Flat stability finding. FFD d* stability.
+
+% This section reports the MDA feature selection consistency across
+% the 15 CPCV folds and the FFD d* stability. It does not directly
+% answer an RQ but provides evidence for the Discussion chapter
+% (Section 5.1: interpreting negative results).
+%
+%
+% ── Feature selection frequency ───────────────────────────────────
+%
+% Topics:
+%   - Report the selection frequency (count / 15) for each feature
+%   - State the headline finding:
+%     If flat: "No feature is selected in all 15 folds. The most
+%       frequently selected feature is [FEATURE] ([COUNT]/15 = [FREQ]%).
+%       [NUMBER] features are selected in fewer than 5 folds. The
+%       distribution is relatively flat, suggesting that no compact
+%       feature subset consistently dominates across time periods."
+%     If concentrated: "A stable core of [NUMBER] features is selected
+%       in 12 or more of 15 folds: [FEATURE_1], [FEATURE_2], ...
+%       This suggests these features carry consistent signal."
+%   - Group the findings by feature type:
+%     TA features: [NUMBER] selected in >10 folds, [NUMBER] in <5
+%     Math features: [NUMBER] selected in >10 folds, [NUMBER] in <5
+%     External features: [NUMBER] selected in >10 folds, [NUMBER] in <5
+%     On-chain features specifically: [COMMENT on whether any
+%       on-chain feature shows high stability]
+%   - Connect to RQ1: the features that survive symbolic extraction
+%     (Section 4.5) should ideally overlap with the most frequently
+%     selected features here; if they don't, this is worth discussing
+%
+%   Figure suggestion: Horizontal bar chart of selection frequency
+%   (55 bars, sorted by frequency, colored by feature group:
+%   blue=TA, green=math, orange=external). Notebook cell [NUMBER].
+%
+%   Table suggestion: Top 10 and bottom 10 features by selection
+%   frequency (compact table for the main text; full 55-feature
+%   table in Appendix E)
+%   Columns: Rank | Feature | Group | Frequency (count/15) | %
+%
+%
+% ── FFD stability ─────────────────────────────────────────────────
+%
+% Topics:
+%   - Report the d* values across the 15 folds for ATR:
+%     Mean d* = [VALUE], Std d* = [VALUE], Min = [VALUE], Max = [VALUE]
+%   - Interpretation:
+%     If std < 0.1: "The optimal differentiation order for ATR is
+%       stable across folds (std = [VALUE]), indicating consistent
+%       stationarity structure regardless of the training period."
+%     If std > 0.1: "The differentiation order varies across folds
+%       (std = [VALUE]), suggesting that ATR's persistence properties
+%       change across market regimes (e.g., more persistent during
+%       low-volatility periods, less during high-volatility episodes)."
+%   - Report the most common d* value (mode) and whether any folds
+%     required d* = 1.0 (full differentiation, meaning ATR is
+%     heavily persistent in that period)
+%
+%   Table suggestion: d* per fold (15 rows)
+%   Columns: Split | Test Groups | d* | ADF p-value at d*
+%   Or a compact summary: Mean | Std | Min | Max | Mode
+
 
 \subsection{Symbolic Extraction Results}\label{subsec:results_symbolic}
-% Decision function, surviving features, pre/post symbolic accuracy,
-% symbolification rate, feature sensitivity (partial derivatives).
+
+% This section answers RQ1. Framed as exploratory analysis per
+% advisor guidance. Present what the pipeline produced, then
+% acknowledge limitations; interpretation goes to Section 5.3.
+%
+%
+% ── Extraction summary ────────────────────────────────────────────
+%
+% Topics:
+%   - Fold used: split [NUMBER] (fold_selection="last")
+%   - Test group date range: [START_DATE] to [END_DATE]
+%   - Number of MDA-selected features entering extraction: [NUMBER]
+%   - After n_top_features=5 restriction: [FEATURE_1], [FEATURE_2],
+%     [FEATURE_3], [FEATURE_4], [FEATURE_5]
+%   - Training sample size (after 80/20 split): [NUMBER] observations
+%   - Data-aware architecture: [INPUT, HIDDEN, OUTPUT]
+%     (e.g., [5, 3, 2])
+%
+%
+% ── Training diagnostics ─────────────────────────────────────────
+%
+% Topics:
+%   - Phase 1 (Adam, 600 steps):
+%     Final train loss = [VALUE], val loss = [VALUE]
+%     Val accuracy = [VALUE]%
+%   - Phase 2a (LBFGS warmup):
+%     Val accuracy = [VALUE]%
+%   - Phase 2b (LBFGS sparsity):
+%     Val accuracy = [VALUE]%
+%   - State whether the minimum accuracy gate (53%) was passed
+%   - Pre-prune accuracy: [VALUE]%
+%
+%   Note: detailed phase-by-phase training logs go to Appendix F
+%
+%
+% ── Pruning results ───────────────────────────────────────────────
+%
+% Topics:
+%   - Pre-prune edge count: [NUMBER]
+%   - Post-prune edge count: [NUMBER]
+%   - Survival rate: [VALUE]%
+%   - Pruned architecture: [INPUT, HIDDEN_PRUNED, OUTPUT]
+%     (e.g., [5, 3, 2] → [5, 2, 2])
+%   - Post-prune accuracy: [VALUE]% (note any drop from pre-prune)
+%
+%
+% ── Symbolification results ───────────────────────────────────────
+%
+% Topics:
+%   - Total edges attempted: [NUMBER]
+%   - Successfully symbolified: [NUMBER]
+%   - Symbolification rate: [VALUE]%
+%   - Edge-by-edge results:
+%     Edge (layer, in, out) | Suggested function | R^2 | Method
+%     (l, i, j)            | [FUNCTION]          | [V] | suggest/brute
+%     ...
+%   - If any edges used the brute-force fallback, note how many
+%     and which functions were selected
+%   - If any edges fell below R^2 = 0.30, note they were left as
+%     constant ("0") and effectively removed from the formula
+%
+%   Table suggestion: Edge symbolification table
+%   Columns: Edge | Function | R^2 | Method (suggest/brute-force)
+%
+%
+% ── The decision function ─────────────────────────────────────────
+%
+% Topics:
+%   - Present the extracted formula:
+%     P(up) = sigmoid([FORMULA])
+%     where [FORMULA] is the sympy-simplified decision function
+%   - Example format (placeholder):
+%     P(up) = sigmoid(a * tanh(b * [FEATURE_1] + c) +
+%              d * sin(e * [FEATURE_2] + f) + g)
+%     where a, b, c, d, e, f, g are the numerical coefficients
+%   - State clearly which features appear as free symbols in the
+%     decision function: the "surviving features"
+%     Surviving features: [FEATURE_1], [FEATURE_2], [FEATURE_3]
+%   - Note any features that entered the extraction but were pruned
+%     or symbolified to constants (effectively removed)
+%
+%   - Present the formula as a numbered equation in the thesis;
+%     this is the concrete output of RQ1 and should be immediately
+%     visible to a skimming reader
+%
+%
+% ── Pre-symbolic vs post-symbolic accuracy ────────────────────────
+%
+% Topics:
+%   - Pre-symbolic accuracy (trained KAN before symbolification):
+%     [VALUE]%
+%   - Post-symbolic accuracy (after replacing splines with symbolic
+%     functions and affine fine-tuning): [VALUE]%
+%   - Delta: [VALUE] percentage points
+%   - Interpretation:
+%     If delta is small (< 3 pp): "The symbolic functions approximate
+%       the learned splines closely; the formula preserves most of
+%       the KAN's predictive structure"
+%     If delta is large (> 5 pp): "The symbolic approximation degrades
+%       accuracy by [VALUE] pp, indicating that some learned B-spline
+%       shapes are not well captured by the 14-function library; the
+%       formula should be interpreted as an approximation, not an
+%       exact reproduction of the KAN's decision boundary"
+%   - Compare post-symbolic accuracy to random baseline (50%):
+%     If above 55%: the formula retains meaningful signal
+%     If near 50%: the formula is effectively random despite being
+%       well-structured (the underlying signal is too weak for
+%       symbolic distillation to capture)
+%
+%
+% ── Feature interpretation (brief, details in Section 5.3) ────────
+%
+% Topics:
+%   - For each surviving feature, note:
+%     (a) Which feature group it belongs to (TA, math, external,
+%         on-chain)
+%     (b) Its selection frequency across 15 folds (from Section 4.4)
+%     (c) The functional form the KAN assigns to it (e.g., tanh,
+%         sin, x^2)
+%   - Note whether on-chain features appear in the formula (relevant
+%     to Problem 1 from the Introduction: does the "public inside
+%     view" of blockchain data provide measurable signal?)
+%   - State the observation; save the economic interpretation for
+%     Discussion (Section 5.3):
+%     "[FEATURE_1] enters the formula via [FUNCTION], suggesting
+%      a [monotonic/periodic/nonlinear] relationship with BTC
+%      direction; [FEATURE_2] enters via [FUNCTION], suggesting..."
+%   - If no on-chain features survive: note this explicitly as a
+%     finding (the on-chain "inside view" does not provide enough
+%     signal for the KAN to retain it after pruning)
+%
+%
+% ── Comparison with best-fold extraction (optional) ───────────────
+%
+% Topics:
+%   - If the pipeline was also run with fold_selection="best"
+%     (split [NUMBER]), briefly compare:
+%     Best fold symbolification rate: [VALUE]%
+%     Best fold surviving features: [FEATURE_LIST]
+%     Best fold post-symbolic accuracy: [VALUE]%
+%   - Note differences: do the same features survive? Does the
+%     functional form change? Is the symbolification rate higher?
+%   - If the formulas differ substantially, this illustrates the
+%     fold-specificity limitation acknowledged in Section 3.10
+%   - If this comparison was not run, skip this block
+%
+%
+% ── Section closing ───────────────────────────────────────────────
+%
+% Topics:
+%   - Summarize the RQ1 answer factually:
+%     "The symbolic extraction pipeline produces a closed-form
+%      decision function with [VALUE]% symbolification rate. The
+%      formula identifies [NUMBER] surviving features: [LIST].
+%      Post-symbolic accuracy is [VALUE]%, [above/near] the random
+%      baseline. The procedure's limitations, including fold
+%      specificity and sample size constraints, are discussed in
+%      Section 5.3."
 
 
 % ==================================================================
