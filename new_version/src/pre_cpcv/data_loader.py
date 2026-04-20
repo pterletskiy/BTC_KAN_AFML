@@ -137,7 +137,13 @@ def _fill_small_gaps(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     # reindex and forward-fill
     df = df.reindex(full_range)
     df.index.name = "Date"
-    df = df.ffill(limit=_MAX_FFILL_DAYS)
+
+    # Forward-fill prices up to the limit
+    price_cols = ["Open", "High", "Low", "Close"]
+    df[price_cols] = df[price_cols].ffill(limit=_MAX_FFILL_DAYS)
+
+    # Fill missing volume with 0 (no trades occurred)
+    df["Volume"] = df["Volume"].fillna(0)
 
     return df, warnings
 

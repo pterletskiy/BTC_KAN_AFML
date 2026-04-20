@@ -4,7 +4,7 @@
 Bayesian hyperparameter optimization using Optuna's Tree-structured
 Parzen Estimator (TPE) with Median Pruner and Purged K-Fold CV.
 
-Inner CV: Purged K-Fold (K=5) with an embargo gap of PURGE_EMBARGO
+Inner CV: Purged K-Fold (K=3) with an embargo gap of PURGE_EMBARGO
 observations between training and validation folds to prevent label
 leakage from overlapping Triple Barrier labels.
 
