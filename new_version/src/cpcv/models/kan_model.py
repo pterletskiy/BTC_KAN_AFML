@@ -40,6 +40,8 @@ KAN_WEIGHT_DECAY = 1e-4           # L2 regularization
 KAN_EPOCHS = 200                   # maximum training epochs
 KAN_PATIENCE = 20                  # early stopping patience
 KAN_VAL_INTERVAL = 1              # validate every epoch
+KAN_LABEL_SMOOTHING = 0.1         # label smoothing for noisy financial labels
+KAN_GRAD_CLIP_NORM = 1.0          # max gradient norm for clipping
 
 
 # =====================================================================
@@ -155,12 +157,20 @@ class KANModel(BaseModel):
             grid_range=[-1, 1],
         ).to(self.device)
 
-        # ── optimizer and loss ────────────────────────────────────────
+        # ── optimizer, scheduler, and loss ─────────────────────────────
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=KAN_LR, weight_decay=KAN_WEIGHT_DECAY,
         )
-        criterion = nn.CrossEntropyLoss(weight=class_weights_t, reduction="none")
-        criterion_val = nn.CrossEntropyLoss(weight=class_weights_t)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=KAN_EPOCHS, eta_min=1e-5,
+        )
+        criterion = nn.CrossEntropyLoss(
+            weight=class_weights_t, reduction="none",
+            label_smoothing=KAN_LABEL_SMOOTHING,
+        )
+        criterion_val = nn.CrossEntropyLoss(
+            weight=class_weights_t, label_smoothing=KAN_LABEL_SMOOTHING,
+        )
 
         # ── training loop ─────────────────────────────────────────────
         best_val_loss = float("inf")
@@ -176,7 +186,9 @@ class KANModel(BaseModel):
             loss = (per_sample * w_t).mean()
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), KAN_GRAD_CLIP_NORM)
             optimizer.step()
+            scheduler.step()
 
             # validation
             if has_val and (epoch + 1) % KAN_VAL_INTERVAL == 0:

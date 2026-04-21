@@ -653,11 +653,11 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     """Tune KAN via Optuna TPE + Purged K-Fold.
 
     Search space:
-        width1:       int [3, 12]          (1st hidden layer)
-        width2:       int [0, 10]          (2nd hidden; 0 = skip)
-        lr:           log-uniform [1e-3, 0.1]
-        weight_decay: log-uniform [1e-5, 1e-2]
-        grid:         categorical {3, 5}
+        width1:       int [5, 16]          (1st hidden layer)
+        width2:       int [0, 8]           (2nd hidden; 0 = skip)
+        lr:           log-uniform [5e-4, 5e-2]
+        weight_decay: log-uniform [1e-5, 5e-3]
+        grid:         categorical {3, 5, 8}
 
     Fixed: k=3, epochs=200, patience=20, full-batch, tanh normalization.
     """
@@ -686,11 +686,11 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        width1 = trial.suggest_int("width1", 3, 12)
-        width2 = trial.suggest_int("width2", 0, 10)
-        lr = trial.suggest_float("lr", 1e-3, 0.1, log=True)
-        wd = trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True)
-        grid = trial.suggest_categorical("grid", [3, 5])
+        width1 = trial.suggest_int("width1", 5, 16)
+        width2 = trial.suggest_int("width2", 0, 8)
+        lr = trial.suggest_float("lr", 5e-4, 5e-2, log=True)
+        wd = trial.suggest_float("weight_decay", 1e-5, 5e-3, log=True)
+        grid = trial.suggest_categorical("grid", [3, 5, 8])
 
         if width2 == 0:
             widths = [n_features, width1, 2]
@@ -728,9 +728,12 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                 cw_t = torch.tensor(cw, dtype=torch.float32).to(device)
 
                 criterion_train = nn.CrossEntropyLoss(
-                    weight=cw_t, reduction="none"
+                    weight=cw_t, reduction="none",
+                    label_smoothing=0.1,
                 )
-                criterion_val = nn.CrossEntropyLoss(weight=cw_t)
+                criterion_val = nn.CrossEntropyLoss(
+                    weight=cw_t, label_smoothing=0.1,
+                )
 
                 model = KAN(
                     layers_hidden=widths,
@@ -741,6 +744,9 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
 
                 optimizer = torch.optim.AdamW(
                     model.parameters(), lr=lr, weight_decay=wd,
+                )
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=epochs, eta_min=1e-5,
                 )
 
                 best_val_loss = float("inf")
@@ -756,7 +762,9 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                     loss = (per_sample * w_t).mean()
 
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     optimizer.step()
+                    scheduler.step()
 
                     model.eval()
                     with torch.no_grad():
