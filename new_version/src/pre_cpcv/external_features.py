@@ -7,9 +7,9 @@ Features are organized into three groups:
 
 Macro (13):
   Traditional finance signals reflecting the broader economic environment.
-  dxy_roc_21, us2y, us10y, yield_curve_2y10y, yield_curve_10y30y, vix,
-  sp500_ret_21, nasdaq_ret_21, gold_ret_21, silver_ret_21, copper_ret_21,
-  oil_ret_21, natgas_ret_21
+  dxy_roc_30, us2y, us10y, yield_curve_2y10y, yield_curve_10y30y, vix,
+  sp500_ret_30, nasdaq_ret_30, gold_ret_30, silver_ret_30, copper_ret_30,
+  oil_ret_30, natgas_ret_30
 
 Crypto-Macro (2):
   Market-level cross-crypto signals (not blockchain fundamentals).
@@ -56,8 +56,8 @@ MACRO_TICKERS = {
     "natgas": "NG=F",         # Natural gas futures
 }
 
-# rolling return period
-RET_WINDOW = 21
+# rolling return period (~1 crypto month)
+RET_WINDOW = 30
 
 # CoinGecko API
 COINGECKO_BTC_DOM_URL = (
@@ -257,9 +257,9 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     # align all to BTC calendar
     aligned = {name: _align_to_btc(series, btc_index, name) for name, series in raw.items()}
 
-    # 1. DXY 21-day rate of change (%)
+    # 1. DXY 30-day rate of change (%)
     dxy = aligned["dxy"]
-    features["dxy_roc_21"] = (dxy / dxy.shift(RET_WINDOW) - 1.0) * 100.0
+    features["dxy_roc_30"] = (dxy / dxy.shift(RET_WINDOW) - 1.0) * 100.0
 
     # 2. US 10Y yield (must come before 2Y so fallback can derive us2y)
     us10y = aligned["us10y"]
@@ -299,33 +299,33 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     # 6. VIX (level)
     features["vix"] = aligned["vix"]
 
-    # 7. S&P 500 rolling 21-day log return
+    # 7. S&P 500 rolling 30-day log return
     sp500 = aligned["sp500"]
-    features["sp500_ret_21"] = np.log(sp500 / sp500.shift(RET_WINDOW))
+    features["sp500_ret_30"] = np.log(sp500 / sp500.shift(RET_WINDOW))
 
-    # 8. Nasdaq rolling 21-day log return
+    # 8. Nasdaq rolling 30-day log return
     nasdaq = aligned["nasdaq"]
-    features["nasdaq_ret_21"] = np.log(nasdaq / nasdaq.shift(RET_WINDOW))
+    features["nasdaq_ret_30"] = np.log(nasdaq / nasdaq.shift(RET_WINDOW))
 
-    # 9. Gold rolling 21-day log return
+    # 9. Gold rolling 30-day log return
     gold = aligned["gold"]
-    features["gold_ret_21"] = np.log(gold / gold.shift(RET_WINDOW))
+    features["gold_ret_30"] = np.log(gold / gold.shift(RET_WINDOW))
 
-    # 10. Silver rolling 21-day log return
+    # 10. Silver rolling 30-day log return
     silver = aligned["silver"]
-    features["silver_ret_21"] = np.log(silver / silver.shift(RET_WINDOW))
+    features["silver_ret_30"] = np.log(silver / silver.shift(RET_WINDOW))
 
-    # 11. Copper rolling 21-day log return
+    # 11. Copper rolling 30-day log return
     copper = aligned["copper"]
-    features["copper_ret_21"] = np.log(copper / copper.shift(RET_WINDOW))
+    features["copper_ret_30"] = np.log(copper / copper.shift(RET_WINDOW))
 
-    # 12. Oil rolling 21-day log return
+    # 12. Oil rolling 30-day log return
     oil = aligned["oil"]
-    features["oil_ret_21"] = np.log(oil / oil.shift(RET_WINDOW))
+    features["oil_ret_30"] = np.log(oil / oil.shift(RET_WINDOW))
 
-    # 13. Natural gas rolling 21-day log return
+    # 13. Natural gas rolling 30-day log return
     natgas = aligned["natgas"]
-    features["natgas_ret_21"] = np.log(natgas / natgas.shift(RET_WINDOW))
+    features["natgas_ret_30"] = np.log(natgas / natgas.shift(RET_WINDOW))
 
     n_valid = features.notna().all(axis=1).sum()
     logger.info("Macro features: %d columns, %d/%d rows fully valid.",

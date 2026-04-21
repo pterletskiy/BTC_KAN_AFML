@@ -8,15 +8,19 @@ to labeled events) happens later in alignment.
 Implements technical analysis features, AFML Part 4 mathematical
 features, and log transforms.
 
-TA features (23 total):
+All time windows use crypto calendar (365 days/year, 7 days/week):
+  1 week = 7,  1 month = 30,  1 quarter = 90,  6 months = 180
+
+TA features (25 total):
   log_returns, rsi, macd, macd_signal, macd_hist, bb_width, atr, obv,
   skewness, kurtosis, realized_vol, gk_vol, yz_vol, ema_ratio_20_50,
   ema_ratio_50_200, vwma_ratio_20_50, roc_14, stoch_k, stoch_d,
-  williams_r, cci_14, chaikin_osc, mfi_14
+  williams_r, cci_14, chaikin_osc, mfi_14,
+  vol_term_7_30, vol_term_30_90
 
 Mathematical features (9 total):
   shannon_entropy, lz_complexity, hurst, variance_ratio, jarque_bera,
-  gaussian_entropy, sadf, smt_poly1, smt_exp
+  negentropy, sadf, smt_poly1, smt_exp
 """
 
 import logging
@@ -35,7 +39,7 @@ MACD_SLOW = 26
 MACD_SIGNAL = 9
 BB_PERIOD = 20
 ATR_PERIOD = 14
-ROLLING_WINDOW = 21
+ROLLING_WINDOW = 30              
 
 EMA_SHORT = 20
 EMA_MID = 50
@@ -47,18 +51,23 @@ CCI_PERIOD = 14
 MFI_PERIOD = 14
 CHAIKIN_FAST = 3
 CHAIKIN_SLOW = 10
-YZ_WINDOW = 21
+YZ_WINDOW = 30                   
+
+# ── Volatility term-structure windows ─────────────────────────────────
+VOL_SHORT = 7                    # 1 crypto week
+VOL_MID = 30                     # 1 crypto month
+VOL_LONG = 90                    # 1 crypto quarter
 
 # ── Mathematical feature parameters ───────────────────────────────────
-SADF_MIN_SL = 63                # minimum sample length (~1 quarter)
+SADF_MIN_SL = 90                 # minimum sample length (~1 crypto quarter)
 SADF_LAGS = 1
-ENTROPY_WINDOW = 21
-LZ_WINDOW = 63
-HURST_WINDOW = 126
-VR_WINDOW = 63
-VR_LAG = 5
-JB_WINDOW = 63
-GAUSS_ENT_WINDOW = 21
+ENTROPY_WINDOW = 30              # ~1 crypto month
+LZ_WINDOW = 90                   # ~1 crypto quarter
+HURST_WINDOW = 180               # ~6 crypto months
+VR_WINDOW = 90                   # ~1 crypto quarter
+VR_LAG = 7                       # 1 crypto week
+JB_WINDOW = 90                   # ~1 crypto quarter
+GAUSS_ENT_WINDOW = 30            # ~1 crypto month
 
 # ── Log transform targets ─────────────────────────────────────────────
 LOG_TRANSFORM_COLUMNS = ["atr", "obv"]
@@ -141,7 +150,8 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     features["kurtosis"] = log_returns.rolling(ROLLING_WINDOW).kurt()
 
     # 9. Rolling realized volatility (annualized)
-    features["realized_vol"] = log_returns.rolling(ROLLING_WINDOW).std() * np.sqrt(365)
+    vol_30 = log_returns.rolling(ROLLING_WINDOW).std()
+    features["realized_vol"] = vol_30 * np.sqrt(365)
 
     # 10. Garman-Klass volatility (rolling)
     log_hl = np.log(high / low)
@@ -202,6 +212,13 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # 21. Money Flow Index (volume-weighted RSI)
     features["mfi_14"] = _money_flow_index(high, low, close, volume, period=MFI_PERIOD)
+
+    # 22. Volatility term structure: short vol / long vol
+    #     Annualization cancels in ratios, so use raw rolling std
+    vol_7 = log_returns.rolling(VOL_SHORT).std()
+    vol_90 = log_returns.rolling(VOL_LONG).std()
+    features["vol_term_7_30"] = vol_7 / vol_30.replace(0, np.nan)
+    features["vol_term_30_90"] = vol_30 / vol_90.replace(0, np.nan)
 
     logger.info("TA features: %d columns, %d rows.", features.shape[1], features.shape[0])
     return features
@@ -292,11 +309,11 @@ def compute_math_features(
         OHLCV DataFrame with DatetimeIndex.
     which : list[str] or "all"
         Features to compute. Options: 'shannon_entropy', 'lz_complexity',
-        'hurst', 'variance_ratio', 'jarque_bera', 'gaussian_entropy',
+        'hurst', 'variance_ratio', 'jarque_bera', 'negentropy',
         'sadf', 'smt'. Pass "all" for everything.
     """
     ALL_MATH = ["shannon_entropy", "lz_complexity", "hurst", "variance_ratio",
-                "jarque_bera", "gaussian_entropy", "sadf", "smt"]
+                "jarque_bera", "negentropy", "sadf", "smt"]
     if which == "all":
         which = ALL_MATH
 
@@ -361,13 +378,18 @@ def compute_math_features(
         )
         print(f"  Jarque-Bera took {(time.time() - t0) / 60:.1f} min")
 
-    if "gaussian_entropy" in which:
+    if "negentropy" in which:
         t0 = time.time()
-        print("[features] Computing Gaussian entropy...")
-        features["gaussian_entropy"] = _compute_rolling_gaussian_entropy(
+        print("[features] Computing negentropy (gaussian − shannon)...")
+        gauss_ent = _compute_rolling_gaussian_entropy(
             log_returns, window=GAUSS_ENT_WINDOW,
         )
-        print(f"  Gaussian entropy took {(time.time() - t0) / 60:.1f} min")
+        shannon_ent = _compute_rolling_entropy(
+            log_returns, window=GAUSS_ENT_WINDOW,
+        )
+        # Negentropy: how far the empirical distribution is from Gaussian
+        features["negentropy"] = gauss_ent - shannon_ent
+        print(f"  Negentropy took {(time.time() - t0) / 60:.1f} min")
 
     if "sadf" in which:
         t0 = time.time()
@@ -711,7 +733,7 @@ def _compute_rolling_hurst(
     result = pd.Series(np.nan, index=log_returns.index)
     values = log_returns.values
     n = len(values)
-    sub_periods = np.array([10, 21, 42, 63])
+    sub_periods = np.array([14, 30, 60, 90])  # crypto-calendar sub-periods
     sub_periods = sub_periods[sub_periods < window]
 
     for i in range(window - 1, n):
