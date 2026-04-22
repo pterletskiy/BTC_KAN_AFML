@@ -5,12 +5,14 @@ LSTM classifier in PyTorch that consumes windowed sequences of features.
 Wraps the PyTorch module behind the BaseModel interface for seamless
 integration with the CPCV pipeline.
 
-Training improvements (matching KAN best practices):
+Training improvements:
+  - Temporal attention: learned weighting over all timesteps instead of
+    just the final hidden state, so early window information isn't lost
   - Tanh input normalization: squash features to [-1, 1]
-  - LayerNorm on final hidden state
+  - LayerNorm on attended context vector
   - Gradient clipping (max_norm=1.0)
   - Label smoothing (0.1) for noisy financial labels
-  - Cosine annealing LR schedule
+  - Cosine annealing with warm restarts LR schedule
 """
 
 import copy
@@ -37,8 +39,12 @@ LSTM_BATCH_SIZE = 64
 LSTM_EPOCHS = 150
 LSTM_LR = 1e-3
 LSTM_PATIENCE = 15          # early stopping patience
-LSTM_LABEL_SMOOTHING = 0.1  # match KAN's label smoothing
-LSTM_GRAD_CLIP_NORM = 1.0   # match KAN's gradient clipping
+LSTM_LABEL_SMOOTHING = 0.1  # label smoothing for noisy financial labels
+LSTM_GRAD_CLIP_NORM = 1.0   # max gradient norm for clipping
+
+# Warm restarts: T_0=50 epochs per cycle, T_mult=2 doubles each cycle
+LSTM_WARMRESTART_T0 = 50
+LSTM_WARMRESTART_TMULT = 2
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +111,13 @@ def create_sequences(
 # PyTorch module
 # ---------------------------------------------------------------------------
 class LSTMClassifier(nn.Module):
-    """LSTM network with LayerNorm and a linear classification head."""
+    """LSTM network with temporal attention, LayerNorm, and classification head.
+
+    Instead of using only the final hidden state, a learned attention
+    mechanism weights all timestep outputs. This preserves information
+    from early lookback days that would otherwise be washed out through
+    21 recurrent steps.
+    """
 
     def __init__(
         self,
@@ -123,12 +135,14 @@ class LSTMClassifier(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
         )
+        # temporal attention: learns which timesteps matter most
+        self.attn_W = nn.Linear(hidden_size, 1, bias=False)
         self.layer_norm = nn.LayerNorm(hidden_size)
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(hidden_size, n_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
+        """Forward pass with temporal attention.
 
         Parameters
         ----------
@@ -140,13 +154,17 @@ class LSTMClassifier(nn.Module):
         torch.Tensor
             Raw logits, shape (batch, n_classes). No softmax applied.
         """
-        # lstm_out: (batch, window, hidden_size)
-        # h_n: (num_layers, batch, hidden_size)
-        _, (h_n, _) = self.lstm(x)
-        last_hidden = h_n[-1]                   # (batch, hidden_size)
-        last_hidden = self.layer_norm(last_hidden)
-        last_hidden = self.dropout(last_hidden)
-        logits = self.fc(last_hidden)            # (batch, n_classes)
+        # lstm_out: (batch, window, hidden_size) — all timestep outputs
+        lstm_out, _ = self.lstm(x)
+
+        # attention: score each timestep and compute weighted context
+        attn_scores = self.attn_W(lstm_out)                     # (B, T, 1)
+        attn_weights = torch.softmax(attn_scores, dim=1)        # (B, T, 1)
+        context = (attn_weights * lstm_out).sum(dim=1)           # (B, H)
+
+        context = self.layer_norm(context)
+        context = self.dropout(context)
+        logits = self.fc(context)                                # (B, n_classes)
         return logits
 
 
@@ -261,8 +279,11 @@ class LSTMModel(BaseModel):
         optimizer = torch.optim.AdamW(
             self.net.parameters(), lr=LSTM_LR, weight_decay=1e-4,
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=LSTM_EPOCHS, eta_min=1e-5,
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=LSTM_WARMRESTART_T0,
+            T_mult=LSTM_WARMRESTART_TMULT,
+            eta_min=1e-5,
         )
 
         # ── training loop ─────────────────────────────────────────────
@@ -279,7 +300,6 @@ class LSTMModel(BaseModel):
                 optimizer.zero_grad()
                 logits = self.net(X_b)
                 per_sample_loss = criterion(logits, y_b)
-                # integrate AFML sample weights
                 weighted_loss = (per_sample_loss * w_b).mean()
                 weighted_loss.backward()
                 # gradient clipping to prevent exploding gradients

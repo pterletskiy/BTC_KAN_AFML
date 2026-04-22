@@ -42,6 +42,13 @@ KAN_PATIENCE = 20                  # early stopping patience
 KAN_VAL_INTERVAL = 1              # validate every epoch
 KAN_LABEL_SMOOTHING = 0.1         # label smoothing for noisy financial labels
 KAN_GRAD_CLIP_NORM = 1.0          # max gradient norm for clipping
+KAN_ENTROPY_REG = 0.01            # entropy penalty weight (encourages decisive predictions)
+KAN_SWA_START_FRAC = 0.6          # start SWA after 60% of epochs
+KAN_SWA_LR = 1e-4                 # SWA learning rate
+
+# Warm restarts: T_0=60 epochs per cycle, T_mult=2 doubles each cycle
+KAN_WARMRESTART_T0 = 60
+KAN_WARMRESTART_TMULT = 2
 
 
 # =====================================================================
@@ -161,8 +168,11 @@ class KANModel(BaseModel):
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=KAN_LR, weight_decay=KAN_WEIGHT_DECAY,
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=KAN_EPOCHS, eta_min=1e-5,
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=KAN_WARMRESTART_T0,
+            T_mult=KAN_WARMRESTART_TMULT,
+            eta_min=1e-5,
         )
         criterion = nn.CrossEntropyLoss(
             weight=class_weights_t, reduction="none",
@@ -171,6 +181,11 @@ class KANModel(BaseModel):
         criterion_val = nn.CrossEntropyLoss(
             weight=class_weights_t, label_smoothing=KAN_LABEL_SMOOTHING,
         )
+
+        # ── SWA: stochastic weight averaging ──────────────────────────
+        swa_model = torch.optim.swa_utils.AveragedModel(model)
+        swa_start_epoch = int(KAN_SWA_START_FRAC * KAN_EPOCHS)
+        swa_active = False
 
         # ── training loop ─────────────────────────────────────────────
         best_val_loss = float("inf")
@@ -183,12 +198,22 @@ class KANModel(BaseModel):
 
             logits = model(X_t)
             per_sample = criterion(logits, y_t)
-            loss = (per_sample * w_t).mean()
+            ce_loss = (per_sample * w_t).mean()
+
+            # entropy regularization: penalize uncertain predictions
+            probs = torch.softmax(logits, dim=1)
+            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1).mean()
+            loss = ce_loss + KAN_ENTROPY_REG * entropy
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), KAN_GRAD_CLIP_NORM)
             optimizer.step()
             scheduler.step()
+
+            # SWA: collect weight snapshots after swa_start_epoch
+            if epoch >= swa_start_epoch:
+                swa_model.update_parameters(model)
+                swa_active = True
 
             # validation
             if has_val and (epoch + 1) % KAN_VAL_INTERVAL == 0:
@@ -214,8 +239,15 @@ class KANModel(BaseModel):
         if best_state is not None:
             model.load_state_dict(best_state)
 
-        model.eval()
-        self.kan_model = model
+        # SWA: use averaged model if it was active
+        if swa_active:
+            # SWA model needs BN update — KAN has no BN, so just use it directly
+            swa_model.eval()
+            self.kan_model = swa_model
+            logger.info("KAN using SWA-averaged weights (started at epoch %d).", swa_start_epoch)
+        else:
+            model.eval()
+            self.kan_model = model
 
         # ── store dataset reference for downstream use ────────────────
         self._dataset = {
@@ -229,19 +261,20 @@ class KANModel(BaseModel):
         with torch.no_grad():
             test_input = X_val_t if has_val else X_t
             test_label = y_val_t if has_val else y_t
-            pred = model(test_input)
+            pred = self.kan_model(test_input)
             val_acc = (pred.argmax(dim=1) == test_label).float().mean().item()
             logit_range = (pred.min().item(), pred.max().item())
 
         final_epoch = epoch + 1
+        swa_tag = " [SWA]" if swa_active else ""
         logger.info(
-            "efficient-KAN fitted: widths=%s, grid=%d, epochs=%d, "
+            "efficient-KAN%s fitted: widths=%s, grid=%d, epochs=%d, "
             "val_acc=%.4f, val_loss=%.4f, logit_range=[%.2f, %.2f], device=%s.",
-            self.widths, KAN_GRID, final_epoch, val_acc, best_val_loss,
+            swa_tag, self.widths, KAN_GRID, final_epoch, val_acc, best_val_loss,
             logit_range[0], logit_range[1], self.device,
         )
         print(
-            f"  [KAN] widths={self.widths}, grid={KAN_GRID}, "
+            f"  [KAN{swa_tag}] widths={self.widths}, grid={KAN_GRID}, "
             f"epochs={final_epoch}, val_acc={val_acc:.4f}, "
             f"val_loss={best_val_loss:.4f}"
         )

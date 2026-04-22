@@ -539,8 +539,8 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                     weight=cw_t, label_smoothing=0.1,
                 )
                 optimizer = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=epochs, eta_min=1e-5,
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer, T_0=50, T_mult=2, eta_min=1e-5,
                 )
 
                 train_ds = TensorDataset(
@@ -751,8 +751,8 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                 optimizer = torch.optim.AdamW(
                     model.parameters(), lr=lr, weight_decay=wd,
                 )
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=epochs, eta_min=1e-5,
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer, T_0=60, T_mult=2, eta_min=1e-5,
                 )
 
                 best_val_loss = float("inf")

@@ -241,8 +241,14 @@ def stitch_paths(
     n_paths: int,
     model_name: str,
     seed: int = 0,
+    n_seeds: int = 1,
 ) -> dict:
-    """Assemble full backtest paths by stitching test-fold predictions."""
+    """Assemble full backtest paths by stitching test-fold predictions.
+
+    If n_seeds > 1, calibrated probabilities are averaged across all
+    available seeds before computing bet sizes. This ensemble averaging
+    reduces prediction variance by ~1/sqrt(n_seeds).
+    """
     path_results = {}
 
     for path_id in range(n_paths):
@@ -253,17 +259,39 @@ def stitch_paths(
         all_ret = []
 
         for group_id, split_id in sorted(assignments, key=lambda x: x[0]):
-            key = (model_name, split_id, seed)
-            if key not in predictions:
-                logger.warning(
-                    "Missing predictions for %s, split=%d, seed=%d. Skipping.",
-                    model_name, split_id, seed,
-                )
-                continue
+            if n_seeds > 1:
+                # seed-averaging: collect probabilities from all seeds
+                seed_probas = []
+                ref_key = None
+                for s in range(n_seeds):
+                    key = (model_name, split_id, s)
+                    if key in predictions:
+                        seed_probas.append(predictions[key]["cal_proba"])
+                        if ref_key is None:
+                            ref_key = key
 
-            pred = predictions[key]
+                if not seed_probas or ref_key is None:
+                    logger.warning(
+                        "No seed predictions for %s, split=%d. Skipping.",
+                        model_name, split_id,
+                    )
+                    continue
+
+                # average calibrated probabilities across seeds
+                proba = np.mean(seed_probas, axis=0)
+                pred = predictions[ref_key]
+            else:
+                key = (model_name, split_id, seed)
+                if key not in predictions:
+                    logger.warning(
+                        "Missing predictions for %s, split=%d, seed=%d. Skipping.",
+                        model_name, split_id, seed,
+                    )
+                    continue
+                pred = predictions[key]
+                proba = pred["cal_proba"]
+
             ts = pred["timestamps"]
-            proba = pred["cal_proba"]
             ret = pred["ret"]
 
             all_timestamps.append(ts)
@@ -768,9 +796,10 @@ def analyze_results(cpcv_results: dict) -> dict:
                     avg[k] = float(np.mean(vals)) if vals else np.nan
                 split_metrics.append(avg)
 
-        # ── stitch paths (seed=0 for financial metrics) ───────────────
+        # ── stitch paths (seed-averaged for financial metrics) ────────
         path_results = stitch_paths(
-            predictions, path_map, n_paths, model_name, seed=0
+            predictions, path_map, n_paths, model_name,
+            seed=0, n_seeds=n_seeds,
         )
 
         path_performances = []
@@ -822,7 +851,8 @@ def analyze_results(cpcv_results: dict) -> dict:
     all_path_results = {}
     for m in models:
         all_path_results[m] = stitch_paths(
-            predictions, path_map, n_paths, m, seed=0
+            predictions, path_map, n_paths, m,
+            seed=0, n_seeds=n_seeds,
         )
 
     return {
