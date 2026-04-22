@@ -343,12 +343,25 @@ def compute_math_features(
 
     features = pd.DataFrame(index=df.index)
 
-    # ordered least → most expensive
+    # ordered from least to most expensive computation
     if "shannon_entropy" in which:
         t0 = time.time()
-        print("[features] Computing rolling entropy...")
-        features["shannon_entropy"] = _compute_rolling_entropy(log_returns, window=ENTROPY_WINDOW)
-        print(f"  Entropy took {(time.time() - t0) / 60:.1f} min")
+        print("[features] Computing Shannon entropy...")
+        features["shannon_entropy"] = _compute_shannon_entropy(log_returns, window=ENTROPY_WINDOW)
+        print(f"  Shannon entropy took {(time.time() - t0) / 60:.1f} min")
+
+    if "negentropy" in which:
+        t0 = time.time()
+        print("[features] Computing Negentropy (Gaussian − Shannon)...")
+        gauss_ent = _compute_rolling_gaussian_entropy(
+            log_returns, window=GAUSS_ENT_WINDOW,
+        )
+        shannon_ent = _compute_shannon_entropy(
+            log_returns, window=GAUSS_ENT_WINDOW,
+        )
+        # Negentropy: how far the empirical distribution is from Gaussian
+        features["negentropy"] = gauss_ent - shannon_ent
+        print(f"  Negentropy took {(time.time() - t0) / 60:.1f} min")
 
     if "lz_complexity" in which:
         t0 = time.time()
@@ -356,19 +369,13 @@ def compute_math_features(
         features["lz_complexity"] = _compute_rolling_lz(log_returns, window=LZ_WINDOW)
         print(f"  LZ took {(time.time() - t0) / 60:.1f} min")
 
-    if "hurst" in which:
-        t0 = time.time()
-        print("[features] Computing Hurst exponent...")
-        features["hurst"] = _compute_rolling_hurst(log_returns, window=HURST_WINDOW)
-        print(f"  Hurst took {(time.time() - t0) / 60:.1f} min")
-
     if "variance_ratio" in which:
         t0 = time.time()
-        print("[features] Computing variance ratio...")
+        print("[features] Computing Variance Ratio (Lo & MacKinlay)...")
         features["variance_ratio"] = _compute_rolling_variance_ratio(
             log_returns, window=VR_WINDOW, lag=VR_LAG,
         )
-        print(f"  Variance ratio took {(time.time() - t0) / 60:.1f} min")
+        print(f"  Variance Ratio took {(time.time() - t0) / 60:.1f} min")
 
     if "jarque_bera" in which:
         t0 = time.time()
@@ -378,18 +385,11 @@ def compute_math_features(
         )
         print(f"  Jarque-Bera took {(time.time() - t0) / 60:.1f} min")
 
-    if "negentropy" in which:
+    if "hurst" in which:
         t0 = time.time()
-        print("[features] Computing negentropy (gaussian − shannon)...")
-        gauss_ent = _compute_rolling_gaussian_entropy(
-            log_returns, window=GAUSS_ENT_WINDOW,
-        )
-        shannon_ent = _compute_rolling_entropy(
-            log_returns, window=GAUSS_ENT_WINDOW,
-        )
-        # Negentropy: how far the empirical distribution is from Gaussian
-        features["negentropy"] = gauss_ent - shannon_ent
-        print(f"  Negentropy took {(time.time() - t0) / 60:.1f} min")
+        print("[features] Computing Hurst exponent...")
+        features["hurst"] = _compute_rolling_hurst(log_returns, window=HURST_WINDOW)
+        print(f"  Hurst took {(time.time() - t0) / 60:.1f} min")
 
     if "sadf" in which:
         t0 = time.time()
@@ -642,9 +642,9 @@ def _ols_tstat(y: np.ndarray, x: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Rolling Shannon entropy
+# Shannon entropy
 # ---------------------------------------------------------------------------
-def _compute_rolling_entropy(
+def _compute_shannon_entropy(
     log_returns: pd.Series, window: int = ENTROPY_WINDOW
 ) -> pd.Series:
     """Quantile-encoded Shannon entropy over a rolling window."""
