@@ -647,20 +647,31 @@ def _ols_tstat(y: np.ndarray, x: np.ndarray) -> float:
 def _compute_shannon_entropy(
     log_returns: pd.Series, window: int = ENTROPY_WINDOW
 ) -> pd.Series:
-    """Quantile-encoded Shannon entropy over a rolling window."""
+    """Equal-width histogram Shannon entropy over a rolling window.
+
+    Uses equal-width bins instead of quantile bins to avoid the
+    degenerate case where clustered values collapse all quantile
+    edges, producing constant zero entropy.
+    """
     result = pd.Series(np.nan, index=log_returns.index)
     values = log_returns.values
     n = len(values)
-    n_bins = 5
+    n_bins = 10
 
     for i in range(window - 1, n):
         w = values[i - window + 1 : i + 1]
         if np.any(np.isnan(w)):
             continue
+
+        w_min, w_max = w.min(), w.max()
+        spread = w_max - w_min
+        if spread < 1e-14:
+            # All values identical → zero information
+            result.iloc[i] = 0.0
+            continue
+
         try:
-            edges = np.quantile(w, np.linspace(0, 1, n_bins + 1))
-            edges[0] -= 1e-10
-            edges[-1] += 1e-10
+            edges = np.linspace(w_min - 1e-10, w_max + 1e-10, n_bins + 1)
             digitized = np.digitize(w, edges[1:-1])
             counts = np.bincount(digitized, minlength=n_bins)
             probs = counts / counts.sum()
