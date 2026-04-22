@@ -449,7 +449,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     """Tune LSTM via Optuna TPE + Purged K-Fold.
 
     Search space:
-        hidden_size:   int [16, 64] step 16
+        hidden_size:   int [32, 128] step 32
         num_layers:    int [1, 3]
         dropout:       uniform [0.1, 0.5]
         learning_rate: log-uniform [1e-4, 5e-2]
@@ -506,7 +506,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        hidden_size = trial.suggest_int("hidden_size", 16, 64, step=16)
+        hidden_size = trial.suggest_int("hidden_size", 32, 128, step=32)
         num_layers = trial.suggest_int("num_layers", 1, 3)
         dropout = trial.suggest_float("dropout", 0.1, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
@@ -531,10 +531,16 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                     dropout=dropout,
                 ).to(device)
 
-                criterion = nn.CrossEntropyLoss(weight=cw_t, reduction="none")
-                optimizer = torch.optim.Adam(net.parameters(), lr=lr)
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer, patience=5, factor=0.5
+                criterion = nn.CrossEntropyLoss(
+                    weight=cw_t, reduction="none",
+                    label_smoothing=0.1,
+                )
+                criterion_val = nn.CrossEntropyLoss(
+                    weight=cw_t, label_smoothing=0.1,
+                )
+                optimizer = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=epochs, eta_min=1e-5,
                 )
 
                 train_ds = TensorDataset(
@@ -556,16 +562,16 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                         per_sample = criterion(logits, y_b)
                         loss = (per_sample * w_b).mean()
                         loss.backward()
+                        torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
                         optimizer.step()
 
-                    net.eval()
+                    scheduler.step()
+
                     with torch.no_grad():
                         val_logits = net(s["X_val_t"])
-                        val_loss = nn.CrossEntropyLoss(
-                            weight=cw_t
-                        )(val_logits, s["y_val_t"]).item()
-
-                    scheduler.step(val_loss)
+                        val_loss = criterion_val(
+                            val_logits, s["y_val_t"]
+                        ).item()
 
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss

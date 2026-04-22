@@ -32,8 +32,9 @@ logger = logging.getLogger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 TRANSACTION_COST = 0.001          # 0.1% round-trip cost for BTC
-MIN_BET_SIZE = 0.10               # absolute bet sizes below this → don't trade
-BET_DISCRETIZATION = [0.0, 0.25, 0.50, 0.75, 1.0]
+MIN_BET_SIZE = 0.05               # absolute bet sizes below this → don't trade
+MAX_BET_SIZE = 0.75               # cap to prevent explosive equity curves
+BET_DISCRETIZATION = [0.0, 0.25, 0.50, 0.75]
 ANNUALIZATION_FACTOR = 365        # BTC trades every calendar day
 RISK_FREE_RATE = 0.0              # assume 0 for crypto
 
@@ -103,6 +104,9 @@ def bet_size_from_proba(
 
     # S-curve mapping
     raw_bet = 2.0 * stats.norm.cdf(z) - 1.0
+
+    # cap maximum position size
+    raw_bet = np.clip(raw_bet, -MAX_BET_SIZE, MAX_BET_SIZE)
 
     # minimum threshold
     raw_bet = np.where(np.abs(raw_bet) < min_bet, 0.0, raw_bet)

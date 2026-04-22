@@ -4,6 +4,13 @@
 LSTM classifier in PyTorch that consumes windowed sequences of features.
 Wraps the PyTorch module behind the BaseModel interface for seamless
 integration with the CPCV pipeline.
+
+Training improvements (matching KAN best practices):
+  - Tanh input normalization: squash features to [-1, 1]
+  - LayerNorm on final hidden state
+  - Gradient clipping (max_norm=1.0)
+  - Label smoothing (0.1) for noisy financial labels
+  - Cosine annealing LR schedule
 """
 
 import copy
@@ -22,14 +29,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
-LSTM_HIDDEN_SIZE = 64
+LSTM_HIDDEN_SIZE = 128
 LSTM_NUM_LAYERS = 2
-LSTM_DROPOUT = 0.2
+LSTM_DROPOUT = 0.3
 LSTM_WINDOW = 21            # lookback window (~1 trading month)
 LSTM_BATCH_SIZE = 64
-LSTM_EPOCHS = 100
+LSTM_EPOCHS = 150
 LSTM_LR = 1e-3
-LSTM_PATIENCE = 10          # early stopping patience
+LSTM_PATIENCE = 15          # early stopping patience
+LSTM_LABEL_SMOOTHING = 0.1  # match KAN's label smoothing
+LSTM_GRAD_CLIP_NORM = 1.0   # match KAN's gradient clipping
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +105,7 @@ def create_sequences(
 # PyTorch module
 # ---------------------------------------------------------------------------
 class LSTMClassifier(nn.Module):
-    """LSTM network with a linear classification head."""
+    """LSTM network with LayerNorm and a linear classification head."""
 
     def __init__(
         self,
@@ -114,6 +123,7 @@ class LSTMClassifier(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
         )
+        self.layer_norm = nn.LayerNorm(hidden_size)
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(hidden_size, n_classes)
 
@@ -134,6 +144,7 @@ class LSTMClassifier(nn.Module):
         # h_n: (num_layers, batch, hidden_size)
         _, (h_n, _) = self.lstm(x)
         last_hidden = h_n[-1]                   # (batch, hidden_size)
+        last_hidden = self.layer_norm(last_hidden)
         last_hidden = self.dropout(last_hidden)
         logits = self.fc(last_hidden)            # (batch, n_classes)
         return logits
@@ -151,6 +162,28 @@ class LSTMModel(BaseModel):
         self.window = LSTM_WINDOW
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.last_valid_indices = None
+        # tanh normalization parameters (fitted on training data)
+        self._input_mean = None
+        self._input_std = None
+
+    # ------------------------------------------------------------------
+    # Input normalization (matching KAN)
+    # ------------------------------------------------------------------
+    def _fit_input_norm(self, X: np.ndarray) -> None:
+        """Fit tanh normalization: z = tanh((x - mean) / (std + eps)).
+
+        Maps features into [-1, 1], stabilizing LSTM training on
+        fat-tailed financial data.
+        """
+        self._input_mean = X.mean(axis=0)
+        self._input_std = X.std(axis=0) + 1e-8
+
+    def _apply_input_norm(self, X: np.ndarray) -> np.ndarray:
+        """Apply tanh normalization using stored parameters."""
+        if self._input_mean is None:
+            return X
+        z = (X - self._input_mean) / self._input_std
+        return np.tanh(z)
 
     def fit(
         self,
@@ -167,15 +200,25 @@ class LSTMModel(BaseModel):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
 
+        # ── tanh input normalization ──────────────────────────────────
+        X_train_arr = X_train.values if hasattr(X_train, "values") else X_train
+        self._fit_input_norm(X_train_arr)
+        X_train_normed = self._apply_input_norm(X_train_arr)
+
         # ── build sequences ───────────────────────────────────────────
+        import pandas as pd
+        X_train_df = pd.DataFrame(X_train_normed, index=getattr(X_train, 'index', None))
         X_seq, y_seq, w_seq, _ = create_sequences(
-            X_train, y_train, sample_weight, window=self.window
+            X_train_df, y_train, sample_weight, window=self.window
         )
 
         has_val = X_val is not None and y_val is not None
         if has_val:
+            X_val_arr = X_val.values if hasattr(X_val, "values") else X_val
+            X_val_normed = self._apply_input_norm(X_val_arr)
+            X_val_df = pd.DataFrame(X_val_normed, index=getattr(X_val, 'index', None))
             X_val_seq, y_val_seq, _, _ = create_sequences(
-                X_val, y_val, window=self.window
+                X_val_df, y_val, window=self.window
             )
 
         # ── tensors ───────────────────────────────────────────────────
@@ -207,10 +250,19 @@ class LSTMModel(BaseModel):
         class_weights_t = torch.tensor(class_weights, dtype=torch.float32).to(self.device)
 
         # ── loss, optimizer, scheduler ────────────────────────────────
-        criterion = nn.CrossEntropyLoss(weight=class_weights_t, reduction="none")
-        optimizer = torch.optim.Adam(self.net.parameters(), lr=LSTM_LR)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, patience=5, factor=0.5
+        criterion = nn.CrossEntropyLoss(
+            weight=class_weights_t, reduction="none",
+            label_smoothing=LSTM_LABEL_SMOOTHING,
+        )
+        criterion_val = nn.CrossEntropyLoss(
+            weight=class_weights_t,
+            label_smoothing=LSTM_LABEL_SMOOTHING,
+        )
+        optimizer = torch.optim.AdamW(
+            self.net.parameters(), lr=LSTM_LR, weight_decay=1e-4,
+        )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=LSTM_EPOCHS, eta_min=1e-5,
         )
 
         # ── training loop ─────────────────────────────────────────────
@@ -230,11 +282,16 @@ class LSTMModel(BaseModel):
                 # integrate AFML sample weights
                 weighted_loss = (per_sample_loss * w_b).mean()
                 weighted_loss.backward()
+                # gradient clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(
+                    self.net.parameters(), LSTM_GRAD_CLIP_NORM
+                )
                 optimizer.step()
 
                 epoch_loss += weighted_loss.item()
                 n_batches += 1
 
+            scheduler.step()
             avg_train_loss = epoch_loss / max(n_batches, 1)
 
             # ── validation ────────────────────────────────────────────
@@ -242,11 +299,7 @@ class LSTMModel(BaseModel):
                 self.net.eval()
                 with torch.no_grad():
                     val_logits = self.net(X_val_t)
-                    val_loss = nn.CrossEntropyLoss(weight=class_weights_t)(
-                        val_logits, y_val_t
-                    ).item()
-
-                scheduler.step(val_loss)
+                    val_loss = criterion_val(val_logits, y_val_t).item()
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -261,8 +314,6 @@ class LSTMModel(BaseModel):
                         epoch + 1, best_val_loss,
                     )
                     break
-            else:
-                scheduler.step(avg_train_loss)
 
         # restore best weights
         if best_state is not None:
@@ -275,7 +326,11 @@ class LSTMModel(BaseModel):
         )
 
     def predict_proba(self, X) -> np.ndarray:
-        X_seq, valid_indices = create_sequences(X, window=self.window)
+        X_arr = X.values if hasattr(X, "values") else X
+        X_normed = self._apply_input_norm(X_arr)
+        import pandas as pd
+        X_df = pd.DataFrame(X_normed, index=getattr(X, 'index', None))
+        X_seq, valid_indices = create_sequences(X_df, window=self.window)
         self.last_valid_indices = valid_indices
 
         X_t = torch.tensor(X_seq, dtype=torch.float32).to(self.device)
@@ -293,7 +348,11 @@ class LSTMModel(BaseModel):
 
     def predict_logits(self, X) -> np.ndarray:
         """Return raw pre-softmax logits."""
-        X_seq, valid_indices = create_sequences(X, window=self.window)
+        X_arr = X.values if hasattr(X, "values") else X
+        X_normed = self._apply_input_norm(X_arr)
+        import pandas as pd
+        X_df = pd.DataFrame(X_normed, index=getattr(X, 'index', None))
+        X_seq, valid_indices = create_sequences(X_df, window=self.window)
         self.last_valid_indices = valid_indices
 
         X_t = torch.tensor(X_seq, dtype=torch.float32).to(self.device)
