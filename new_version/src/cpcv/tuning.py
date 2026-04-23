@@ -1,5 +1,5 @@
 """
-10.2) Hyperparameter Tuning — Optuna TPE + Purged K-Fold CV
+9) Hyperparameter Tuning — Optuna TPE + Purged K-Fold CV
 ============================================================
 Bayesian hyperparameter optimization using Optuna's Tree-structured
 Parzen Estimator (TPE) with Median Pruner and Purged K-Fold CV.

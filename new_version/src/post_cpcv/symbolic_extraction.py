@@ -1,5 +1,5 @@
 """
-12) Symbolic Extraction
+13) Symbolic Extraction
 ================================
 Take the best CPCV fold (or full dataset), retrain a fresh PyKAN model
 with the same architecture as the efficient-kan used in CPCV, then

@@ -1,5 +1,5 @@
 """
-9) Calibration
+10) Calibration
 ===================
 Calibrate raw model probabilities so that predicted confidence levels
 correspond to empirical accuracy. Essential because downstream bet sizing
