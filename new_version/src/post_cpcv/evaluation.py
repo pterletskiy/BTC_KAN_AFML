@@ -203,9 +203,13 @@ def compute_path_performance(
     # average bet size
     avg_bet = np.mean(np.abs(bet_sizes[traded_mask])) if n_trades > 0 else 0.0
 
-    # distributional
+    # distributional (constant arrays → NaN from scipy, clamp to 0.0)
     skewness = float(stats.skew(returns)) if n > 2 else 0.0
     kurtosis = float(stats.kurtosis(returns)) if n > 3 else 0.0
+    if np.isnan(skewness):
+        skewness = 0.0
+    if np.isnan(kurtosis):
+        kurtosis = 0.0
 
     return {
         "annualized_sharpe": sharpe,
@@ -262,23 +266,28 @@ def stitch_paths(
             if n_seeds > 1:
                 # seed-averaging: collect probabilities from all seeds
                 seed_probas = []
-                ref_key = None
+                seed_keys = []
                 for s in range(n_seeds):
                     key = (model_name, split_id, s)
                     if key in predictions:
                         seed_probas.append(predictions[key]["cal_proba"])
-                        if ref_key is None:
-                            ref_key = key
+                        seed_keys.append(key)
 
-                if not seed_probas or ref_key is None:
+                if not seed_probas or not seed_keys:
                     logger.warning(
                         "No seed predictions for %s, split=%d. Skipping.",
                         model_name, split_id,
                     )
                     continue
 
+                # Handle different-length arrays (LSTM windowing can produce
+                # slightly different lengths across seeds). Truncate to min.
+                min_len = min(p.shape[0] for p in seed_probas)
+                seed_probas = [p[:min_len] for p in seed_probas]
+
                 # average calibrated probabilities across seeds
                 proba = np.mean(seed_probas, axis=0)
+                ref_key = seed_keys[0]
                 pred = predictions[ref_key]
             else:
                 key = (model_name, split_id, seed)
@@ -293,6 +302,12 @@ def stitch_paths(
 
             ts = pred["timestamps"]
             ret = pred["ret"]
+
+            # Align timestamps/returns to proba length (LSTM may be shorter)
+            n_proba = len(proba)
+            if hasattr(ts, '__len__') and len(ts) > n_proba:
+                ts = ts[:n_proba]
+                ret = ret[:n_proba]
 
             all_timestamps.append(ts)
             all_proba.append(proba)
@@ -348,6 +363,7 @@ def compute_deflated_sharpe(
     skew: float,
     kurtosis: float,
     n_trials: int,
+    annualization_factor: float = ANNUALIZATION_FACTOR
 ) -> float:
     """Compute the Deflated Sharpe Ratio correcting for selection bias."""
     if n_trials <= 1:
@@ -359,23 +375,29 @@ def compute_deflated_sharpe(
 
     euler_gamma = 0.5772156649
 
-    # expected maximum Sharpe under null (all true Sharpe = 0)
-    e_max_sr = (
+    # De-annualize Sharpe for variance calculation (assumes daily data)
+    # The variance formula applies to the per-period (non-annualized) Sharpe
+    non_ann_sr = observed_sharpe / np.sqrt(annualization_factor)
+
+    # Expected maximum standardized Sharpe under null
+    e_max_z = (
         np.sqrt(2 * log_n)
         * (1 - euler_gamma / (2 * log_n))
         + euler_gamma / (2 * np.sqrt(2 * log_n))
     )
 
-    # standard error of Sharpe accounting for non-normality
-    inner = (1 - skew * observed_sharpe
-             + (kurtosis - 1) / 4 * observed_sharpe ** 2)
+    # Standard error of the *non-annualized* Sharpe accounting for non-normality
+    inner = (1 - skew * non_ann_sr
+             + (kurtosis - 1) / 4 * non_ann_sr ** 2)
     inner = max(inner, 1e-10)  # clamp to prevent sqrt(negative) → NaN
     sr_std = np.sqrt(inner / max(n_obs - 1, 1))
 
     if sr_std < 1e-10:
         return 0.0
 
-    dsr = stats.norm.cdf((observed_sharpe - e_max_sr) / sr_std)
+    # Expected maximum non-annualized Sharpe
+    expected_max_sr = e_max_z * sr_std
+    dsr = stats.norm.cdf((non_ann_sr - expected_max_sr) / sr_std)
     return float(dsr)
 
 
@@ -610,11 +632,13 @@ def compute_model_summary(
     all_kurt = [p["kurtosis"] for p in path_performances]
     pooled_skew = float(np.mean(all_skew))
     pooled_kurt = float(np.mean(all_kurt))
-    total_obs = sum(p["n_trades"] for p in path_performances)
+    
+    # average trades per path (not sum, which would inflate N by 5x)
+    avg_obs = int(np.mean([p["n_trades"] for p in path_performances]))
 
     # DSR
     dsr = compute_deflated_sharpe(
-        median_sharpe, max(total_obs, 2), pooled_skew, pooled_kurt, n_trials
+        median_sharpe, max(avg_obs, 2), pooled_skew, pooled_kurt, n_trials
     )
 
     # split-level averages

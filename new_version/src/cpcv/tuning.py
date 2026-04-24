@@ -466,8 +466,8 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
     window = 21
     batch_size = 64
-    epochs = 100
-    patience = 10
+    epochs = 50
+    patience = 7
 
     # pre-build sequences for all splits
     seq_splits = []
