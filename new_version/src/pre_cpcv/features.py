@@ -150,8 +150,8 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     features["kurtosis"] = log_returns.rolling(ROLLING_WINDOW).kurt()
 
     # 9. Rolling realized volatility (annualized)
-    vol_30 = log_returns.rolling(ROLLING_WINDOW).std()
-    features["realized_vol"] = vol_30 * np.sqrt(365)
+    vol_medium = log_returns.rolling(ROLLING_WINDOW).std()
+    features["realized_vol"] = vol_medium * np.sqrt(365)
 
     # 10. Garman-Klass volatility (rolling)
     log_hl = np.log(high / low)
@@ -215,10 +215,10 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # 22. Volatility term structure: short vol / long vol
     #     Annualization cancels in ratios, so use raw rolling std
-    vol_7 = log_returns.rolling(VOL_SHORT).std()
-    vol_90 = log_returns.rolling(VOL_LONG).std()
-    features["vol_term_7_30"] = vol_7 / vol_30.replace(0, np.nan)
-    features["vol_term_30_90"] = vol_30 / vol_90.replace(0, np.nan)
+    vol_short = log_returns.rolling(VOL_SHORT).std()
+    vol_long = log_returns.rolling(VOL_LONG).std()
+    features["vol_term_7_30"] = vol_short / vol_medium.replace(0, np.nan)
+    features["vol_term_30_90"] = vol_medium / vol_long.replace(0, np.nan)
 
     logger.info("TA features: %d columns, %d rows.", features.shape[1], features.shape[0])
     return features

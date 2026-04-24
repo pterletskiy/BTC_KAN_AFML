@@ -122,7 +122,7 @@ def triple_barrier_labels(
     t_events: pd.DatetimeIndex,
     trgt: pd.Series,
     pt_sl: tuple[float, float] = (1.0, 1.0),
-    num_days: int = 5,
+    num_days: int = 10,
     min_return: float = 0.0,
 ) -> pd.DataFrame:
     """Apply the triple-barrier method to each event.
@@ -259,7 +259,7 @@ def run_labeling_pipeline(
     cusum_enabled: bool = True,
     cusum_threshold_multiplier: float = 1.0,
     pt_sl: tuple[float, float] = (1, 1),
-    num_days: int = 5,
+    num_days: int = 10,
     min_return: float = 0.0,
     drop_rare: bool = True,
     min_rare_pct: float = 0.05,
