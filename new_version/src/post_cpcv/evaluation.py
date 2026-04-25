@@ -387,8 +387,12 @@ def compute_deflated_sharpe(
     )
 
     # Standard error of the *non-annualized* Sharpe accounting for non-normality
+    # (Mertens 2002 / AFML Eq. 14.5).
+    # Note: scipy.stats.kurtosis returns *excess* kurtosis (γ_4 - 3, where
+    # γ_4 = 3 for normal). Mertens' formula uses raw kurtosis γ_4, so we
+    # convert: (γ_4 - 1)/4 = (excess_kurt + 3 - 1)/4 = (excess_kurt + 2)/4.
     inner = (1 - skew * non_ann_sr
-             + (kurtosis - 1) / 4 * non_ann_sr ** 2)
+             + (kurtosis + 2) / 4 * non_ann_sr ** 2)
     inner = max(inner, 1e-10)  # clamp to prevent sqrt(negative) → NaN
     sr_std = np.sqrt(inner / max(n_obs - 1, 1))
 
@@ -710,7 +714,25 @@ def compare_models(all_summaries: list[dict]) -> pd.DataFrame:
 # Feature stability
 # =====================================================================
 def compute_feature_stability(predictions: dict, models: list[str]) -> dict:
-    """Compute how consistently each feature is selected across folds."""
+    """Compute how consistently each feature is selected across folds.
+
+    Uses the first model in ``models`` that performs feature selection
+    (i.e., not AR Logistic, which constructs its own lagged features).
+    """
+    # Find a model that uses feature selection. AR Logistic skips selection.
+    reference_model = None
+    for m in models:
+        if m != "ar_logistic":
+            reference_model = m
+            break
+
+    if reference_model is None:
+        logger.warning(
+            "Feature stability: no non-AR model found in %s; skipping.", models,
+        )
+        return {"feature_frequency": pd.Series(dtype=float),
+                "stable_features": [], "n_splits": 0}
+
     feature_counts = {}
     n_splits = 0
 
@@ -718,7 +740,7 @@ def compute_feature_stability(predictions: dict, models: list[str]) -> dict:
         model_name, split_idx, seed = key
         if seed != 0:
             continue
-        if model_name != models[0]:
+        if model_name != reference_model:
             continue
 
         prep = pred.get("prep_info", {})

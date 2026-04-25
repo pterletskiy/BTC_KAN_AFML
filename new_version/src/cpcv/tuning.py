@@ -464,7 +464,8 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    window = 21
+    # Match production lstm_model.py: LSTM_WINDOW=30, short early stop budget
+    window = 30
     batch_size = 64
     epochs = 50
     patience = 7
@@ -506,7 +507,9 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        hidden_size = trial.suggest_int("hidden_size", 32, 128, step=32)
+        # Search space capped to match production architecture expectations:
+        # hidden_size up to 64 (not 128) to prevent overfitting ~700-sample folds
+        hidden_size = trial.suggest_int("hidden_size", 16, 64, step=16)
         num_layers = trial.suggest_int("num_layers", 1, 3)
         dropout = trial.suggest_float("dropout", 0.1, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
@@ -540,7 +543,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                 )
                 optimizer = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
                 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                    optimizer, T_0=50, T_mult=2, eta_min=1e-5,
+                    optimizer, T_0=25, T_mult=2, eta_min=1e-5,
                 )
 
                 train_ds = TensorDataset(
@@ -692,11 +695,14 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        width1 = trial.suggest_int("width1", 5, 16)
-        width2 = trial.suggest_int("width2", 0, 8)
+        # Search space capped to match production architecture expectations:
+        # width1 up to 12 (not 16), grid restricted to {3, 5} (drop 8 to
+        # prevent memorization on ~700-sample folds).
+        width1 = trial.suggest_int("width1", 3, 12)
+        width2 = trial.suggest_int("width2", 0, 10)
         lr = trial.suggest_float("lr", 5e-4, 5e-2, log=True)
         wd = trial.suggest_float("weight_decay", 1e-5, 5e-3, log=True)
-        grid = trial.suggest_categorical("grid", [3, 5, 8])
+        grid = trial.suggest_categorical("grid", [3, 5])
 
         if width2 == 0:
             widths = [n_features, width1, 2]
@@ -752,7 +758,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                     model.parameters(), lr=lr, weight_decay=wd,
                 )
                 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                    optimizer, T_0=60, T_mult=2, eta_min=1e-5,
+                    optimizer, T_0=30, T_mult=2, eta_min=1e-5,
                 )
 
                 best_val_loss = float("inf")

@@ -8,8 +8,10 @@ S-curve, so poorly calibrated probabilities produce systematically wrong
 bet sizes.
 
 Two methods:
-  - Platt scaling: for sklearn models (logistic, RF, XGBoost, AR)
-  - Temperature scaling: for PyTorch models (LSTM, KAN)
+  - Platt scaling (Platt 1999): for sklearn models (logistic, RF, XGBoost,
+    AR). Fits a sigmoid mapping from raw logits to calibrated probabilities.
+  - Temperature scaling (Guo et al. 2017): for PyTorch models (LSTM, KAN).
+    Fits a single scalar T > 0 that minimizes NLL of softmax(logits / T).
 """
 
 import logging
@@ -25,7 +27,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 CALIBRATION_METHOD_SKLEARN = "platt"
 CALIBRATION_METHOD_PYTORCH = "temperature"
-FOCAL_GAMMA = 1.0                     # focal modulation for temperature scaling
 
 # Models that use temperature scaling (PyTorch-based, 2D logits)
 _TEMPERATURE_MODELS = {"LSTM", "KAN"}
@@ -69,17 +70,16 @@ def fit_platt_scaling(
 
 
 # =====================================================================
-# Temperature Scaling
+# Temperature Scaling (Guo et al. 2017)
 # =====================================================================
 def fit_temperature_scaling(
     logits: np.ndarray, y_true: np.ndarray,
-    focal_gamma: float = FOCAL_GAMMA,
 ) -> float:
-    """Learn a single scalar T that minimizes focal-weighted NLL of softmax(logits / T).
+    """Learn a single scalar T that minimizes NLL of softmax(logits / T).
 
-    Standard temperature scaling treats all samples equally. Focal modulation
-    down-weights easy (high-confidence correct) samples and focuses calibration
-    on the uncertain boundary cases that matter most for bet sizing.
+    Standard temperature scaling as introduced in Guo et al. (2017),
+    "On Calibration of Modern Neural Networks". Treats all samples
+    equally; no per-sample weighting.
 
     Parameters
     ----------
@@ -87,9 +87,6 @@ def fit_temperature_scaling(
         Shape (n_samples, n_classes), raw pre-softmax logits.
     y_true : np.ndarray
         True labels (0-indexed integers).
-    focal_gamma : float
-        Focal modulation exponent. 0 = standard NLL (no focal effect),
-        1 = moderate focal weighting, 2 = aggressive focal weighting.
 
     Returns
     -------
@@ -97,22 +94,18 @@ def fit_temperature_scaling(
         Optimal temperature T > 0. Calibrate via
         ``softmax(new_logits / T, axis=1)``.
     """
-    def focal_nll(T):
+    def nll(T):
         scaled = logits / T
         log_probs = scaled - logsumexp(scaled, axis=1, keepdims=True)
-        probs = np.exp(log_probs)
-        correct_probs = probs[np.arange(len(y_true)), y_true]
         correct_log_probs = log_probs[np.arange(len(y_true)), y_true]
-        # focal weight: (1 - p_correct)^gamma — hard samples get higher weight
-        focal_weight = (1.0 - correct_probs) ** focal_gamma
-        return -np.mean(focal_weight * correct_log_probs)
+        return -np.mean(correct_log_probs)
 
-    result = minimize_scalar(focal_nll, bounds=(0.1, 10.0), method="bounded")
+    result = minimize_scalar(nll, bounds=(0.1, 10.0), method="bounded")
     optimal_T = result.x
 
     logger.info(
-        "Temperature scaling fitted: T=%.4f (focal NLL=%.4f, gamma=%.1f).",
-        optimal_T, result.fun, focal_gamma,
+        "Temperature scaling fitted: T=%.4f (NLL=%.4f).",
+        optimal_T, result.fun,
     )
     return optimal_T
 

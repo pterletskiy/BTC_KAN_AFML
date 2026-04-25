@@ -42,12 +42,11 @@ KAN_PATIENCE = 20                  # early stopping patience
 KAN_VAL_INTERVAL = 1              # validate every epoch
 KAN_LABEL_SMOOTHING = 0.1         # label smoothing for noisy financial labels
 KAN_GRAD_CLIP_NORM = 1.0          # max gradient norm for clipping
-KAN_ENTROPY_REG = 0.01            # entropy penalty weight (encourages decisive predictions)
-KAN_SWA_START_FRAC = 0.6          # start SWA after 60% of epochs
-KAN_SWA_LR = 1e-4                 # SWA learning rate
 
-# Warm restarts: T_0=60 epochs per cycle, T_mult=2 doubles each cycle
-KAN_WARMRESTART_T0 = 60
+# Warm restarts: T_0=30 epochs per cycle, T_mult=2 doubles each cycle.
+# T_0 is set so at least one restart fires before early-stopping patience (20)
+# would terminate training.
+KAN_WARMRESTART_T0 = 30
 KAN_WARMRESTART_TMULT = 2
 
 
@@ -182,11 +181,6 @@ class KANModel(BaseModel):
             weight=class_weights_t, label_smoothing=KAN_LABEL_SMOOTHING,
         )
 
-        # ── SWA: stochastic weight averaging ──────────────────────────
-        swa_model = torch.optim.swa_utils.AveragedModel(model)
-        swa_start_epoch = int(KAN_SWA_START_FRAC * KAN_EPOCHS)
-        swa_active = False
-
         # ── training loop ─────────────────────────────────────────────
         best_val_loss = float("inf")
         best_state = None
@@ -198,22 +192,12 @@ class KANModel(BaseModel):
 
             logits = model(X_t)
             per_sample = criterion(logits, y_t)
-            ce_loss = (per_sample * w_t).mean()
-
-            # entropy regularization: penalize uncertain predictions
-            probs = torch.softmax(logits, dim=1)
-            entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1).mean()
-            loss = ce_loss + KAN_ENTROPY_REG * entropy
+            loss = (per_sample * w_t).mean()
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), KAN_GRAD_CLIP_NORM)
             optimizer.step()
             scheduler.step()
-
-            # SWA: collect weight snapshots after swa_start_epoch
-            if epoch >= swa_start_epoch:
-                swa_model.update_parameters(model)
-                swa_active = True
 
             # validation
             if has_val and (epoch + 1) % KAN_VAL_INTERVAL == 0:
@@ -239,15 +223,8 @@ class KANModel(BaseModel):
         if best_state is not None:
             model.load_state_dict(best_state)
 
-        # SWA: use averaged model if it was active
-        if swa_active:
-            # SWA model needs BN update — KAN has no BN, so just use it directly
-            swa_model.eval()
-            self.kan_model = swa_model
-            logger.info("KAN using SWA-averaged weights (started at epoch %d).", swa_start_epoch)
-        else:
-            model.eval()
-            self.kan_model = model
+        model.eval()
+        self.kan_model = model
 
         # ── store dataset reference for downstream use ────────────────
         self._dataset = {
@@ -266,15 +243,14 @@ class KANModel(BaseModel):
             logit_range = (pred.min().item(), pred.max().item())
 
         final_epoch = epoch + 1
-        swa_tag = " [SWA]" if swa_active else ""
         logger.info(
-            "efficient-KAN%s fitted: widths=%s, grid=%d, epochs=%d, "
+            "efficient-KAN fitted: widths=%s, grid=%d, epochs=%d, "
             "val_acc=%.4f, val_loss=%.4f, logit_range=[%.2f, %.2f], device=%s.",
-            swa_tag, self.widths, KAN_GRID, final_epoch, val_acc, best_val_loss,
+            self.widths, KAN_GRID, final_epoch, val_acc, best_val_loss,
             logit_range[0], logit_range[1], self.device,
         )
         print(
-            f"  [KAN{swa_tag}] widths={self.widths}, grid={KAN_GRID}, "
+            f"  [KAN] widths={self.widths}, grid={KAN_GRID}, "
             f"epochs={final_epoch}, val_acc={val_acc:.4f}, "
             f"val_loss={best_val_loss:.4f}"
         )

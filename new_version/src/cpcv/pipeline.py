@@ -310,8 +310,6 @@ def run_cpcv_pipeline(
         # portion. The inner purged K-fold handles its own train/val
         # splitting. This is the correct nested CV architecture per
         # López de Prado (2018, Ch. 7).
-        kan_tuned_widths = None
-
         if tune:
             from src.cpcv.tuning import tune_all_models
 
@@ -328,19 +326,9 @@ def run_cpcv_pipeline(
             )
 
             # apply tuned params to module-level constants
+            # (KAN widths are written to kan_mod.KAN_HIDDEN / KAN_HIDDEN2,
+            # which KANModel.__init__ reads at call time)
             applied = _apply_tuned_params(split_tune_results)
-
-            # handle KAN architecture for this split
-            if "kan" in split_tune_results:
-                kan_params = split_tune_results["kan"].get("best_params", {})
-                w1 = kan_params.get("width1")
-                w2 = kan_params.get("width2", 0)
-                if w1 is not None:
-                    n_feat = len(selected)
-                    if w2 and w2 > 0:
-                        kan_tuned_widths = [n_feat, w1, w2, 2]
-                    else:
-                        kan_tuned_widths = [n_feat, w1, 2]
 
             tune_elapsed = time.time() - tune_start
             print(f"  Tuning done in {tune_elapsed:.1f}s")

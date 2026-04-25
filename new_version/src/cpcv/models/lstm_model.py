@@ -42,8 +42,10 @@ LSTM_PATIENCE = 15          # early stopping patience
 LSTM_LABEL_SMOOTHING = 0.1  # label smoothing for noisy financial labels
 LSTM_GRAD_CLIP_NORM = 1.0   # max gradient norm for clipping
 
-# Warm restarts: T_0=50 epochs per cycle, T_mult=2 doubles each cycle
-LSTM_WARMRESTART_T0 = 50
+# Warm restarts: T_0=25 epochs per cycle, T_mult=2 doubles each cycle.
+# T_0 is set below early-stopping patience (15) × 2 so at least one restart
+# fires before early stopping could terminate training.
+LSTM_WARMRESTART_T0 = 25
 LSTM_WARMRESTART_TMULT = 2
 
 
@@ -123,11 +125,17 @@ class LSTMClassifier(nn.Module):
         self,
         n_features: int,
         n_classes: int = 2,
-        hidden_size: int = LSTM_HIDDEN_SIZE,
-        num_layers: int = LSTM_NUM_LAYERS,
-        dropout: float = LSTM_DROPOUT,
+        hidden_size: int | None = None,
+        num_layers: int | None = None,
+        dropout: float | None = None,
     ):
         super().__init__()
+        # Read module constants at call time (not definition time) so that
+        # tuning overrides via `lstm_mod.LSTM_HIDDEN_SIZE = ...` are picked up.
+        hidden_size = LSTM_HIDDEN_SIZE if hidden_size is None else hidden_size
+        num_layers = LSTM_NUM_LAYERS if num_layers is None else num_layers
+        dropout = LSTM_DROPOUT if dropout is None else dropout
+
         self.lstm = nn.LSTM(
             input_size=n_features,
             hidden_size=hidden_size,
