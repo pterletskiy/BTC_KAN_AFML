@@ -39,7 +39,19 @@ def collect_path_equities(model_path_data: dict, n_paths: int) -> pd.DataFrame:
             equities.append(equity)
     if not equities:
         return pd.DataFrame()
-    return pd.concat(equities, axis=1).ffill()
+    
+    # Concatenate and handle duplicate index just in case
+    try:
+        df = pd.concat(equities, axis=1)
+    except Exception:
+        # If there are duplicate indices in individual series, align them by grouping
+        equities = [e.groupby(e.index).last() for e in equities]
+        df = pd.concat(equities, axis=1)
+        
+    df = df.ffill()
+    # Ensure index is DatetimeIndex for proper slicing
+    df.index = pd.to_datetime(df.index)
+    return df
 
 
 # =====================================================================
@@ -79,11 +91,16 @@ def plot_paths_for_model(
 
     # optional time slice + renormalization
     if since is not None:
-        df = df.loc[since:]
+        try:
+            df = df.loc[since:]
+        except Exception:
+            pass
         if df.empty:
             print(f"No data for {model_name} since {since}.")
             return
-        df = df / df.iloc[0]
+        # Normalize by the first valid value of each path, preventing NaN propagation
+        first_valid = df.bfill().iloc[0].replace(0, 1e-10)
+        df = df / first_valid
 
     median = df.median(axis=1)
 
@@ -101,7 +118,10 @@ def plot_paths_for_model(
             label="median", zorder=10)
 
     if log_scale:
-        ax.set_yscale("log")
+        try:
+            ax.set_yscale("log")
+        except Exception:
+            pass
 
     ax.axhline(1.0, color="grey", linestyle="--", alpha=0.4)
 
@@ -131,9 +151,12 @@ def plot_paths_grid(
 
     Useful for side-by-side variance comparison across the model lineup.
     """
-    models = results["models"]
+    models = results.get("models", [])
+    if not models:
+        print("No models found in results.")
+        return
     n_models = len(models)
-    n_rows = (n_models + n_cols - 1) // n_cols
+    n_rows = max(1, (n_models + n_cols - 1) // n_cols)
 
     fig, axes = plt.subplots(n_rows, n_cols,
                               figsize=(7 * n_cols, 4 * n_rows),
@@ -151,11 +174,15 @@ def plot_paths_grid(
             continue
 
         if since is not None:
-            df = df.loc[since:]
+            try:
+                df = df.loc[since:]
+            except Exception:
+                pass
             if df.empty:
                 ax.set_title(f"{model_name} (no data since {since})")
                 continue
-            df = df / df.iloc[0]
+            first_valid = df.bfill().iloc[0].replace(0, 1e-10)
+            df = df / first_valid
 
         median = df.median(axis=1)
 
@@ -165,7 +192,10 @@ def plot_paths_grid(
                 color="black", linewidth=1.8, zorder=10)
 
         if log_scale:
-            ax.set_yscale("log")
+            try:
+                ax.set_yscale("log")
+            except Exception:
+                pass
         ax.axhline(1.0, color="grey", linestyle="--", alpha=0.4)
         ax.set_title(model_name, fontsize=11, fontweight="bold")
         ax.grid(True, which="both", alpha=0.2)
