@@ -11,7 +11,8 @@
 The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Networks (KANs), benchmarked against AR Logistic, Logistic Regression, Random Forest, XGBoost, and LSTM models, evaluated under López de Prado's *Advances in Financial Machine Learning* (2018) framework. The pipeline is organized into three phases with strict leakage boundaries between them.
 
 **Data:** BTC-USD daily OHLCV, October 2014 – March 2026 (~4,200 bars).
-**Features:** 55 total (23 technical, 9 mathematical/AFML Part 4, 23 external: 13 macro, 2 crypto-macro, 8 on-chain from CoinMetrics).
+**Features:** 57 total (25 technical, 9 mathematical/AFML Part 4, 23 external: 13 macro, 2 crypto-macro, 8 on-chain from CoinMetrics).
+**Calendar:** All rolling windows use the BTC trading calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year).
 **Evaluation:** CPCV (N=6, k=2) producing 15 splits and 5 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
 **Tuning:** Nested Optuna TPE + Purged K-Fold, per-split, inside each CPCV training fold (AFML Ch. 7 compliant).
 **Interpretability contribution:** Symbolic formula extraction from KAN via PyKAN re-training, pruning, and symbolification.
@@ -188,26 +189,28 @@ Orchestration function. Chains: concurrent labels → uniqueness → return attr
 
 ### Step 6 — Feature Engineering (`features.py`, `external_features.py`)
 
-**Produces:** A pd.DataFrame of 55 features (23 TA + 9 mathematical + 23 external) covering every daily bar.
+**Produces:** A pd.DataFrame of 57 features (25 TA + 9 mathematical + 23 external) covering every daily bar.
 
 **Module-level constants (all feature parameters defined at top of each file):**
 
 ```
 TA: RSI_PERIOD=14, MACD_FAST=12, MACD_SLOW=26, MACD_SIGNAL=9, BB_PERIOD=20,
-    ATR_PERIOD=14, ROLLING_WINDOW=21, EMA_SHORT=20, EMA_MID=50, EMA_LONG=200,
+    ATR_PERIOD=14, ROLLING_WINDOW=30, EMA_SHORT=20, EMA_MID=50, EMA_LONG=200,
     ROC_PERIOD=14, STOCH_PERIOD=14, STOCH_SMOOTH=3, CCI_PERIOD=14, MFI_PERIOD=14,
-    CHAIKIN_FAST=3, CHAIKIN_SLOW=10, YZ_WINDOW=21
+    CHAIKIN_FAST=3, CHAIKIN_SLOW=10, YZ_WINDOW=30, VOL_SHORT=7, VOL_LONG=90
 
-Math: SADF_MIN_SL=63, SADF_LAGS=1, ENTROPY_WINDOW=21, LZ_WINDOW=63,
-      HURST_WINDOW=126, VR_WINDOW=63, VR_LAG=5, JB_WINDOW=63, GAUSS_ENT_WINDOW=21
+Math: SADF_MIN_SL=90, SADF_LAGS=1, ENTROPY_WINDOW=30, LZ_WINDOW=90,
+      HURST_WINDOW=180, VR_WINDOW=90, VR_LAG=7, JB_WINDOW=90, GAUSS_ENT_WINDOW=30
 
 Cache: CACHE_DIR="cache/", MATH_CACHE_FILE="math_features.parquet",
        EXTERNAL_CACHE_FILE="external_features.parquet", ONCHAIN_CACHE_FILE="onchain_raw.parquet"
 ```
 
+**Note on window choices:** All rolling-window parameters follow the BTC trading calendar (24/7/365). Named technical indicators (RSI, MACD, Bollinger, Stochastic, CCI, MFI, ATR) retain their conventional parameter settings since these are established TA defaults rather than calendar-dependent choices. Annualization uses √365 reflecting BTC's continuous trading.
+
 #### Step 6.a — TA Features (`features.py`)
 
-**Function:** `compute_ta_features(df) → pd.DataFrame` — 23 columns
+**Function:** `compute_ta_features(df) → pd.DataFrame` — 25 columns
 
 | # | Feature | Formula | Scale |
 |---|---------|---------|-------|
@@ -219,11 +222,11 @@ Cache: CACHE_DIR="cache/", MATH_CACHE_FILE="math_features.parquet",
 | 6 | `bb_width` | (Upper − Lower) / Middle, bands at ±2σ | Dimensionless ratio |
 | 7 | `atr` | EWMA(True Range, 14) | Price units → log-transformed |
 | 8 | `obv` | Cumulative sum of Volume × sign(ΔClose) | Volume units → log-transformed |
-| 9 | `skewness` | Rolling 21-day skewness of log returns | Dimensionless |
-| 10 | `kurtosis` | Rolling 21-day excess kurtosis of log returns | Dimensionless |
-| 11 | `realized_vol` | Rolling 21-day std of log returns × √365 | Annualized, dimensionless |
-| 12 | `gk_vol` | Garman-Klass: `0.5·ln(H/L)² − (2ln2−1)·ln(C/O)²`, rolling 21-day mean | Dimensionless |
-| 13 | `yz_vol` | Yang-Zhang (2000) combining overnight, open-to-close, and Rogers-Satchell components. `k = 0.34/(1.34 + (w+1)/(w−1))` weighting, rolling 21-day | Dimensionless |
+| 9 | `skewness` | Rolling 30-day skewness of log returns | Dimensionless |
+| 10 | `kurtosis` | Rolling 30-day excess kurtosis of log returns | Dimensionless |
+| 11 | `realized_vol` | Rolling 30-day std of log returns × √365 | Annualized, dimensionless |
+| 12 | `gk_vol` | Garman-Klass: `0.5·ln(H/L)² − (2ln2−1)·ln(C/O)²`, rolling 30-day mean | Dimensionless |
+| 13 | `yz_vol` | Yang-Zhang (2000) combining overnight, open-to-close, and Rogers-Satchell components. `k = 0.34/(1.34 + (w+1)/(w−1))` weighting, rolling 30-day | Dimensionless |
 | 14 | `ema_ratio_20_50` | EMA(20) / EMA(50), short vs medium trend | Ratio ≈ 1.0 |
 | 15 | `ema_ratio_50_200` | EMA(50) / EMA(200), golden/death cross signal | Ratio ≈ 1.0 |
 | 16 | `vwma_ratio_20_50` | VWMA(20) / VWMA(50), volume-weighted trend confirmation | Ratio ≈ 1.0 |
@@ -234,6 +237,8 @@ Cache: CACHE_DIR="cache/", MATH_CACHE_FILE="math_features.parquet",
 | 21 | `cci_14` | `(TP − SMA(TP)) / (0.015 × MAD(TP))`, Commodity Channel Index | Unbounded, centered ~0 |
 | 22 | `chaikin_osc` | EMA(ADL, 3) − EMA(ADL, 10), volume + price momentum | Volume units |
 | 23 | `mfi_14` | Volume-weighted RSI using typical price × volume | Bounded [0, 100] |
+| 24 | `vol_term_7_30` | `vol_7 / vol_30`, short-term stress signal (week vs month) | Ratio ≈ 1.0 |
+| 25 | `vol_term_30_90` | `vol_30 / vol_90`, regime-level signal (month vs quarter) | Ratio ≈ 1.0 |
 
 **Internal helpers:** `_yang_zhang_volatility()` implements the Yang-Zhang (2000) estimator. `_money_flow_index()` implements the volume-weighted RSI calculation.
 
@@ -247,15 +252,15 @@ The `which` parameter accepts `"all"` or a list of specific feature names for pa
 
 | # | Feature | AFML Reference | Method | Window | Approx. Time |
 |---|---------|---------------|--------|--------|--------------|
-| 1 | `shannon_entropy` | Ch. 18.2 | Quantile-encode returns into 5 bins, compute plug-in entropy `H = −Σ pᵢ log₂(pᵢ)` | 21 days | < 1 min |
-| 2 | `lz_complexity` | Ch. 18.4 | Binary-encode returns ("1" if > 0), apply Lempel-Ziv-76 algorithm, normalize by `n/log₂(n)` | 63 days | < 1 min |
-| 3 | `hurst` | Related | Rescaled Range (R/S) analysis at sub-periods [10, 21, 42, 63], slope of log(R/S) vs log(n) | 126 days | < 1 min |
-| 4 | `variance_ratio` | Related | Lo & MacKinlay (1988): `VR(q) = Var(r_q) / (q × Var(r₁))`. VR > 1 = momentum, VR < 1 = mean-reversion | 63 days, lag=5 | < 1 min |
-| 5 | `jarque_bera` | Related | `JB = (n/6)(S² + K²/4)` where S = skewness, K = excess kurtosis. Measures departure from normality | 63 days | < 1 min |
-| 6 | `gaussian_entropy` | Ch. 18.6 | `H_gauss = 0.5 × ln(2πeσ²)`. Gap vs Shannon entropy measures non-Gaussianity | 21 days | < 1 min |
-| 7 | `sadf` | Ch. 17.4.2 | Supremum ADF: backward-expanding ADF regressions on log prices, take supremum of β's t-statistic | minSL=63 | ~15 min |
-| 8 | `smt_poly1` | Ch. 17.4.3 | Sub/Super-Martingale polynomial-1 spec: `log[yₜ] = α + β·t + ε`, backward-expanding, supremum of `|t-stat(β)| / length^0.5` | minSL=63 | ~15 min (joint) |
-| 9 | `smt_exp` | Ch. 17.4.3 | Sub/Super-Martingale exponential spec: `log[yₜ] = α + β·exp(t/length) + ε`, same supremum structure | minSL=63 | ~15 min (joint) |
+| 1 | `shannon_entropy` | Ch. 18.2 | Quantile-encode returns into 5 bins, compute plug-in entropy `H = −Σ pᵢ log₂(pᵢ)` | 30 days | < 1 min |
+| 2 | `lz_complexity` | Ch. 18.4 | Binary-encode returns ("1" if > 0), apply Lempel-Ziv-76 algorithm, normalize by `n/log₂(n)` | 90 days | < 1 min |
+| 3 | `hurst` | Related | Rescaled Range (R/S) analysis at sub-periods [14, 30, 60, 90], slope of log(R/S) vs log(n) | 180 days | < 1 min |
+| 4 | `variance_ratio` | Related | Lo & MacKinlay (1988): `VR(q) = Var(r_q) / (q × Var(r₁))`. VR > 1 = momentum, VR < 1 = mean-reversion | 90 days, lag=7 | < 1 min |
+| 5 | `jarque_bera` | Related | `JB = (n/6)(S² + K²/4)` where S = skewness, K = excess kurtosis. Measures departure from normality | 90 days | < 1 min |
+| 6 | `negentropy` | Ch. 18.6 | `gaussian_entropy − shannon_entropy`. Gap measures non-Gaussianity of return distribution | 30 days | < 1 min |
+| 7 | `sadf` | Ch. 17.4.2 | Supremum ADF: backward-expanding ADF regressions on log prices, take supremum of β's t-statistic | minSL=90 | ~15 min |
+| 8 | `smt_poly1` | Ch. 17.4.3 | Sub/Super-Martingale polynomial-1 spec: `log[yₜ] = α + β·t + ε`, backward-expanding, supremum of `|t-stat(β)| / length^0.5` | minSL=90 | ~15 min (joint) |
+| 9 | `smt_exp` | Ch. 17.4.3 | Sub/Super-Martingale exponential spec: `log[yₜ] = α + β·exp(t/length) + ε`, same supremum structure | minSL=90 | ~15 min (joint) |
 
 **Internal helpers:** `_compute_sadf()`, `_adf_tstat()`, `_compute_smt()`, `_ols_tstat()`, `_compute_rolling_entropy()`, `_compute_rolling_lz()`, `_lempel_ziv_76()`, `_compute_rolling_hurst()`, `_hurst_rs()`, `_compute_rolling_variance_ratio()`, `_compute_rolling_jarque_bera()`, `_compute_rolling_gaussian_entropy()`.
 
@@ -269,19 +274,19 @@ Data sources: yfinance for 11 tickers plus FRED (via pandas-datareader) for 2Y T
 
 | # | Feature | Source Ticker | Transformation |
 |---|---------|--------------|----------------|
-| 1 | `dxy_roc_21` | DX-Y.NYB (US Dollar Index) | 21-day rate of change (%) |
+| 1 | `dxy_roc_30` | DX-Y.NYB (US Dollar Index) | 30-day rate of change (%) |
 | 2 | `us10y` | ^TNX (10Y Treasury) | Level (yield in %), auto-scaled if median > 10 |
 | 3 | `us2y` | FRED DGS2 → spread-derived fallback | Level (yield in %), auto-scaled |
 | 4 | `yield_curve_2y10y` | Derived: us10y − us2y (or FRED T10Y2Y directly) | Spread (percentage points) |
 | 5 | `yield_curve_10y30y` | Derived: ^TYX − ^TNX | Spread (percentage points) |
 | 6 | `vix` | ^VIX | Level |
-| 7 | `sp500_ret_21` | ^GSPC | 21-day log return |
-| 8 | `nasdaq_ret_21` | ^IXIC | 21-day log return |
-| 9 | `gold_ret_21` | GC=F | 21-day log return |
-| 10 | `silver_ret_21` | SI=F | 21-day log return |
-| 11 | `copper_ret_21` | HG=F | 21-day log return |
-| 12 | `oil_ret_21` | CL=F | 21-day log return |
-| 13 | `natgas_ret_21` | NG=F | 21-day log return |
+| 7 | `sp500_ret_30` | ^GSPC | 30-day log return |
+| 8 | `nasdaq_ret_30` | ^IXIC | 30-day log return |
+| 9 | `gold_ret_30` | GC=F | 30-day log return |
+| 10 | `silver_ret_30` | SI=F | 30-day log return |
+| 11 | `copper_ret_30` | HG=F | 30-day log return |
+| 12 | `oil_ret_30` | CL=F | 30-day log return |
+| 13 | `natgas_ret_30` | NG=F | 30-day log return |
 
 **2Y yield fallback:** (1) FRED DGS2 directly. (2) If DGS2 returns fewer than 2,000 bars, falls back to fetching the T10Y2Y spread from FRED, using it directly as `yield_curve_2y10y` and back-deriving `us2y = us10y − spread`. This two-step fallback ensures the yield curve feature is always populated even when DGS2 is unavailable.
 
@@ -338,7 +343,7 @@ Applies `log(|x| + 1e-8)` to `atr` (always positive). Applies `sign(x) × log(|x
 
 **Target columns:** `LOG_TRANSFORM_COLUMNS = ["atr", "obv"]`
 
-**Orchestration:** `build_feature_matrix(df) → pd.DataFrame` chains `compute_ta_features(df)` → `compute_math_features(df)` → `pd.concat` → `apply_log_transforms`. Returns 32 columns × ~4,200 rows. External features are assembled separately in the notebook via `build_external_features(df_raw)` and concatenated before alignment.
+**Orchestration:** `build_feature_matrix(df) → pd.DataFrame` chains `compute_ta_features(df)` → `compute_math_features(df)` → `pd.concat` → `apply_log_transforms`. Returns 34 columns × ~4,200 rows (25 TA + 9 math). External features (23) are assembled separately in the notebook via `build_external_features(df_raw)` and concatenated before alignment.
 
 ---
 
@@ -390,7 +395,7 @@ Standalone validation for the CV loop to call. Checks everything `align_for_cv` 
 
 | Object | Shape | Description |
 |--------|-------|-------------|
-| `X` | ~911 × 55 | Feature matrix (23 TA + 9 math + 23 external, post log-transform) |
+| `X` | ~911 × 57 | Feature matrix (25 TA + 9 math + 23 external, post log-transform) |
 | `y` | ~911 | Binary labels {-1, +1} |
 | `w` | ~911 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
 | `t1` | ~911 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
@@ -490,7 +495,7 @@ The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
 2. Cap at `top_k_frac` of total features (default 40%, overridable from notebook)
 3. Hard floor of 5 features minimum
 
-**Typical result:** ~18–22 features selected per fold from 55 total.
+**Typical result:** ~18–22 features selected per fold from 57 total.
 
 #### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, ffd_columns, top_k_frac, skip_selection=False)`
 
@@ -563,6 +568,8 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 
 **Rationale for capped search spaces:** With ~600 training samples per CPCV split, overly flexible architectures guarantee overfitting. Each cap was chosen to match parameter count to sample size (e.g., a `[22, 20, 15, 2]` KAN has ~8,500 parameters for 480 samples; capping widths drops this to manageable levels).
 
+**Production-tuning consistency.** Tuning uses identical configurations to production: same window length (30 for LSTM), same warm restart schedule (T_0=25 for LSTM, T_0=30 for KAN), same loss function (cross-entropy with label smoothing 0.1, sample weights, class weights). Hyperparameters tuned under one regime would be suboptimal under another, so consistency matters.
+
 #### `tune_all_models(X, y, w, n_features, models, seed, verbose, n_trials) → dict`
 
 Orchestrates per-split tuning for a list of models. Returns `{model_name: tune_result}`. Called inside `pipeline.py`'s split loop; tuned parameters are then applied as module-level constants for model training in that split.
@@ -606,25 +613,33 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 #### LSTM (`lstm_model.py`)
 
-**Architecture:** `nn.LSTM(input_size=n_features, hidden_size, num_layers, dropout, batch_first=True)` → `nn.Dropout` → `nn.Linear(hidden_size, 2)`. Takes last hidden state from final layer. All architectural parameters tuned per split.
+**Architecture:** Multi-layer `nn.LSTM` (1-3 layers, hidden_size 16-64, dropout 0.1-0.5, all tunable) → temporal attention pooling → LayerNorm → dropout → linear classifier. All architectural parameters are tuned per split.
 
-**Sequence construction:** `create_sequences(X, y, w, window=21)` reshapes 2D features into 3D windowed sequences of shape `(T-20, 21, n_features)`. First 20 observations are dropped (insufficient lookback). Returns `valid_indices` mapping sequences back to original positions.
+**Temporal attention pooling.** Instead of using only the final hidden state (which would discard 29 timesteps of information), a learned attention layer scores every timestep and computes a weighted sum: `context = Σ softmax(W h_t) × h_t`. Preserves information from early lookback days. LayerNorm stabilizes training on the attention output.
 
-**Training:** Adam optimizer (lr tuned), ReduceLROnPlateau (patience=5, factor=0.5), CrossEntropyLoss with class weights and AFML sample weights (per-sample weighted loss), early stopping patience=10 on validation loss, batch size=64, max 100 epochs. Best model state restored after early stop.
+**Tanh input normalization.** Features are tanh-normalized: `z = tanh((x - μ) / σ)`. Maps features to [-1, 1] regardless of original scale, stabilizing training on fat-tailed financial data. Mean and std are fitted on training data only and stored for inference.
+
+**Sequence construction:** `create_sequences(X, y, w, window=30)` reshapes 2D features into 3D windowed sequences of shape `(T-29, 30, n_features)`. First 29 observations are dropped (insufficient lookback). Returns `valid_indices` mapping sequences back to original positions. Window length matches the BTC monthly calendar.
+
+**Training stack:** AdamW (lr tuned, weight_decay=1e-4), CrossEntropyLoss with class weights and AFML sample weights (per-sample weighted loss), label smoothing (0.1), gradient clipping (max norm 1.0), cosine annealing warm restarts (T_0=25, T_mult=2), batch size=64, max 100 epochs, early stopping patience=15 on validation loss with best-state restoration.
+
+**Tuning consistency.** `LSTMClassifier.__init__` reads `LSTM_HIDDEN_SIZE`, `LSTM_NUM_LAYERS`, `LSTM_DROPOUT` at call time (not as default arguments), ensuring tuning overrides via `lstm_mod.LSTM_HIDDEN_SIZE = ...` actually reach the model. The earlier default-argument pattern was a silent no-op for architectural tuning; now fixed.
 
 **Pipeline interaction:** `last_valid_indices` attribute stores the index mapping after `predict_proba`/`predict_logits`. The pipeline uses this to align LSTM predictions with original timestamps (LSTM produces fewer predictions than other models). Calibration handles this via `calibrator.fit_from_logits()` with pre-aligned y_cal.
 
 #### KAN (`kan_model.py`)
 
-**Architecture:** `efficient_kan.KAN(layers_hidden=[n_features, width1, (width2), 2], grid_size=grid, spline_order=3, grid_range=[-1, 1])`. Width parameters and grid size tuned per split; typical result `[n, 5, 2]` with grid=5.
+**Architecture:** `efficient_kan.KAN(layers_hidden=[n_features, width1, (width2), 2], grid_size=grid, spline_order=3, grid_range=[-1, 1])`. Width parameters (width1 ∈ [3, 12], width2 ∈ [0, 10]) and grid size (∈ {3, 5}) are tuned per split.
 
 **Input normalization:** Tanh normalization fitted on training data: `z = tanh((x - mean) / (std + ε))`. Maps features into [-1, 1] to match the spline grid range. Stored parameters applied at inference time.
 
-**Training:** AdamW (lr and weight_decay tuned), CrossEntropyLoss with class weights and AFML sample weights, early stopping patience=20 on validation loss, max 200 epochs. No grid refinement schedule (single grid level throughout training). Best model state restored after early stop.
+**Training stack:** AdamW (lr and weight_decay tuned), CrossEntropyLoss with class weights and AFML sample weights, label smoothing (0.1), gradient clipping (max norm 1.0), cosine annealing warm restarts (T_0=30, T_mult=2), early stopping patience=20 on validation loss with best-state restoration. Max 200 epochs. Single grid level throughout training (no coarse-to-fine refinement).
 
-**Key difference from blueprint:** Uses a single grid level trained with AdamW instead of the coarse-to-fine LBFGS→Adam schedule. This was found to be more stable on the ~700-sample training folds.
+**Why no SWA or entropy regularization.** Earlier experimentation included Stochastic Weight Averaging and entropy-of-prediction regularization. SWA conflicted with early stopping (either early stopping terminates before SWA activates, or SWA overrides `best_state` with potentially worse weights). Entropy regularization was redundant with `label_smoothing=0.1` (both discourage confident predictions). Both were removed for coherence and to simplify the methodology defense.
 
-**Dual-library strategy:** efficient-kan is used for CPCV training/inference across all 15 splits (fast, reliable). PyKAN is re-trained independently on the best or last fold for symbolic extraction only (Phase 3). This avoids the PyKAN vs efficient-kan parameter incompatibility while leveraging PyKAN's symbolic features.
+**Why a single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~700 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
+
+**Dual-library strategy.** efficient-kan is used for CPCV training/inference across all 15 splits (fast, reliable, integrates with standard PyTorch tooling). PyKAN is re-trained independently for symbolic extraction only (Phase 3). This avoids the PyKAN parameter and training fragility while leveraging its symbolic features. Both libraries share the same B-spline basis and tanh input normalization.
 
 ---
 
@@ -634,8 +649,8 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 | Method | Models | Input | Mechanism |
 |--------|--------|-------|-----------|
-| **Platt scaling** | AR Logistic, Logistic Regression, Random Forest, XGBoost | 1D log-odds | Fits `LogisticRegression(C=1e10)` mapping logits → calibrated proba |
-| **Temperature scaling** | LSTM, KAN | 2D logits (n, n_classes) | Finds scalar T minimizing NLL of `softmax(logits/T)` via `scipy.optimize.minimize_scalar` over T ∈ [0.1, 10.0] |
+| **Platt scaling** (Platt 1999) | AR Logistic, Logistic Regression, Random Forest, XGBoost | 1D log-odds | Fits `LogisticRegression(C=1e10)` mapping logits → calibrated proba |
+| **Temperature scaling** (Guo et al. 2017) | LSTM, KAN | 2D logits (n, n_classes) | Finds scalar T minimizing NLL of `softmax(logits/T)` via `scipy.optimize.minimize_scalar` over T ∈ [0.1, 10.0] |
 
 **`Calibrator` class** provides unified interface: `fit(model, X_cal, y_cal)` auto-detects method from `model.get_name()`, `calibrate(logits)` applies the fitted calibration. For LSTM, a separate `fit_from_logits(logits, y_cal, method)` handles the index-aligned calibration data.
 
@@ -758,11 +773,13 @@ Implements AFML Chapter 14. Corrects observed Sharpe for selection bias (n_trial
 
 ```
 E[max SR] = √(2·ln(n)) × (1 - γ/(2·ln(n))) + γ/(2·√(2·ln(n)))
-SR_std = √((1 - skew×SR + (kurt-1)/4 × SR²) / (n_obs - 1))
-DSR = Φ((SR_observed - E[max SR]) / SR_std)
+SR_std    = √((1 - skew×SR + (kurt + 2)/4 × SR²) / (n_obs - 1))
+DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 ```
 
-**NaN safety fix:** The `SR_std` formula can produce a negative value inside the square root when `skew × SR > 1`, causing `sqrt(negative) = NaN`. The implementation clamps `inner = max(inner, 1e-10)` before sqrt to prevent this while preserving correct output for well-behaved inputs.
+**Kurtosis convention.** The Mertens (2002) variance formula assumes raw kurtosis (γ_4 = 3 for normal). `scipy.stats.kurtosis` returns *excess* kurtosis (γ_4 - 3 = 0 for normal). The implementation converts internally: `(γ_4 - 1)/4 = (excess + 3 - 1)/4 = (excess + 2)/4`. For normal returns (skew=0, excess=0), this correctly reduces to `1 + SR²/2` per the standard Lo (2002) approximation.
+
+**NaN safety clamp.** The variance term `inner` is clamped to a minimum of 1e-10 before the square root, preventing `sqrt(negative)` for edge cases with extreme skew.
 
 DSR > 0.95 → result survives multiple-testing correction. DSR < 0.95 → may be a statistical artifact.
 

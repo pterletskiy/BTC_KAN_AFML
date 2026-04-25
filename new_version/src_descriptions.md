@@ -1,0 +1,665 @@
+# Source Code Walkthrough
+## BTC Daily Direction Prediction with KANs Within the AFML Framework
+
+This document walks through every file in `pre_cpcv/`, `cpcv/`, `cpcv/models/`, and `post_cpcv/`. Each file is described in three layers: what it does, why it exists, and the core concepts behind its design.
+
+---
+
+# Phase 1 — `pre_cpcv/` (Data Preparation)
+
+This phase runs once, before any model training. It produces four aligned objects — X, y, w, t1 — that enter the CPCV loop. No stateful transformation that could leak future information occurs here; those are deferred to Phase 2. All rolling-window parameters follow the BTC calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year).
+
+---
+
+## `pre_cpcv/data_loader.py` — BTC OHLCV Retrieval
+
+### What it does
+
+Downloads daily BTC-USD OHLCV from Yahoo Finance, validates the data, and returns a clean DataFrame indexed by a timezone-naive DatetimeIndex.
+
+### Core concepts
+
+**Why validation matters.** Raw downloads from yfinance have quirks: MultiIndex columns in recent versions, occasional NaN closes from failed scrapes, sporadic calendar gaps, and rare OHLCV inconsistencies (High < Close, negative Volume). A silent bad download would corrupt every downstream step. The loader enforces a strict contract: if anything looks structurally wrong, it raises; if anything looks minor, it logs a warning and continues.
+
+**Validation pipeline.** Empty downloads raise. MultiIndex columns get flattened automatically. Duplicate dates raise. Calendar gaps of up to 3 days are forward-filled (yfinance occasionally drops weekends). Gaps larger than 3 days raise — this would indicate a structural problem with the data source rather than routine noise. OHLCV row-level inconsistencies (High below max(Open,Close), Low above min(Open,Close), negative Volume) generate warnings but don't fail, since they may reflect odd but real market behavior.
+
+**Why daily bars.** Higher frequencies (hourly, minute) introduce microstructure noise that overwhelms the signal at the horizons this thesis targets. Daily bars match the economic horizon of the feature set (macro releases are daily to weekly, on-chain snapshots are daily) and keep the sample size manageable.
+
+### Key function: `load_btc_daily`
+
+Returns a validated DataFrame with columns `['Open', 'High', 'Low', 'Close', 'Volume']`, indexed by a timezone-naive DatetimeIndex sorted ascending. All downstream code assumes this contract.
+
+---
+
+## `pre_cpcv/labeling.py` — Triple-Barrier Labeling
+
+### What it does
+
+Implements the AFML labeling pipeline: computes daily volatility, filters bars via CUSUM to identify meaningful events, applies triple-barrier labeling at each event, and drops rare classes.
+
+### Core concepts
+
+**Why fixed-time-horizon labels are insufficient.** Standard ML tutorials label "did the price go up over the next N days?" This ignores path: a bar that rose 5% then crashed 15% over 10 days looks the same as one that drifted up 1% steadily. Triple-barrier labeling conditions on which event resolves first — a profit-taking move, a stop-loss move, or time expiring.
+
+**Daily volatility (AFML Snippet 3.1).** Exponentially weighted standard deviation of log returns with span 50. The span is calibrated for BTC's faster regime transitions — De Prado uses 100 for equities, but crypto's 24/7 trading and higher realized volatility call for a shorter-memory estimator that adapts quickly. This volatility series scales both the CUSUM threshold and the triple-barrier widths.
+
+**CUSUM filter (AFML Snippet 2.4).** Reduces ~4,200 bars to ~900 "meaningful" events by tracking cumulative deviation in log returns. Two accumulators: `s_pos = max(0, s_pos + r)` tracks upside runs, `s_neg = min(0, s_neg + r)` tracks downside runs. When either exceeds the threshold h, an event fires and the accumulator resets to zero.
+
+The zero floor is what makes CUSUM a structural-break detector rather than a volatility filter. Choppy sideways action keeps resetting the accumulator and produces few events, while small-but-persistent drifts can produce many. The threshold `h = 1.5 × mean(daily_vol)` balances event count (≈900) against signal strength — smaller multipliers produce noisy events, larger multipliers produce too few for ML.
+
+**Triple-barrier labels (AFML Snippets 3.2, 3.4, 3.5).** For each CUSUM event at time t₀:
+
+1. Upper barrier at `close[t₀] × (1 + pt_sl[0] × σ[t₀])`.
+2. Lower barrier at `close[t₀] × (1 - pt_sl[1] × σ[t₀])`.
+3. Vertical barrier at t₀ + num_days.
+
+Walks forward through the price path, records the first barrier touch. Labels: +1 (upper hit), -1 (lower hit), sign(return) at vertical (or 0 if below `min_return` threshold).
+
+**Parameter choices.** Symmetric `pt_sl=(1.5, 1.5)` avoids imposing a directional prior. With σ ≈ 3% daily, barriers sit at roughly ±4.5% from entry. `num_days=10` gives horizontal barriers meaningful time to trigger without letting labels go stale. Observed mean holding period is ~5 days, indicating horizontal barriers hit roughly half the time before the vertical barrier. `min_return=0.0` pushes all vertical-barrier events into ±1 labels based on return sign, eliminating the 0 class.
+
+**The t1 column.** Every label carries a timestamp t1 indicating when the label was resolved (first barrier touch). This is critical for CPCV purging in Phase 2: training labels whose t1 extends into the test period must be purged to prevent leakage.
+
+**Drop rare labels (AFML Snippet 3.8).** With symmetric barriers and min_return=0, the 0 class becomes rare and is dropped by the 5% threshold. Produces binary labels {-1, +1}.
+
+### Key function: `run_labeling_pipeline`
+
+Chains the four steps (volatility → CUSUM → triple-barrier → rare-label drop) into one call. Returns a DataFrame with columns `['ret', 'bin', 't1']` indexed by event timestamps.
+
+---
+
+## `pre_cpcv/sample_weights.py` — AFML Chapter 4 Weights
+
+### What it does
+
+Computes per-sample weights that account for label overlap, return attribution, and time decay. These weights are passed to models' `sample_weight` parameter during training.
+
+### Core concepts
+
+**Why sample weighting matters here.** Triple-barrier labels can overlap extensively: a label starting at t₀ with t1 = t₀+10 shares eight bars with a label starting at t₀+2. If both labels are positive, the model sees the same "positive regime" twice, effectively double-counting information. AFML Chapter 4 provides a weighting scheme that discounts overlapping labels proportionally.
+
+**Step 1 — Concurrent labels (Snippet 4.1).** For each bar in the daily timeline, counts how many labels are "alive" (their [t₀, t1] span includes that bar). Produces a count series c_t over the full daily index.
+
+**Step 2 — Average uniqueness (Snippet 4.2).** For each label i spanning [t₀, t1], computes `ū_i = mean(1 / c_t)` over the bars in its span. A label with no overlap has uniqueness ≈ 1.0; a label heavily overlapping with many others approaches 0.
+
+**Step 3 — Return attribution (Snippet 4.10).** Combines uniqueness with return magnitude: `w_i = |return_i| × ū_i`. Labels that are both unique (informative) and associated with large price moves (signal) receive higher weight. The result is normalized so `sum(weights) == len(weights)`, making the mean weight ≈ 1 for sklearn compatibility.
+
+**Step 4 — Time decay (Snippet 4.11).** Applies linear decay via `np.linspace(oldest_weight, 1.0, n)` so that older samples weigh less. The `oldest_weight` parameter controls decay strength: 1.0 means no decay, 0.5 halves the oldest sample's weight relative to the newest. The thesis uses 0.5, reflecting that market regimes shift over the 2014-2026 window and more recent samples are more relevant to deployment.
+
+**Step 5 — Quantile cap.** Clips extreme weights at the 99th percentile to prevent a single high-return unique event from dominating training. Without this cap, a rare 30%-move label with uniqueness 1.0 would have weight ~30× the mean, causing the model to overfit that single event.
+
+### Why this matters
+
+Without these weights, overlapping labels would inflate apparent class counts and mislead the model about signal frequency. The weights align the statistical treatment with the economic reality that overlapping labels carry redundant information.
+
+### Key function: `compute_sample_weights`
+
+Orchestrates the four steps. Returns a pd.Series of weights indexed on event timestamps, mean ≈ 1, max capped at the 99th percentile.
+
+---
+
+## `pre_cpcv/features.py` — Technical and Mathematical Features
+
+### What it does
+
+Computes 34 features per bar: 25 technical analysis features and 9 mathematical features from AFML Part 4. Applies log transforms to extreme-scale features. All rolling-window parameters follow the BTC calendar.
+
+### Core concepts
+
+**Technical analysis features (25).** Standard indicators from the trading literature: log returns, RSI, MACD (and signal + histogram), Bollinger Band width, ATR, OBV, rolling skewness and kurtosis, realized volatility, Garman-Klass and Yang-Zhang volatility, EMA ratios (20/50, 50/200), VWMA ratio, Rate of Change, Stochastic %K and %D, Williams %R, CCI, Chaikin Oscillator, MFI, and volatility term structures (7/30, 30/90).
+
+Named indicators (RSI, MACD, Bollinger, Stochastic, CCI, MFI, ATR) use their conventional parameter settings. These are fixed trading conventions, not calendar-dependent choices, so they stay at their standard values regardless of crypto vs equity calendar.
+
+**Volatility term structure.** Two ratios: `vol_ratio_7_30` captures short-term stress (flash crashes, rapid expansions over a week relative to a month); `vol_ratio_30_90` captures regime-level shifts (multi-week regime transitions relative to a quarter). Values above 1 indicate expansion, below 1 indicate compression. These are crypto-native adaptations of the VIX term structure concept.
+
+**Mathematical features from AFML Part 4.** Higher-order statistical measures of the return distribution and price dynamics:
+
+1. **Shannon entropy** (Ch. 18.2): quantile-encodes returns into 5 bins, computes `H = -Σ pᵢ log₂(pᵢ)`. Measures uncertainty in the return distribution.
+2. **Lempel-Ziv complexity** (Ch. 18.4): binary-encodes returns, applies LZ76 compression, normalizes. Measures algorithmic complexity — near 0 = highly predictable, near 1 = random.
+3. **Hurst exponent** (Rescaled Range analysis): quantifies long-memory behavior. H > 0.5 = trending (persistent), H < 0.5 = mean-reverting.
+4. **Variance ratio** (Lo & MacKinlay 1988): `VR(q) = Var(r_q) / (q × Var(r₁))`. > 1 = momentum, < 1 = mean reversion, = 1 = random walk.
+5. **Jarque-Bera**: `JB = (n/6)(S² + K²/4)`. Distance from normality. High values flag fat-tailed/skewed regimes.
+6. **Negentropy**: `Gaussian entropy - Shannon entropy`. The "gap" that measures non-Gaussianity of the return distribution.
+7. **SADF** (Ch. 17.4.2): Supremum ADF. Backward-expanding ADF regressions on log prices, takes the supremum of β's t-statistic. Detects explosive bubble behavior.
+8. **SMT poly1** and **SMT exp** (Ch. 17.4.3): Sub/Super-Martingale tests against polynomial and exponential trends. Complement SADF for different bubble shapes.
+
+**Why these matter.** TA features capture the surface structure (momentum, mean reversion, volatility regimes). Mathematical features capture the statistical structure (entropy, complexity, long-memory, non-normality). Together they test whether KAN's adaptive activations can combine both types of information better than fixed-activation models.
+
+**Expensive computation and caching.** SADF and SMT are O(n²) and together take ~30 minutes on the full 4,200-bar dataset. The function caches results to `cache/math_features.parquet`. The cache validator checks date range and requested columns; if window constants change but column names don't (as happened during the BTC-calendar migration), the cache must be manually deleted to avoid returning stale values.
+
+**Log transforms.** Applied to ATR and OBV only. Both span multiple orders of magnitude over the 2014-2026 period (BTC price ranging from ~$200 to ~$100k), so log compression is essential before scaling. All other features are on bounded or dimensionless scales that the per-fold RobustScaler handles adequately.
+
+### Key functions
+
+- `compute_ta_features(df)`: returns the 25 TA columns.
+- `compute_math_features(df, which)`: returns the 9 math columns, with caching.
+- `build_feature_matrix(df)`: orchestrates TA + math + log transforms. External features are added separately.
+
+---
+
+## `pre_cpcv/external_features.py` — Macro, Crypto-Macro, and On-Chain
+
+### What it does
+
+Fetches and aligns 23 external features: 13 macro variables from Yahoo Finance and FRED, 2 crypto-macro signals, and 8 on-chain metrics from CoinMetrics.
+
+### Core concepts
+
+**Alignment via `merge_asof(direction='backward')`.** All external data is merged onto BTC's 7-day calendar. For each BTC day, the most recent available value from each external source is used. Weekends carry Friday's equity close; weekly macro releases persist until the next print. This is the only defensible alignment method — no look-ahead bias, no fabricated values.
+
+**Macro (13).** Traditional finance signals: Dollar Index 30-day RoC, 2-year and 10-year Treasury yields, two yield curve spreads (2s10s and 10s30s), VIX, 30-day log returns for S&P 500, Nasdaq, gold, silver, copper, oil, and natural gas. These test whether crypto responds to traditional macro regimes — risk-on/risk-off, inflation, commodity cycles.
+
+**2-year yield fallback chain.** FRED DGS2 is the primary source. If it returns insufficient data, the code falls back to fetching the T10Y2Y spread from FRED and back-deriving `us2y = us10y - spread`. This ensures the yield curve feature is always populated even when the preferred source fails.
+
+**Crypto-macro (2).** Market-level cross-crypto signals distinct from blockchain fundamentals: `eth_btc_ratio` (ETH close / BTC close) captures altcoin rotation; `btc_dominance` captures BTC's share of total crypto market cap. BTC dominance comes from CoinGecko's API with a fallback proxy `100 / (1 + ETH/BTC)` when the API is unavailable.
+
+**On-chain (8).** Blockchain network activity from CoinMetrics Community API: 14-day RoC of active addresses and transaction count, 30-day RoC of hashrate, MVRV ratio, net exchange flow (inflows − outflows), fee per transaction, exchange supply percentage, and daily issuance. These are BTC-native signals that equity models cannot access.
+
+**Critical anti-leakage: on-chain data shift.** Raw CoinMetrics values are shifted by 1 day (`df.shift(1)`) before alignment. CoinMetrics reports end-of-day values, but a model predicting tomorrow's direction from today's open cannot use today's close-time metrics. The 1-day shift ensures the feature at bar t uses data that was available at the start of bar t.
+
+**Feature transformation philosophy.** RoC features for count-type metrics (addresses, transactions, hashrate) convert non-stationary levels into stationary differentials. Level features (MVRV, yields, VIX) are kept as levels because they are already mean-reverting or bounded. No log transforms are applied to external features because their raw scales are already well-behaved (returns, rates of change, yields, ratios, percentages).
+
+### Key function: `build_external_features`
+
+Orchestrates macro, crypto-macro, and on-chain fetches, concatenates, caches to Parquet, and returns the combined DataFrame. Each category is independently toggleable via boolean flags. The on-chain fetch is wrapped in try/except so missing `coinmetrics-api-client` doesn't break the pipeline.
+
+---
+
+## `pre_cpcv/alignment.py` — Four-Object Contract with the CPCV Loop
+
+### What it does
+
+Aligns the feature matrix (covering all ~4,200 daily bars) with the labels and weights (covering only the ~900 CUSUM events), producing the four objects (X, y, w, t1) that enter the CPCV loop.
+
+### Core concepts
+
+**Why alignment happens here.** Features are computed per-bar so that downstream Phase 2 can pull any bar's features for any reason (e.g., reconstructing preprocessing for symbolic extraction). Labels exist only at CUSUM event timestamps. Weights share the label index. The CPCV loop needs all four indexed on the same set of event timestamps.
+
+**Triple intersection.** `features.index ∩ bins.index ∩ weights.index`, producing the common set of ~900 event timestamps. Everything downstream operates on this aligned set.
+
+**Hard assertions.** The function raises on any structural problem: empty intersection, duplicate dates, non-monotonic index, shape mismatch across the four arrays, or entire feature columns being NaN. These are all conditions that would silently corrupt downstream results if allowed to pass.
+
+**Soft warnings.** Remaining NaN counts per column (from long-lookback features like Hurst in the first 180 rows) are logged but don't fail. The CPCV loop handles these via its own FFD / forward-fill logic.
+
+### Key function: `align_for_cv`
+
+Returns the four aligned objects:
+- **X**: feature matrix (~900 × 57).
+- **y**: binary labels {-1, +1}.
+- **w**: AFML sample weights (uniqueness × return attribution × time decay, capped at 99th percentile).
+- **t1**: barrier touch timestamps (DatetimeIndex) for CPCV purging.
+
+### Key function: `validate_alignment`
+
+Standalone validator called by the CPCV loop before training. Checks everything `align_for_cv` checks, plus: label values are in {-1, 0, +1}, all weights are positive, no NaN in t1 (would break purging), and index consistency across X, y, w, t1.
+
+### Why a separate validator
+
+The CPCV loop runs for hours. If an alignment problem exists, it should fail loudly and immediately at the start, not corrupt results after 20 minutes of training. `validate_alignment` is the pre-flight check.
+
+---
+
+# Phase 2 — `cpcv/` (Cross-Validation & Training)
+
+This phase handles everything that must be fitted on training data only, inside the leakage-protected zone defined by Combinatorial Purged Cross-Validation. Every stateful transformation lives here.
+
+---
+
+## `cpcv/cv.py` — Combinatorial Purged Cross-Validation
+
+### What it does
+
+Generates the 15 train/test splits used to evaluate the models, applies purging and embargo to prevent label leakage, and computes the path-assignment matrix that maps splits back to backtest paths.
+
+### Core concepts
+
+**Combinatorial splits.** With N=6 contiguous groups and k=2 test groups per split, the function generates all C(6,2) = 15 combinations. Each split holds out 2 groups as test and uses the remaining 4 as training. This produces more out-of-sample evaluations than standard k-fold, at no additional data cost.
+
+**Purging (AFML Snippet 7.1).** Removes training observations whose triple-barrier labels overlap with any test group. Three sufficient conditions are checked for each training observation i against each test group:
+
+1. The training observation begins inside the test period.
+2. The training label resolves inside the test period.
+3. The training label spans the entire test period.
+
+If any condition holds, the observation is purged. Without purging, a training label whose t1 falls inside the test period would leak future information into training.
+
+**Embargo (AFML Section 7.4.2).** Removes a buffer of `embargo_pct × T` training observations immediately after each test group. This prevents serial correlation from carrying signal across the train-test boundary. Embargo is applied only after the test set, not before, because training labels resolving before test begins contain no future information.
+
+**Path matrix.** For N=6, k=2 there are φ[6,2] = C(5,1) = 5 backtest paths. Each path is a full chronological reconstruction of the dataset, assembled from test predictions across multiple splits. The path matrix tells you which split's predictions to use for each group when assembling each path. Each group appears in exactly 5 test sets, so the assignment is unambiguous.
+
+### Key function: `generate_cpcv_splits`
+
+Returns a list of 15 `(train_idx, test_idx)` tuples with positional integer indices into X. Each tuple already has purging and embargo applied.
+
+### Key function: `build_path_matrix`
+
+Returns `(n_paths=5, path_map)` where `path_map[p]` is a list of `(group_id, split_id)` tuples. Each path covers all N groups exactly once.
+
+---
+
+## `cpcv/preprocessing.py` — Per-Fold Preprocessing
+
+### What it does
+
+Inside each CPCV fold, applies three transformations in order: fractional differentiation, robust scaling, and feature selection. Every transformation is fitted on training data only, ensuring zero leakage.
+
+### Core concepts
+
+**Fractional differentiation (FFD, AFML Chapter 5).** Standard differencing (first or second differences) destroys long-memory information in price series. FFD applies a fractional power d ∈ [0, 1] to the differencing operator, yielding a series that is stationary while retaining as much memory as possible.
+
+For each FFD column (currently only ATR), the function:
+
+1. Sweeps d from 0 to 1 in steps of 0.05 on the training fold.
+2. At each d, computes FFD weights via the recursive formula `ω_k = -ω_{k-1} × (d - k + 1) / k`, truncated when weights fall below 1e-4.
+3. Applies the convolution and runs an Augmented Dickey-Fuller test.
+4. Returns the minimum d* where ADF p-value falls below 0.05.
+5. Applies FFD at d* to the full series so test observations have proper lookback history, but only training data was used to determine d*.
+
+**Robust scaling.** Uses `sklearn.preprocessing.RobustScaler` (median + IQR) rather than `StandardScaler`. RobustScaler is more resilient to the heavy-tailed distributions typical of financial features. Fitted on training fold only; applied to both train and test.
+
+**Multi-Model MDA feature selection.** Departs from AFML's three-method MDI/MDA/SFI protocol. Instead, runs Mean Decrease Accuracy (permutation importance) using two classifiers in parallel: a Random Forest (captures nonlinear interactions) and a Logistic Regression (captures linear relationships). Both run inside a purged inner 3-fold CV.
+
+For each classifier:
+
+1. Splits training data into 3 chronological inner folds.
+2. Purges inner-train observations whose t1 overlaps inner-test.
+3. Fits the classifier and computes baseline F1 on inner-test.
+4. For each feature, permutes the column, recomputes F1, and records `MDA = baseline_F1 - permuted_F1`.
+
+The final per-feature MDA is the average across both classifiers and all inner folds. Features with positive MDA are kept (permuting them hurts at least one model on average), capped at the top 40% by MDA value, with a hard floor of 5 features minimum.
+
+The rationale for multi-model MDA: RF-only MDA introduces tree bias (features that tree ensembles naturally exploit get inflated importance). SFI in weak-signal regimes produces uninformative near-uniform scores. Averaging across model families reduces selection variance and prevents architecture bias.
+
+### Key function: `preprocess_fold`
+
+Orchestrates FFD → scaling → selection. Returns:
+- `X_train`, `X_test` with all columns (pre-selection) so the pipeline can route full-column DataFrames to AR Logistic.
+- `selected`: list of feature names chosen by MDA.
+- `info` dict with FFD d* values, fitted scaler, and selected feature list (used downstream by symbolic extraction).
+
+The `skip_selection=True` flag is set when only AR Logistic is being evaluated, since it constructs its own lagged-return features.
+
+---
+
+## `cpcv/tuning.py` — Nested Hyperparameter Tuning
+
+### What it does
+
+For each CPCV training fold, runs Bayesian hyperparameter optimization (Optuna's TPE) with a 3-fold purged inner cross-validation. Returns optimal parameters per model per split, applied just before that split's models are trained.
+
+### Core concepts
+
+**Why nested tuning.** Tuning hyperparameters on the full dataset and then evaluating with CPCV would leak test-set information into the model selection process, invalidating DSR and PBO. Nested tuning restricts each split's hyperparameter search to its own training fold, preserving the integrity of out-of-sample metrics.
+
+**TPE (Tree-structured Parzen Estimator).** Bergstra et al. (2011). A Bayesian optimizer that maintains two probability distributions over the hyperparameter space: one for "good" trials (low loss) and one for "bad" trials. New trials are sampled from regions where the ratio of good to bad density is highest. Concentrates compute in promising regions instead of grid-search exhaustiveness.
+
+**Purged K-Fold inner CV.** Three chronological inner folds with a 10-observation embargo around each fold's boundaries. The embargo length matches the triple-barrier horizon (`num_days=10`), ensuring overlapping labels cannot leak between inner train and inner validation. Three folds (rather than five) increase inner validation size to ~200 observations per fold, giving more reliable log-loss estimates in a low-signal environment.
+
+**Median pruner.** After each inner fold, Optuna can terminate underperforming trials whose intermediate log loss is worse than the median of completed trials. Saves compute on clearly bad regions of the search space.
+
+### Search spaces (capped to match the regularization stance)
+
+- **Logistic Regression**: `C` ∈ log-uniform [1e-4, 1e2], `penalty` ∈ {l1, l2}.
+- **Random Forest**: `n_estimators` ∈ [100, 300], `max_depth` ∈ [3, 20], `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
+- **XGBoost**: `max_depth` ∈ [2, 6], `learning_rate` ∈ log [0.01, 0.3], `min_child_weight` ∈ [1, 30], plus subsample, colsample_bytree, gamma, reg_alpha, reg_lambda. Fixed `n_estimators=500` with early stopping at 20 rounds.
+- **LSTM**: `hidden_size` ∈ [16, 64], `num_layers` ∈ [1, 3], `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=30 (matches production).
+- **KAN**: `width1` ∈ [3, 12], `width2` ∈ [0, 10], `lr` ∈ log [1e-3, 0.1], `weight_decay` ∈ log [1e-5, 1e-2], `grid` ∈ {3, 5}.
+
+The caps are deliberately tighter than common defaults. With ~700 training samples per fold, overly flexible architectures guarantee overfitting. Each cap is justified by the samples-to-parameters ratio.
+
+### Production consistency
+
+Tuning uses identical configurations to production: same window length (30 for LSTM), same warm restart schedule (T_0=25 for LSTM, T_0=30 for KAN), same loss function (cross-entropy with label smoothing 0.1, sample weights, class weights). Hyperparameters tuned under one regime would be suboptimal under another, so consistency matters.
+
+### Default trial counts
+
+`N_TRIALS_CLASSICAL = 60` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 40` (LSTM, KAN). Overridable via the `n_trials` parameter passed to `run_cpcv_pipeline()`. Recommended values balancing exploration against runtime: 30 for classical models, 20 for neural models.
+
+### Key function: `tune_all_models`
+
+Orchestrates per-split tuning for a list of models. Returns `{model_name: {"best_params": ..., "best_log_loss": ..., "results_df": ...}}`. Called inside `pipeline.py`'s split loop.
+
+---
+
+## `cpcv/calibration.py` — Probability Calibration
+
+### What it does
+
+Calibrates raw model probabilities so that predicted confidence levels correspond to empirical accuracy. Without calibration, downstream bet sizing produces systematically wrong position sizes.
+
+### Core concepts
+
+**Why calibration matters here.** The bet-sizing formula in evaluation converts probabilities directly into position sizes via De Prado's S-curve. If a model's predicted 0.70 probability actually corresponds to 0.55 empirical accuracy, the resulting bet size is too aggressive. Calibration aligns predicted confidence with reality.
+
+**Platt scaling (Platt 1999).** For sklearn-compatible models (AR Logistic, Logistic Regression, Random Forest, XGBoost). Fits a logistic regression mapping raw logits to calibrated probabilities: `p_calibrated = σ(a × logit + b)`. The regularization is set to C=1e10 (effectively unregularized) so the sigmoid is purely data-driven.
+
+**Temperature scaling (Guo et al. 2017).** For PyTorch models (LSTM, KAN). Finds a single scalar T > 0 that minimizes the negative log-likelihood of `softmax(logits / T)`. T > 1 softens overconfident predictions; T < 1 sharpens underconfident ones. Single-parameter, preserves the argmax (so accuracy is unchanged), and is the standard choice for modern neural networks.
+
+### Why two methods
+
+Sklearn models output 1D log-odds (a single scalar per sample), well-suited to a sigmoid mapping. PyTorch classifiers output 2D logits (one per class), better calibrated by temperature scaling, which respects the multi-class structure. Both methods are textbook choices with well-known properties.
+
+### Calibration set
+
+Calibration is fitted on the held-out 20% of the training fold (chronological split, no shuffling). Never touches test data. If calibration fails for any reason, the pipeline falls back to uncalibrated `predict_proba`.
+
+### Methodological note
+
+The 20% calibration subset serves a dual role: early-stopping monitor for XGBoost and input for Platt/temperature scaling. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set) and Platt/temperature scaling fits at most two parameters, this shared use introduces minimal information leakage. Splitting the already-small cal set further would degrade both purposes.
+
+### Key class: `Calibrator`
+
+Unified interface that auto-detects method from `model.get_name()`:
+- `fit(model, X_cal, y_cal)`: fits the appropriate calibrator.
+- `calibrate(logits)`: applies the fitted calibration to new logits, returning a (n_samples, n_classes) probability matrix.
+- `fit_from_logits(logits, y_cal, method)`: alternative entry point for LSTM, where index alignment requires pre-computed logits.
+
+---
+
+## `cpcv/pipeline.py` — CPCV Loop Orchestration
+
+### What it does
+
+The main entry point. Coordinates everything: split generation, preprocessing, optional tuning, model training across all model × seed combinations, calibration, and prediction storage. Produces the predictions dictionary that feeds Phase 3 evaluation.
+
+### Core concepts
+
+**One preprocessing per fold, multiple models per fold.** Preprocessing (FFD, scaling, selection) is shared across all models in a fold. This avoids repeating expensive computation and ensures all models compete on the same features.
+
+**80/20 chronological split for calibration.** Within each training fold, the last 20% becomes the calibration set. Chronological (no shuffling) so the calibration set comes from the most recent data, similar to a holdout in production deployment.
+
+**Model dispatching.** AR Logistic receives the full pre-selection DataFrame (it constructs its own lagged-return features and ignores the selected feature set). Other models receive the selected feature subset. The pipeline routes the correct X to each model.
+
+**Per-split tuning application.** When `tune=True`, the pipeline calls `tune_all_models()` after preprocessing and before model training. The tuned parameters are then written to module-level constants (`lstm_mod.LSTM_HIDDEN_SIZE`, `kan_mod.KAN_HIDDEN`, etc.). Each model class reads these constants at instantiation time, so tuning takes effect for that split's models.
+
+**LSTM index handling.** LSTM consumes windowed sequences (length 30), so it produces fewer predictions than other models. The pipeline tracks `last_valid_indices` to align LSTM predictions back to original timestamps. Calibration uses `fit_from_logits` to handle this alignment.
+
+**Error handling.** Failed model fits are caught, logged, and skipped without crashing the pipeline. Final summary prints successful and failed task counts.
+
+### Stored predictions
+
+Per `(model_name, split_idx, seed)` key, stores:
+- `y_true`, `y_pred`, `cal_proba`: predictions and ground truth.
+- `f1_macro`, `roc_auc`, `log_loss`: inline metrics.
+- `timestamps`, `ret`: for path stitching downstream.
+- `prep_info`: FFD d* values, scaler, selected features (for symbolic extraction).
+- `calibrator`: string repr of the fitted calibrator.
+
+### Tuning results
+
+When `tune=True`, the result dict also contains `tuning_results[split_idx][model_name]` with each model's best params, best log loss, and full Optuna trial DataFrame.
+
+### Key function: `run_cpcv_pipeline`
+
+Returns a dict with `predictions`, `path_map`, `n_paths`, `n_splits`, `models`, `n_seeds`, and optionally `tuning_results`. This dict is the contract between Phase 2 and Phase 3.
+
+---
+
+# Phase 2 — `cpcv/models/` (Model Implementations)
+
+Six models implementing a uniform interface. The pipeline iterates over them without knowing their internals.
+
+---
+
+## `cpcv/models/base.py` — Abstract Base Class
+
+### What it does
+
+Defines the `BaseModel` interface that every model must implement: `fit`, `predict_proba`, `predict`, `get_name`, plus a uniform constructor signature `(n_features, n_classes=2, seed=42)`.
+
+### Core concepts
+
+**Why an abstract base class.** Six different libraries (sklearn, xgboost, PyTorch with two architectures, custom AR construction) need to be exchangeable in the pipeline. The base class enforces that every model exposes the same methods, so the pipeline can iterate without conditional logic per model.
+
+**Label convention.** The pipeline maps original labels {-1, +1} → {0, 1} before passing to models. All models work with 0-indexed classes. Evaluation maps back to {-1, +1} for economic interpretation.
+
+### Key methods
+
+- `fit(X_train, y_train, sample_weight, X_val, y_val)`: train the model. `sample_weight` is the AFML Chapter 4 weights. `X_val`/`y_val` enable early stopping for neural models.
+- `predict_proba(X)`: returns class probabilities, shape (n_samples, n_classes).
+- `predict(X)`: returns hard labels via argmax of `predict_proba`. Default implementation provided.
+- `get_name()`: returns a human-readable model name for logging and comparison.
+
+---
+
+## `cpcv/models/benchmarks.py` — AR Logistic and Logistic Regression
+
+### What it does
+
+Implements two baseline models: an autoregressive logistic regression on lagged returns, and a standard logistic regression on the selected feature set.
+
+### Core concepts
+
+**AR Logistic — econometric baseline.** Constructs its own features: lagged log returns at lags [1, 2, 3, 5, 10, 21]. Ignores the selected feature set entirely. The role of this baseline is to test whether the engineered features (TA, AFML mathematical, macro, on-chain) add value beyond simple price momentum. If a more complex model cannot beat AR Logistic, it has not learned anything beyond autocorrelation.
+
+**Logistic Regression — linear ML baseline.** Uses sklearn's standard `LogisticRegression` on the full selected feature set. Class-weighted to handle label imbalance, with L1 or L2 penalty (chosen via tuning). Solver auto-selected based on penalty (LBFGS for L2, liblinear for L1).
+
+**Why two baselines.** AR Logistic isolates pure autocorrelation. Logistic Regression captures linear effects across the full feature set. Together they bracket the linear-signal regime: any complex model claiming nonlinear value must outperform both.
+
+### `predict_logits` method
+
+Both models expose a `predict_logits` method that returns raw log-odds for downstream calibration. AR Logistic computes log-odds from `predict_proba`; Logistic Regression uses sklearn's `decision_function` which returns the raw decision value before sigmoid.
+
+---
+
+## `cpcv/models/tree_models.py` — Random Forest and XGBoost
+
+### What it does
+
+Wraps sklearn's `RandomForestClassifier` and `XGBClassifier` in the BaseModel interface. Both return calibration-ready logits and accept AFML sample weights.
+
+### Core concepts
+
+**Random Forest.** 500 trees with `max_features="sqrt"` and `class_weight="balanced_subsample"`. The balanced subsampling reweights minority class within each bootstrap, more robust than fixed `class_weight` for time-varying class proportions. No max depth by default (trees grow until `min_samples_leaf=5`).
+
+**XGBoost.** Gradient-boosted trees with 500 estimators and early stopping at 20 rounds when a validation set is provided. `scale_pos_weight` set automatically from training class balance. Uses `binary:logistic` objective.
+
+**Logit conversion for calibration.** Both models output probabilities, but Platt scaling expects logits. Both `predict_logits` methods convert via `log(p₁ / p₀)` with clipping at 1e-10 to avoid infinities at the boundaries.
+
+**Tunable hyperparameters.** When tuning runs, module-level constants (`RF_N_ESTIMATORS`, `XGB_MAX_DEPTH`, etc.) are overridden per split. The model classes read these at construction time. Without tuning, they use the defaults defined at the top of the file.
+
+### Why these two tree methods
+
+Random Forest provides bagged variance reduction, robust to noisy features. XGBoost provides boosted bias reduction, sequentially correcting errors. Together they cover the two main paradigms of tree ensembles. In financial ML, both are standard benchmarks.
+
+---
+
+## `cpcv/models/lstm_model.py` — LSTM Classifier
+
+### What it does
+
+A PyTorch LSTM with temporal attention pooling that consumes windowed sequences and outputs binary classifications. Wrapped in the BaseModel interface for seamless integration with the CPCV pipeline.
+
+### Core concepts
+
+**Sequence construction.** The 2D feature matrix is reshaped into 3D windowed sequences of length 30 (one BTC calendar month). Each timestep contains all selected features at that bar. The first 29 observations are dropped (insufficient lookback). The function returns `valid_indices` mapping sequences back to original positional indices.
+
+**Architecture.** Multi-layer LSTM (1-3 layers, hidden_size 16-64, dropout 0.1-0.5, all tunable) → temporal attention pooling → LayerNorm → dropout → linear classifier.
+
+**Temporal attention pooling.** Instead of using only the final hidden state (which would discard 29 timesteps of information), a learned attention layer scores every timestep and computes a weighted sum: `context = Σ softmax(W h_t) × h_t`. This preserves information from early lookback days. LayerNorm stabilizes training on the attention output.
+
+**Tanh input normalization.** Before the LSTM, features are tanh-normalized: `z = tanh((x - μ) / σ)`. Maps features to [-1, 1] regardless of original scale, stabilizing training on fat-tailed financial data. Mean and std are fitted on training data only and stored for inference.
+
+**Training regularization stack.** Standard techniques chosen for small-sample financial time series:
+- Label smoothing (0.1) softens noisy labels.
+- Gradient clipping (max norm 1.0) prevents exploding gradients.
+- Cosine annealing with warm restarts (T_0=25, T_mult=2) provides exploration via periodic LR resets.
+- Class weights for imbalance.
+- AFML sample weights for label uniqueness.
+- Early stopping (patience 15) on validation loss with best-state restoration.
+
+**Tuning consistency.** The `LSTMClassifier.__init__` reads `LSTM_HIDDEN_SIZE`, `LSTM_NUM_LAYERS`, `LSTM_DROPOUT` at call time (not as default arguments). This ensures that when tuning overrides these module constants, the new values reach the model.
+
+### Why LSTM here
+
+The LSTM is the standard sequential-modeling baseline in financial deep learning. It tests whether explicitly modeling temporal dependence in feature sequences improves over models that see only the bar at time t. Comparing KAN against LSTM isolates whether KAN's spline-based representation gains advantage from sequential context (it does not — KAN consumes single-bar features) or purely from richer per-bar function approximation.
+
+---
+
+## `cpcv/models/kan_model.py` — Kolmogorov-Arnold Network
+
+### What it does
+
+A KAN classifier using the `efficient-kan` library, trained as a standard PyTorch `nn.Module` with AdamW. Outputs well-scaled logits that calibrate without extreme temperature correction.
+
+### Core concepts
+
+**KAN as architecture.** Where MLPs apply learnable weights to fixed activation functions, KANs apply fixed weights (additions) to learnable activation functions. Each edge in the network is a B-spline basis function whose shape adapts during training. The Kolmogorov-Arnold representation theorem guarantees that any continuous multivariate function can be expressed as a finite composition of univariate functions and additions, providing the theoretical motivation.
+
+**Architecture for this thesis.** `[n_features, KAN_HIDDEN, n_classes]` — a narrow bottleneck with B-spline activations. Optionally a second hidden layer if `KAN_HIDDEN2 > 0`. Both widths and grid size are tuned per split (width1 ∈ [3, 12], width2 ∈ [0, 10], grid ∈ {3, 5}).
+
+**Tanh input normalization to spline grid range.** Features are tanh-normalized to [-1, 1] to match efficient-kan's default `grid_range=[-1, 1]`. Without this, features outside the grid range would extrapolate to flat splines, losing all gradient signal.
+
+**Why efficient-kan instead of PyKAN for prediction.** PyKAN is the canonical KAN library but trains via Adam → LBFGS schedules that are fragile for small samples. `efficient-kan` reimplements the same B-spline basis as a standard `nn.Module`, allowing reliable AdamW training. Symbolic extraction is handled separately by the `post_cpcv` symbolic extraction pipeline using PyKAN.
+
+**Training stack.** AdamW (lr and weight_decay tuned), label smoothing (0.1), gradient clipping (max norm 1.0), cosine annealing warm restarts (T_0=30), early stopping (patience 20) with best-state restoration. The same regularization stack as LSTM, with no neural-net-specific tricks like SWA or entropy regularization (both tested and removed for being either redundant or non-coherent with early stopping).
+
+**Single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~700 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
+
+**Stored dataset.** `_dataset` dict is preserved on the fitted model (train and validation tensors, normalized). This is consumed by `symbolic_extraction.py` to ensure the symbolic re-training matches the CPCV predictor's input distribution.
+
+### Why KAN
+
+The thesis tests whether KAN's adaptive activations improve over fixed-activation models (LR, RF, XGBoost, LSTM) for BTC direction prediction. The novel contribution beyond benchmarking is symbolic extraction: KAN's structure permits closed-form formula recovery (Phase 3), which no other model in the comparison set can offer.
+
+---
+
+# Phase 3 — `post_cpcv/` (Evaluation & Interpretability)
+
+Takes the predictions dictionary from Phase 2 and produces the thesis deliverables: model comparison, statistical robustness tests, financial performance metrics, and KAN symbolic formulas.
+
+---
+
+## `post_cpcv/evaluation.py` — Metrics, Path Stitching, and Robustness Tests
+
+### What it does
+
+Comprehensive evaluation pipeline: split-level metrics, bet sizing, path stitching, financial performance per path, Deflated Sharpe Ratio, Probability of Backtest Overfitting, DeLong pairwise AUC tests, model comparison tables, and feature stability diagnostics.
+
+### Core concepts
+
+**Split-level metrics.** Per split's test fold: accuracy, F1 macro, F1 per class, precision, recall, log-loss, Brier score, AUC-ROC. Sample-weighted where applicable. Handles single-class test folds gracefully (AUC returns NaN).
+
+**Bet sizing (AFML Chapter 10.3).** Implements De Prado's S-curve to convert calibrated probabilities into position sizes:
+
+1. Direction: +1 if P(up) > P(down), else -1.
+2. Confidence: `p = max(P(class_0), P(class_1))`, always in [0.5, 1].
+3. Z-score: `z = (p - 0.5) / sqrt(p × (1-p))`.
+4. Raw bet: `2 × Φ(z) - 1` where Φ is the standard normal CDF.
+5. Minimum threshold: bets below 0.10 in absolute value snap to 0 (the abstention mechanism).
+6. Discretization: snap to nearest of {0, 0.25, 0.5, 0.75, 1.0}.
+
+The abstention mechanism is the crucial AFML innovation: predictions with probability near 0.5 produce zero bet, meaning no capital is allocated despite having a directional prediction. This separates classification accuracy (always evaluated) from trading behavior (selective).
+
+**Strategy returns.** `gross_return = bet_size × label_return`, `turnover = |Δbet_size|`, `tx_cost = 0.1% × turnover`, `net_return = gross - tx_cost`. Transaction cost of 10 bps round-trip is reasonable for BTC on major exchanges.
+
+**Path stitching.** Assembles 5 full-span backtest paths from the 15 splits using the path-assignment matrix from `cv.py`. For each path, collects test-fold predictions for each group from the corresponding split, concatenates chronologically, and computes performance. With multiple seeds, calibrated probabilities are averaged across seeds before bet sizing (ensemble averaging reduces prediction variance by ~1/√n_seeds).
+
+**Path performance metrics.** Per path: annualized Sharpe (using √365 for BTC's continuous trading), cumulative return, annualized return, maximum drawdown, time under water, win rate, profit factor, number of trades, average bet size, return distribution skewness and kurtosis.
+
+**Deflated Sharpe Ratio (AFML Chapter 14).** Corrects observed Sharpe for two biases:
+
+1. **Selection bias**: when comparing N models, the maximum observed Sharpe is biased upward even under the null of zero true Sharpe. Correction adjusts for `E[max SR | n_trials]`.
+2. **Non-normality**: the standard Sharpe variance formula assumes normal returns. Mertens (2002) corrects via skewness and kurtosis.
+
+$$\text{DSR} = \Phi\left(\frac{SR_{obs} - E[\max SR]}{\sigma_{SR}}\right)$$
+
+where σ_SR includes the Mertens non-normality correction. The implementation correctly handles scipy's *excess* kurtosis (γ_4 - 3) by converting to the raw kurtosis the Mertens formula expects: `(γ_4 - 1)/4 = (excess + 2)/4`. Includes a clamp on the variance to prevent NaN from numerical edge cases.
+
+DSR > 0.95 indicates a result that survives multiple-testing correction. DSR < 0.95 may be a statistical artifact.
+
+**Probability of Backtest Overfitting (AFML Chapter 11).** Implements Combinatorially Symmetric Cross-Validation (CSCV). Takes the matrix of (n_models × n_paths) Sharpe ratios:
+
+1. Generates all C(n_paths, n_paths/2) IS/OOS partitions.
+2. For each partition, identifies the IS-best model and checks whether it underperforms the OOS median.
+3. PBO = fraction of partitions where the IS-best model is OOS-poor.
+
+PBO < 0.3 indicates robust selection. PBO > 0.5 indicates anti-predictive behavior (the in-sample winner systematically loses out-of-sample). With 5 paths, the partition count is small (C(5,2) = 10), so the estimate has high variance — a structural limitation of CPCV with N=6, k=2 rather than a code issue.
+
+**DeLong pairwise AUC tests.** Tests whether two models have significantly different AUC on the pooled predictions across all 15 splits. Uses the placement-value (midrank) approach of DeLong et al. (1988) with the closed-form covariance estimator. For each pair of models:
+
+1. Compute AUC for each on the pooled data.
+2. Compute the variance of each AUC and the covariance between them.
+3. z-statistic: `(AUC_a - AUC_b) / sqrt(Var_a + Var_b - 2 × Cov_ab)`.
+4. Two-sided p-value from the standard normal.
+
+Reports as a DataFrame with columns model_a, model_b, auc_a, auc_b, delta_auc, z_stat, p_value, significant (α=0.05). The notebook displays "X/Y pairs significantly different" as a top-line robustness statistic.
+
+**Model comparison.** Ranks models by median path Sharpe (descending) with std Sharpe as tiebreaker (ascending, prefer consistency). Reports ranking, median Sharpe, std Sharpe, DSR, mean F1, accuracy, log loss, AUC, median drawdown, cumulative return, win rate, and profit factor in a single table.
+
+**Feature stability.** Counts how often each feature is selected across folds (using a non-AR model as reference, since AR Logistic skips selection). Features selected in > 80% of folds are flagged as "stable." Plotted as a horizontal bar chart in the notebook.
+
+**FFD stability.** Collects FFD d* values across folds. Reports mean and std. Warns if std > 0.1 (heterogeneous stationarity structure across time periods).
+
+### Key function: `analyze_results`
+
+Orchestrates the entire post-CPCV analysis. Called from the notebook as `analysis = analyze_results(cpcv_results)`. Chains: split metrics → path stitching → path performance → model summaries → comparison table → PBO → DeLong AUC → feature stability → FFD stability. Returns a dict consumed by the notebook's visualization cells.
+
+---
+
+## `post_cpcv/symbolic_extraction.py` — KAN Symbolic Formula Extraction
+
+### What it does
+
+The thesis's novel methodological contribution. Re-trains a PyKAN model on a selected fold using the CPCV-tuned architecture (with simplifications for tractability), prunes weak edges, replaces survivors with closed-form symbolic functions, and extracts a SymPy formula relating features to predicted probability. The output is a closed-form mathematical expression for `P(up | features)`.
+
+### Core concepts
+
+**Why a separate symbolic extraction.** The CPCV KAN uses `efficient-kan` for fast and reliable training across all 15 folds. PyKAN is the canonical library that supports symbolic operations (`prune`, `suggest_symbolic`, `fix_symbolic`, `symbolic_formula`) but is fragile and slow. Extracting symbolic formulas from `efficient-kan` is not supported. The solution: use `efficient-kan` for benchmarking, retrain with PyKAN on a single fold for symbolic extraction, ensure both share the same input normalization and architecture template.
+
+**Algorithm 1 from the VIX KAN paper.** Four steps:
+
+1. **Train.** Phase 1 uses Adam (600 steps, lr=1e-3, weight decay=1e-3, Gaussian noise injection on inputs). Phase 2 uses LBFGS in two stages: warmup (no regularization) then sparsity (L1 + entropy regularization).
+2. **Prune.** Forward pass to populate cached activations, then `model.prune(threshold=0.01)` with multi-API fallback for PyKAN version differences. Verifies pruned model can still forward-pass.
+3. **Symbolify.** For each surviving edge, calls `suggest_symbolic` with a custom function library {x, x², x³, x⁴, exp, log, sqrt, tanh, sin, cos, abs, sgn, arctan, 0}. Falls back to PyKAN's default library on `KeyError`. Implements brute-force candidate testing when `"0"` (constant) wins by zero complexity penalty. If best R² ≥ 0.3, the edge is replaced with the symbolic function via `fix_symbolic`.
+4. **Affine fine-tune.** After symbolification, the remaining affine parameters (a, b, c, d per symbolic edge) are LBFGS-optimized for 30 steps to compensate for substitution error. NaN detection reverts to the pre-fine-tune state.
+
+**Architecture coupling to CPCV.** The symbolic re-training uses the CPCV-tuned `width1` as its starting hidden width, capped at `PYKAN_SYMBOLIC_WIDTH_CAP=8`. Two simplifications are applied for symbolic tractability:
+
+1. **Drop width2.** Even if tuning selected a second hidden layer, only the first is used for symbolic extraction. Two hidden layers produce nested f(g(x)) compositions that overwhelm SymPy's simplification routines.
+2. **Force grid=3.** Even if tuning selected grid=5, the symbolic model uses grid=3. Coarser splines produce cleaner symbolic matches with fewer candidate knots.
+
+These simplifications trade some predictive accuracy for formula clarity. The thesis presents the symbolic accuracy and pre-symbolic accuracy side by side so the trade-off is transparent.
+
+**Data-aware safety floor.** Independent of the tuned width, the function applies a samples-per-parameter floor. If `n_train / total_params < 5`, the hidden width is reduced. For ~350 training samples (after the 80/20 cal split) with grid=3 and k=3, this typically caps hidden width at 4-5 regardless of the tuned value.
+
+**Fold selection.** The `fold_selection` parameter controls which CPCV fold is used: `"best"` picks the highest-F1 fold, `"last"` picks the most recent, or an integer specifies a fold directly. The thesis uses `"last"` to match what would be used in deployment (most recent training data).
+
+**Feature ranking and subsetting.** When `n_top_features` is set, features are ranked by selection frequency across all KAN CPCV folds, and only the top N are used. Fewer features produce simpler formulas at some accuracy cost.
+
+**Tanh input normalization match.** The symbolic re-training applies the same tanh normalization as the CPCV KAN (fitted on the symbolic re-training fold), ensuring inputs hit the spline grid range [-1, 1].
+
+**SymPy simplification with timeout.** After formula extraction, SymPy attempts to simplify the expression. Some expressions cause SymPy to hang indefinitely (combinations of nested splines and trig functions), so the simplification runs with a 30-second threading timeout. On timeout, the unsimplified form is returned.
+
+**Output.** The function returns a dict containing:
+- `logit_bearish`, `logit_bullish`: closed-form expressions for each class logit.
+- `decision_function`: their difference (logit_bull - logit_bear).
+- `p_up_formula`: `1 / (1 + exp(-decision))`.
+- `sympy_objects`: the SymPy expression objects for downstream differentiation/analysis.
+- `pre_symbolic_accuracy`, `post_symbolic_accuracy`: validation accuracy before and after symbolification.
+- `symbolification_rate`: fraction of edges successfully symbolified.
+- `pruned_architecture`: final widths after pruning.
+- `surviving_features`: feature names that appear in the final formula.
+
+### Known PyKAN fragilities
+
+The 1,400-line file contains extensive defensive code for PyKAN's inconsistent APIs:
+
+- `'sigmoid'` is not in PyKAN's internal `SYMBOLIC_LIB`, causing `KeyError` (handled with fallback to default library).
+- `'1/x'` causes division-by-zero during affine fine-tuning (excluded from custom library).
+- PyKAN uses 1-based variable naming (`x_1..x_n`), not 0-based (handled by trying three naming conventions).
+- `suggest_symbolic` return format varies across PyKAN versions (handled by three format parsers: DataFrame, flat tuple, nested tuple).
+- `sympy.simplify` can hang indefinitely on complex expressions (30s threading timeout).
+- `"0"` (constant function) always wins `total_loss` due to zero complexity penalty (handled by brute-force candidate testing with stdout regex parsing for R² extraction).
+
+### Why this matters for the thesis
+
+KAN symbolic extraction is the novel methodological contribution. The benchmarking exercise (KAN vs LSTM vs trees vs logistic) is informative but not novel — comparable studies exist for crypto direction prediction. What no prior thesis or paper in this exact intersection has done is extract a closed-form formula from a CPCV-deployed KAN and present it alongside benchmark performance. The output formula is the deliverable that distinguishes this thesis from a standard ML benchmarking study.
+
+### Honest limitations to disclose
+
+1. The symbolic model uses a simplified architecture (single hidden layer, coarse grid) rather than the CPCV-tuned configuration. Post-symbolic accuracy may be lower than CPCV KAN accuracy.
+2. The data-aware safety floor may further reduce architecture width below the tuned value, producing simpler but less expressive formulas.
+3. Symbolic accuracy is reported on the validation split of a single CPCV fold, not across all folds. The formula reflects one fold's signal structure.
+4. PyKAN's `fix_symbolic` introduces substitution error that affine fine-tuning partially compensates for; the residual error contributes to the gap between pre- and post-symbolic accuracy.
+
+These limitations are presented transparently in the methodology chapter rather than papered over.
