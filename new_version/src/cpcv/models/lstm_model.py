@@ -5,14 +5,16 @@ LSTM classifier in PyTorch that consumes windowed sequences of features.
 Wraps the PyTorch module behind the BaseModel interface for seamless
 integration with the CPCV pipeline.
 
-Training improvements:
-  - Temporal attention: learned weighting over all timesteps instead of
-    just the final hidden state, so early window information isn't lost
+Training stack:
+  - Last-hidden-state pooling: standard sequence representation; attention
+    pooling was tested and removed (added parameters without measurable
+    benefit on this dataset)
   - Tanh input normalization: squash features to [-1, 1]
-  - LayerNorm on attended context vector
+  - LayerNorm on the hidden state
   - Gradient clipping (max_norm=1.0)
   - Label smoothing (0.1) for noisy financial labels
   - Cosine annealing with warm restarts LR schedule
+  - 14-day window (2 BTC weeks; matched to the 10-day TBL horizon)
 """
 
 import copy
@@ -31,10 +33,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
-LSTM_HIDDEN_SIZE = 128
+LSTM_HIDDEN_SIZE = 32       # default; tuning overrides per-split (search
+                            # space [16, 32], capped to prevent overfitting)
 LSTM_NUM_LAYERS = 2
 LSTM_DROPOUT = 0.3
-LSTM_WINDOW = 30            # lookback window (~1 crypto trading month)
+LSTM_WINDOW = 14            # lookback window (2 BTC weeks; closer to the
+                            # 10-day TBL horizon than a full month, reduces
+                            # parameter burden and signal attenuation)
 LSTM_BATCH_SIZE = 64
 LSTM_EPOCHS = 100
 LSTM_LR = 1e-3
@@ -113,12 +118,13 @@ def create_sequences(
 # PyTorch module
 # ---------------------------------------------------------------------------
 class LSTMClassifier(nn.Module):
-    """LSTM network with temporal attention, LayerNorm, and classification head.
+    """LSTM network with last-hidden-state pooling and classification head.
 
-    Instead of using only the final hidden state, a learned attention
-    mechanism weights all timestep outputs. This preserves information
-    from early lookback days that would otherwise be washed out through
-    21 recurrent steps.
+    Uses the final timestep's hidden state from the last LSTM layer as
+    the sequence representation. With a 14-day window, attention pooling
+    added parameters without measurable benefit on this dataset; the
+    last-hidden-state approach is the simpler standard choice for short
+    sequences and small training samples.
     """
 
     def __init__(
@@ -143,14 +149,12 @@ class LSTMClassifier(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0,
             batch_first=True,
         )
-        # temporal attention: learns which timesteps matter most
-        self.attn_W = nn.Linear(hidden_size, 1, bias=False)
         self.layer_norm = nn.LayerNorm(hidden_size)
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(hidden_size, n_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass with temporal attention.
+        """Forward pass using last hidden state.
 
         Parameters
         ----------
@@ -163,12 +167,11 @@ class LSTMClassifier(nn.Module):
             Raw logits, shape (batch, n_classes). No softmax applied.
         """
         # lstm_out: (batch, window, hidden_size) — all timestep outputs
-        lstm_out, _ = self.lstm(x)
+        # h_n: (num_layers, batch, hidden_size) — final hidden state per layer
+        lstm_out, (h_n, _) = self.lstm(x)
 
-        # attention: score each timestep and compute weighted context
-        attn_scores = self.attn_W(lstm_out)                     # (B, T, 1)
-        attn_weights = torch.softmax(attn_scores, dim=1)        # (B, T, 1)
-        context = (attn_weights * lstm_out).sum(dim=1)           # (B, H)
+        # take last layer's hidden state as the sequence representation
+        context = h_n[-1]                                        # (B, H)
 
         context = self.layer_norm(context)
         context = self.dropout(context)

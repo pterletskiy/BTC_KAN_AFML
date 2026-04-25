@@ -464,8 +464,8 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Match production lstm_model.py: LSTM_WINDOW=30, short early stop budget
-    window = 30
+    # Match production lstm_model.py: LSTM_WINDOW=14, short early stop budget
+    window = 14
     batch_size = 64
     epochs = 50
     patience = 7
@@ -507,9 +507,12 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        # Search space capped to match production architecture expectations:
-        # hidden_size up to 64 (not 128) to prevent overfitting ~700-sample folds
-        hidden_size = trial.suggest_int("hidden_size", 16, 64, step=16)
+        # Search space tightened further: hidden_size capped at 32 (not 64)
+        # to prevent overfitting given (a) LSTM_WINDOW=14 reducing effective
+        # training sequences, (b) ~700-sample folds, and (c) the model lost
+        # to a 6-lag AR baseline at higher capacities — smaller models are
+        # the right direction.
+        hidden_size = trial.suggest_int("hidden_size", 16, 32, step=16)
         num_layers = trial.suggest_int("num_layers", 1, 3)
         dropout = trial.suggest_float("dropout", 0.1, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
