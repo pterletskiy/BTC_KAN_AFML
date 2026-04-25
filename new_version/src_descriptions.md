@@ -301,14 +301,14 @@ For each CPCV training fold, runs Bayesian hyperparameter optimization (Optuna's
 - **Logistic Regression**: `C` ∈ log-uniform [1e-4, 1e2], `penalty` ∈ {l1, l2}.
 - **Random Forest**: `n_estimators` ∈ [100, 300], `max_depth` ∈ [3, 20], `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
 - **XGBoost**: `max_depth` ∈ [2, 6], `learning_rate` ∈ log [0.01, 0.3], `min_child_weight` ∈ [1, 30], plus subsample, colsample_bytree, gamma, reg_alpha, reg_lambda. Fixed `n_estimators=500` with early stopping at 20 rounds.
-- **LSTM**: `hidden_size` ∈ [16, 64], `num_layers` ∈ [1, 3], `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=30 (matches production).
+- **LSTM**: `hidden_size` ∈ [16, 32], `num_layers` ∈ [1, 3], `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=14 (matches production).
 - **KAN**: `width1` ∈ [3, 12], `width2` ∈ [0, 10], `lr` ∈ log [1e-3, 0.1], `weight_decay` ∈ log [1e-5, 1e-2], `grid` ∈ {3, 5}.
 
 The caps are deliberately tighter than common defaults. With ~700 training samples per fold, overly flexible architectures guarantee overfitting. Each cap is justified by the samples-to-parameters ratio.
 
 ### Production consistency
 
-Tuning uses identical configurations to production: same window length (30 for LSTM), same warm restart schedule (T_0=25 for LSTM, T_0=30 for KAN), same loss function (cross-entropy with label smoothing 0.1, sample weights, class weights). Hyperparameters tuned under one regime would be suboptimal under another, so consistency matters.
+Tuning uses identical configurations to production: same window length (14 for LSTM), same warm restart schedule (T_0=25 for LSTM, T_0=30 for KAN), same loss function (cross-entropy with label smoothing 0.1, sample weights, class weights). Hyperparameters tuned under one regime would be suboptimal under another, so consistency matters.
 
 ### Default trial counts
 
@@ -371,7 +371,7 @@ The main entry point. Coordinates everything: split generation, preprocessing, o
 
 **Per-split tuning application.** When `tune=True`, the pipeline calls `tune_all_models()` after preprocessing and before model training. The tuned parameters are then written to module-level constants (`lstm_mod.LSTM_HIDDEN_SIZE`, `kan_mod.KAN_HIDDEN`, etc.). Each model class reads these constants at instantiation time, so tuning takes effect for that split's models.
 
-**LSTM index handling.** LSTM consumes windowed sequences (length 30), so it produces fewer predictions than other models. The pipeline tracks `last_valid_indices` to align LSTM predictions back to original timestamps. Calibration uses `fit_from_logits` to handle this alignment.
+**LSTM index handling.** LSTM consumes windowed sequences (length 14), so it produces fewer predictions than other models. The pipeline tracks `last_valid_indices` to align LSTM predictions back to original timestamps. Calibration uses `fit_from_logits` to handle this alignment.
 
 **Error handling.** Failed model fits are caught, logged, and skipped without crashing the pipeline. Final summary prints successful and failed task counts.
 
@@ -467,15 +467,17 @@ Random Forest provides bagged variance reduction, robust to noisy features. XGBo
 
 ### What it does
 
-A PyTorch LSTM with temporal attention pooling that consumes windowed sequences and outputs binary classifications. Wrapped in the BaseModel interface for seamless integration with the CPCV pipeline.
+A PyTorch LSTM with last-hidden-state pooling that consumes windowed sequences and outputs binary classifications. Wrapped in the BaseModel interface for seamless integration with the CPCV pipeline.
 
 ### Core concepts
 
-**Sequence construction.** The 2D feature matrix is reshaped into 3D windowed sequences of length 30 (one BTC calendar month). Each timestep contains all selected features at that bar. The first 29 observations are dropped (insufficient lookback). The function returns `valid_indices` mapping sequences back to original positional indices.
+**Sequence construction.** The 2D feature matrix is reshaped into 3D windowed sequences of length 14 (two BTC calendar weeks). Each timestep contains all selected features at that bar. The first 13 observations are dropped (insufficient lookback). The function returns `valid_indices` mapping sequences back to original positional indices.
 
-**Architecture.** Multi-layer LSTM (1-3 layers, hidden_size 16-64, dropout 0.1-0.5, all tunable) → temporal attention pooling → LayerNorm → dropout → linear classifier.
+**Architecture.** Multi-layer LSTM (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier.
 
-**Temporal attention pooling.** Instead of using only the final hidden state (which would discard 29 timesteps of information), a learned attention layer scores every timestep and computes a weighted sum: `context = Σ softmax(W h_t) × h_t`. This preserves information from early lookback days. LayerNorm stabilizes training on the attention output.
+**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer is used as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~700-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
+
+**Window length matched to labeling horizon.** The 14-day window (~2 BTC weeks) is intentionally close to the 10-day triple-barrier horizon. Longer windows (30+ days) caused two problems: gradient signal attenuation across many recurrent steps, and a parameter-to-sample ratio that encouraged overfitting on small training folds.
 
 **Tanh input normalization.** Before the LSTM, features are tanh-normalized: `z = tanh((x - μ) / σ)`. Maps features to [-1, 1] regardless of original scale, stabilizing training on fat-tailed financial data. Mean and std are fitted on training data only and stored for inference.
 
@@ -492,6 +494,8 @@ A PyTorch LSTM with temporal attention pooling that consumes windowed sequences 
 ### Why LSTM here
 
 The LSTM is the standard sequential-modeling baseline in financial deep learning. It tests whether explicitly modeling temporal dependence in feature sequences improves over models that see only the bar at time t. Comparing KAN against LSTM isolates whether KAN's spline-based representation gains advantage from sequential context (it does not — KAN consumes single-bar features) or purely from richer per-bar function approximation.
+
+If LSTM underperforms a 6-lag AR Logistic baseline on this dataset, that is itself a meaningful empirical finding: the temporal information in BTC daily features is largely already encoded in the per-bar feature representation (TA indicators, mathematical features, macro, on-chain), leaving little marginal signal for a recurrent architecture to exploit. The thesis reports such results honestly rather than tuning the LSTM until it beats simpler baselines.
 
 ---
 

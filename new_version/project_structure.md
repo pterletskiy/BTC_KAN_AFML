@@ -552,7 +552,7 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 - `n_estimators` fixed at 500 with early stopping (20 rounds)
 
 **`tune_lstm(X, y, w, n_features, n_trials=None)`** — Search space:
-- `hidden_size`: int [16, 64] step 16 (capped from 128)
+- `hidden_size`: int [16, 32] step 16 (capped further from 64 after empirical underperformance at higher capacities)
 - `num_layers`: int [1, 3]
 - `dropout`: uniform [0.1, 0.5] (floor raised from 0.0 for regularization)
 - `learning_rate`: log-uniform [1e-4, 5e-2]
@@ -568,7 +568,7 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 
 **Rationale for capped search spaces:** With ~600 training samples per CPCV split, overly flexible architectures guarantee overfitting. Each cap was chosen to match parameter count to sample size (e.g., a `[22, 20, 15, 2]` KAN has ~8,500 parameters for 480 samples; capping widths drops this to manageable levels).
 
-**Production-tuning consistency.** Tuning uses identical configurations to production: same window length (30 for LSTM), same warm restart schedule (T_0=25 for LSTM, T_0=30 for KAN), same loss function (cross-entropy with label smoothing 0.1, sample weights, class weights). Hyperparameters tuned under one regime would be suboptimal under another, so consistency matters.
+**Production-tuning consistency.** Tuning uses identical configurations to production: same window length (14 for LSTM), same warm restart schedule (T_0=25 for LSTM, T_0=30 for KAN), same loss function (cross-entropy with label smoothing 0.1, sample weights, class weights). Hyperparameters tuned under one regime would be suboptimal under another, so consistency matters.
 
 #### `tune_all_models(X, y, w, n_features, models, seed, verbose, n_trials) → dict`
 
@@ -613,13 +613,13 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 #### LSTM (`lstm_model.py`)
 
-**Architecture:** Multi-layer `nn.LSTM` (1-3 layers, hidden_size 16-64, dropout 0.1-0.5, all tunable) → temporal attention pooling → LayerNorm → dropout → linear classifier. All architectural parameters are tuned per split.
+**Architecture:** Multi-layer `nn.LSTM` (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier. All architectural parameters are tuned per split.
 
-**Temporal attention pooling.** Instead of using only the final hidden state (which would discard 29 timesteps of information), a learned attention layer scores every timestep and computes a weighted sum: `context = Σ softmax(W h_t) × h_t`. Preserves information from early lookback days. LayerNorm stabilizes training on the attention output.
+**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer serves as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~700-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
 
 **Tanh input normalization.** Features are tanh-normalized: `z = tanh((x - μ) / σ)`. Maps features to [-1, 1] regardless of original scale, stabilizing training on fat-tailed financial data. Mean and std are fitted on training data only and stored for inference.
 
-**Sequence construction:** `create_sequences(X, y, w, window=30)` reshapes 2D features into 3D windowed sequences of shape `(T-29, 30, n_features)`. First 29 observations are dropped (insufficient lookback). Returns `valid_indices` mapping sequences back to original positions. Window length matches the BTC monthly calendar.
+**Sequence construction:** `create_sequences(X, y, w, window=14)` reshapes 2D features into 3D windowed sequences of shape `(T-13, 14, n_features)`. First 13 observations are dropped (insufficient lookback). Returns `valid_indices` mapping sequences back to original positions. Window length is intentionally close to the 10-day TBL labeling horizon — longer windows attenuate gradient signal across recurrent steps and increase the parameter-to-sample ratio on small folds.
 
 **Training stack:** AdamW (lr tuned, weight_decay=1e-4), CrossEntropyLoss with class weights and AFML sample weights (per-sample weighted loss), label smoothing (0.1), gradient clipping (max norm 1.0), cosine annealing warm restarts (T_0=25, T_mult=2), batch size=64, max 100 epochs, early stopping patience=15 on validation loss with best-state restoration.
 
@@ -697,7 +697,7 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 | Logistic Regression | 3 | Yes (30 trials) | C, penalty |
 | Random Forest | 3 | Yes (30 trials) | n_estimators ≤ 300, depth, leaf, max_features |
 | XGBoost | 3 | Yes (30 trials) | 8 params, depth ≤ 6, early stopping |
-| LSTM | 2 | Yes (20 trials) | hidden ≤ 64, layers, dropout ≥ 0.1, lr |
+| LSTM | 2 | Yes (20 trials) | hidden ≤ 32, layers ≤ 3, dropout ≥ 0.1, lr; window=14 |
 | KAN | 2 | Yes (20 trials) | width ≤ 12, grid ∈ {3,5}, lr, weight_decay |
 
 ---
