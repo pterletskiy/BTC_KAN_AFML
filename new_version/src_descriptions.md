@@ -45,7 +45,7 @@ Implements the AFML labeling pipeline: computes daily volatility, filters bars v
 
 **CUSUM filter (AFML Snippet 2.4).** Reduces ~4,200 bars to ~900 "meaningful" events by tracking cumulative deviation in log returns. Two accumulators: `s_pos = max(0, s_pos + r)` tracks upside runs, `s_neg = min(0, s_neg + r)` tracks downside runs. When either exceeds the threshold h, an event fires and the accumulator resets to zero.
 
-The zero floor is what makes CUSUM a structural-break detector rather than a volatility filter. Choppy sideways action keeps resetting the accumulator and produces few events, while small-but-persistent drifts can produce many. The threshold `h = 1.5 × mean(daily_vol)` balances event count (≈900) against signal strength — smaller multipliers produce noisy events, larger multipliers produce too few for ML.
+The zero floor is what makes CUSUM a structural-break detector rather than a volatility filter. Choppy sideways action keeps resetting the accumulator and produces few events, while small-but-persistent drifts can produce many. The threshold `h = 1.0 × mean(daily_vol)` balances event count against signal strength: smaller multipliers produce noisy events, larger multipliers produce too few for ML. The notebook uses 1.0 after empirical sweeps; an earlier version used 1.5 but the lower threshold gave a richer event set without compromising class balance.
 
 **Triple-barrier labels (AFML Snippets 3.2, 3.4, 3.5).** For each CUSUM event at time t₀:
 
@@ -55,11 +55,11 @@ The zero floor is what makes CUSUM a structural-break detector rather than a vol
 
 Walks forward through the price path, records the first barrier touch. Labels: +1 (upper hit), -1 (lower hit), sign(return) at vertical (or 0 if below `min_return` threshold).
 
-**Parameter choices.** Symmetric `pt_sl=(1.5, 1.5)` avoids imposing a directional prior. With σ ≈ 3% daily, barriers sit at roughly ±4.5% from entry. `num_days=10` gives horizontal barriers meaningful time to trigger without letting labels go stale. Observed mean holding period is ~5 days, indicating horizontal barriers hit roughly half the time before the vertical barrier. `min_return=0.0` pushes all vertical-barrier events into ±1 labels based on return sign, eliminating the 0 class.
+**Parameter choices.** Symmetric `pt_sl=(1.5, 1.5)` avoids imposing a directional prior. With σ ≈ 3% daily, barriers sit at roughly ±4.5% from entry. `num_days=10` gives horizontal barriers meaningful time to trigger without letting labels go stale. Observed mean holding period is ~5 days, indicating horizontal barriers hit roughly half the time before the vertical barrier. The function's `min_return` parameter defaults to 0.0, but the notebook calls it with `min_return=0.02`: very small vertical-barrier returns get bucketed into class 0, which is then dropped as a rare label. This produces clean binary {-1, +1} labels without forcing every near-flat vertical-barrier return into the sign-of-return camp.
 
 **The t1 column.** Every label carries a timestamp t1 indicating when the label was resolved (first barrier touch). This is critical for CPCV purging in Phase 2: training labels whose t1 extends into the test period must be purged to prevent leakage.
 
-**Drop rare labels (AFML Snippet 3.8).** With symmetric barriers and min_return=0, the 0 class becomes rare and is dropped by the 5% threshold. Produces binary labels {-1, +1}.
+**Drop rare labels (AFML Snippet 3.8).** With symmetric barriers and the `min_return=0.02` floor, the 0 class becomes rare and is dropped. The notebook uses an 8.5% threshold (raised from the 5% function default) to be more aggressive about removing residual class-0 events. Produces binary labels {-1, +1}.
 
 ### Key function: `run_labeling_pipeline`
 
@@ -83,7 +83,7 @@ Computes per-sample weights that account for label overlap, return attribution, 
 
 **Step 3 — Return attribution (Snippet 4.10).** Combines uniqueness with return magnitude: `w_i = |return_i| × ū_i`. Labels that are both unique (informative) and associated with large price moves (signal) receive higher weight. The result is normalized so `sum(weights) == len(weights)`, making the mean weight ≈ 1 for sklearn compatibility.
 
-**Step 4 — Time decay (Snippet 4.11).** Applies linear decay via `np.linspace(oldest_weight, 1.0, n)` so that older samples weigh less. The `oldest_weight` parameter controls decay strength: 1.0 means no decay, 0.5 halves the oldest sample's weight relative to the newest. The thesis uses 0.5, reflecting that market regimes shift over the 2014-2026 window and more recent samples are more relevant to deployment.
+**Step 4 — Time decay (Snippet 4.11).** Applies linear decay via `np.linspace(oldest_weight, 1.0, n)` so that older samples weigh less. The `oldest_weight` parameter controls decay strength: 1.0 means no decay, 0.4 means the oldest sample's weight is 40% of the newest. The thesis uses 0.4, reflecting that market regimes shift over the 2014-2026 window and more recent samples are more relevant to deployment.
 
 **Step 5 — Quantile cap.** Clips extreme weights at the 99th percentile to prevent a single high-return unique event from dominating training. Without this cap, a rare 30%-move label with uniqueness 1.0 would have weight ~30× the mean, causing the model to overfit that single event.
 
@@ -97,11 +97,11 @@ Orchestrates the four steps. Returns a pd.Series of weights indexed on event tim
 
 ---
 
-## `pre_cpcv/features.py` — Technical and Mathematical Features
+## `pre_cpcv/features.py` — Technical, Mathematical, and Lag Features
 
 ### What it does
 
-Computes 34 features per bar: 25 technical analysis features and 9 mathematical features from AFML Part 4. Applies log transforms to extreme-scale features. All rolling-window parameters follow the BTC calendar.
+Computes 40 columns per bar across three categories: 25 technical-analysis features, 9 mathematical features from AFML Part 4, and 6 precomputed autoregressive lag features. Applies log transforms to extreme-scale features. All rolling-window parameters follow the BTC calendar.
 
 ### Core concepts
 
@@ -113,7 +113,7 @@ Named indicators (RSI, MACD, Bollinger, Stochastic, CCI, MFI, ATR) use their con
 
 **Mathematical features from AFML Part 4.** Higher-order statistical measures of the return distribution and price dynamics:
 
-1. **Shannon entropy** (Ch. 18.2): quantile-encodes returns into 5 bins, computes `H = -Σ pᵢ log₂(pᵢ)`. Measures uncertainty in the return distribution.
+1. **Shannon entropy** (Ch. 18.2): encodes returns into 10 equal-width bins, computes `H = -Σ pᵢ log₂(pᵢ)`. Measures uncertainty in the return distribution. Equal-width bins replaced an earlier quantile-bin scheme that collapsed to zero entropy whenever clustered values made all quantile edges coincide.
 2. **Lempel-Ziv complexity** (Ch. 18.4): binary-encodes returns, applies LZ76 compression, normalizes. Measures algorithmic complexity — near 0 = highly predictable, near 1 = random.
 3. **Hurst exponent** (Rescaled Range analysis): quantifies long-memory behavior. H > 0.5 = trending (persistent), H < 0.5 = mean-reverting.
 4. **Variance ratio** (Lo & MacKinlay 1988): `VR(q) = Var(r_q) / (q × Var(r₁))`. > 1 = momentum, < 1 = mean reversion, = 1 = random walk.
@@ -128,11 +128,17 @@ Named indicators (RSI, MACD, Bollinger, Stochastic, CCI, MFI, ATR) use their con
 
 **Log transforms.** Applied to ATR and OBV only. Both span multiple orders of magnitude over the 2014-2026 period (BTC price ranging from ~$200 to ~$100k), so log compression is essential before scaling. All other features are on bounded or dimensionless scales that the per-fold RobustScaler handles adequately.
 
+**Lag features (6).** Six precomputed columns named `log_returns_lag1`, `log_returns_lag2`, `log_returns_lag3`, `log_returns_lag5`, `log_returns_lag10`, `log_returns_lag21` produced by `compute_lag_features(df)`. Constants `AR_LAGS=[1, 2, 3, 5, 10, 21]` and `LAG_COLUMN_PREFIX="log_returns_lag"` live at module scope so other files (preprocessing, benchmarks) can reference them without hardcoding the lag list.
+
+These are consumed only by the AR Logistic baseline. Computing them once on the full daily series, instead of inline inside `ARLogistic.fit` / `ARLogistic.predict`, removes a look-ahead artefact that the inline version had: previously, NaN lags at the head of each test fold were imputed with `bfill()`, which used later test observations to fill earlier ones. Precomputing on the global daily series gives every aligned event valid lookback values that respect chronological order. The lag columns sit alongside TA / math / external columns in the assembled feature matrix but are excluded from MDA selection by name prefix in `preprocessing.py`.
+
 ### Key functions
 
 - `compute_ta_features(df)`: returns the 25 TA columns.
 - `compute_math_features(df, which)`: returns the 9 math columns, with caching.
-- `build_feature_matrix(df)`: orchestrates TA + math + log transforms. External features are added separately.
+- `compute_lag_features(df, lags=AR_LAGS)`: returns the 6 lag columns.
+- `lag_column_names(lags=None)`: returns the canonical column names in the order matching `lags`, used by `benchmarks.py` to pull lag columns out of `X` without hardcoding strings.
+- `build_feature_matrix(df)`: orchestrates `compute_ta_features` + `compute_math_features` + `apply_log_transforms`. Returns 34 columns (25 TA + 9 math). External features (22) and lag features (6) are assembled separately in the notebook and concatenated alongside before alignment; the canonical concat order is `[ta, math, external, lag]`.
 
 ---
 
@@ -140,7 +146,7 @@ Named indicators (RSI, MACD, Bollinger, Stochastic, CCI, MFI, ATR) use their con
 
 ### What it does
 
-Fetches and aligns 23 external features: 13 macro variables from Yahoo Finance and FRED, 2 crypto-macro signals, and 8 on-chain metrics from CoinMetrics.
+Fetches and aligns 22 external features: 13 macro variables from Yahoo Finance and FRED, 1 crypto-macro signal, and 8 on-chain metrics from CoinMetrics.
 
 ### Core concepts
 
@@ -150,7 +156,7 @@ Fetches and aligns 23 external features: 13 macro variables from Yahoo Finance a
 
 **2-year yield fallback chain.** FRED DGS2 is the primary source. If it returns insufficient data, the code falls back to fetching the T10Y2Y spread from FRED and back-deriving `us2y = us10y - spread`. This ensures the yield curve feature is always populated even when the preferred source fails.
 
-**Crypto-macro (2).** Market-level cross-crypto signals distinct from blockchain fundamentals: `eth_btc_ratio` (ETH close / BTC close) captures altcoin rotation; `btc_dominance` captures BTC's share of total crypto market cap. BTC dominance comes from CoinGecko's API with a fallback proxy `100 / (1 + ETH/BTC)` when the API is unavailable.
+**Crypto-macro (1).** A single market-level cross-crypto signal, `eth_btc_ratio` (ETH close / BTC close), captures altcoin rotation. An earlier version added `btc_dominance` from CoinGecko's `/coins/bitcoin/market_chart` endpoint with a `100 / (1 + ETH/BTC)` proxy as fallback. Two problems forced the column out: the CoinGecko endpoint returns BTC market cap in USD rather than the bounded [0, 100] dominance percentage the column name implied, and the proxy fallback was a price-correlated approximation the methodology could not cleanly defend. `eth_btc_ratio` carries the alt-rotation signal alone.
 
 **On-chain (8).** Blockchain network activity from CoinMetrics Community API: 14-day RoC of active addresses and transaction count, 30-day RoC of hashrate, MVRV ratio, net exchange flow (inflows − outflows), fee per transaction, exchange supply percentage, and daily issuance. These are BTC-native signals that equity models cannot access.
 
@@ -161,6 +167,8 @@ Fetches and aligns 23 external features: 13 macro variables from Yahoo Finance a
 ### Key function: `build_external_features`
 
 Orchestrates macro, crypto-macro, and on-chain fetches, concatenates, caches to Parquet, and returns the combined DataFrame. Each category is independently toggleable via boolean flags. The on-chain fetch is wrapped in try/except so missing `coinmetrics-api-client` doesn't break the pipeline.
+
+The cache check verifies both the date-range endpoints and the column set. Changing the feature mix (e.g., dropping `btc_dominance`) invalidates the cache and triggers a refetch on the next run; the date-range-only check would have silently returned a stale frame.
 
 ---
 
@@ -183,7 +191,7 @@ Aligns the feature matrix (covering all ~4,200 daily bars) with the labels and w
 ### Key function: `align_for_cv`
 
 Returns the four aligned objects:
-- **X**: feature matrix (~900 × 57).
+- **X**: feature matrix (~900 × 62; 25 TA + 9 math + 22 external + 6 lag). 56 columns reach MDA selection; the 6 lag columns are excluded by name prefix and routed only to AR Logistic.
 - **y**: binary labels {-1, +1}.
 - **w**: AFML sample weights (uniqueness × return attribution × time decay, capped at 99th percentile).
 - **t1**: barrier touch timestamps (DatetimeIndex) for CPCV purging.
@@ -269,14 +277,16 @@ The final per-feature MDA is the average across both classifiers and all inner f
 
 The rationale for multi-model MDA: RF-only MDA introduces tree bias (features that tree ensembles naturally exploit get inflated importance). SFI in weak-signal regimes produces uninformative near-uniform scores. Averaging across model families reduces selection variance and prevents architecture bias.
 
+**Lag-feature exclusion.** Before MDA runs, `select_features` filters out any column whose name starts with `LAG_COLUMN_PREFIX` (the 6 `log_returns_lagN` columns from `pre_cpcv/features.py`). Lag features are routed only to AR Logistic; including them in MDA would let pure autoregressive signal compete with engineered TA / math / external features for the top-k cap and bias the comparison. The lag columns sit in `X_tr_proc` alongside the engineered features (so AR Logistic can pull them via the pipeline's pre-selection `X_tr_full` route) but never enter the `selected` list.
+
 ### Key function: `preprocess_fold`
 
 Orchestrates FFD → scaling → selection. Returns:
 - `X_train`, `X_test` with all columns (pre-selection) so the pipeline can route full-column DataFrames to AR Logistic.
-- `selected`: list of feature names chosen by MDA.
-- `info` dict with FFD d* values, fitted scaler, and selected feature list (used downstream by symbolic extraction).
+- `selected`: list of feature names chosen by MDA (excluding lag columns).
+- `info` dict with FFD d* values, fitted scaler, and selected feature list (used downstream by symbolic extraction to reconstruct the same preprocessing on the symbolic-extraction fold).
 
-The `skip_selection=True` flag is set when only AR Logistic is being evaluated, since it constructs its own lagged-return features.
+The `skip_selection=True` flag is set when only AR Logistic is being evaluated. AR Logistic does not need MDA selection because it consumes only the precomputed lag columns from `pre_cpcv/features.compute_lag_features`; running MDA on its behalf would be wasted compute.
 
 ---
 
@@ -302,17 +312,19 @@ For each CPCV training fold, runs Bayesian hyperparameter optimization (Optuna's
 - **Random Forest**: `n_estimators` ∈ [100, 300], `max_depth` ∈ [3, 20], `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
 - **XGBoost**: `max_depth` ∈ [2, 6], `learning_rate` ∈ log [0.01, 0.3], `min_child_weight` ∈ [1, 30], plus subsample, colsample_bytree, gamma, reg_alpha, reg_lambda. Fixed `n_estimators=500` with early stopping at 20 rounds.
 - **LSTM**: `hidden_size` ∈ [16, 32], `num_layers` ∈ [1, 3], `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=14 (matches production).
-- **KAN**: `width1` ∈ [3, 12], `width2` ∈ [0, 10], `lr` ∈ log [1e-3, 0.1], `weight_decay` ∈ log [1e-5, 1e-2], `grid` ∈ {3, 5}.
+- **KAN**: `width1` ∈ [3, 12], `width2` ∈ [0, 10], `lr` ∈ log [5e-4, 5e-2], `weight_decay` ∈ log [1e-5, 5e-3], `grid` ∈ {3, 5}.
 
 The caps are deliberately tighter than common defaults. With ~700 training samples per fold, overly flexible architectures guarantee overfitting. Each cap is justified by the samples-to-parameters ratio.
 
 ### Production consistency
 
-Tuning uses identical configurations to production: same window length (14 for LSTM), same warm restart schedule (T_0=25 for LSTM, T_0=30 for KAN), same loss function (cross-entropy with label smoothing 0.1, sample weights, class weights). Hyperparameters tuned under one regime would be suboptimal under another, so consistency matters.
+Tuning uses identical configurations to production along the dimensions that affect what gets learned: same window length (14 for LSTM), same warm restart schedule (T_0=25 for LSTM, T_0=30 for KAN), same loss function (cross-entropy with label smoothing 0.1, sample weights, class weights). Hyperparameters tuned under one regime would be suboptimal under another, so consistency matters along these axes.
+
+The LSTM tuning loop deliberately runs fewer epochs and a shorter patience window than production (tuning: epochs=50, patience=7; production: epochs=100, patience=15) to keep per-trial cost bounded across hundreds of inner-fold fits. The tuned hyperparameters are then re-fitted at the production budget. The methodology chapter discloses this divergence explicitly.
 
 ### Default trial counts
 
-`N_TRIALS_CLASSICAL = 60` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 40` (LSTM, KAN). Overridable via the `n_trials` parameter passed to `run_cpcv_pipeline()`. Recommended values balancing exploration against runtime: 30 for classical models, 20 for neural models.
+`N_TRIALS_CLASSICAL = 60` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 40` (LSTM, KAN). The `run_cpcv_pipeline()` function accepts an `n_trials` override, and the notebook currently passes `n_trials=30` for every tuned model.
 
 ### Key function: `tune_all_models`
 
@@ -367,9 +379,11 @@ The main entry point. Coordinates everything: split generation, preprocessing, o
 
 **80/20 chronological split for calibration.** Within each training fold, the last 20% becomes the calibration set. Chronological (no shuffling) so the calibration set comes from the most recent data, similar to a holdout in production deployment.
 
-**Model dispatching.** AR Logistic receives the full pre-selection DataFrame (it constructs its own lagged-return features and ignores the selected feature set). Other models receive the selected feature subset. The pipeline routes the correct X to each model.
+**Model dispatching.** AR Logistic receives the full pre-selection DataFrame and pulls its 6 precomputed lag columns from there (`log_returns_lag1` … `log_returns_lag21`, produced once on the full daily series by `pre_cpcv.features.compute_lag_features`). Other models receive the MDA-selected feature subset. The pipeline routes the correct X to each model.
 
 **Per-split tuning application.** When `tune=True`, the pipeline calls `tune_all_models()` after preprocessing and before model training. The tuned parameters are then written to module-level constants (`lstm_mod.LSTM_HIDDEN_SIZE`, `kan_mod.KAN_HIDDEN`, etc.). Each model class reads these constants at instantiation time, so tuning takes effect for that split's models.
+
+**Module-default reset.** The first thing `run_cpcv_pipeline` does is call `_reset_module_defaults()`. On the first invocation it snapshots the pristine import-time values of every constant `_apply_tuned_params` writes (LOGISTIC_C, RF_N_ESTIMATORS, KAN_HIDDEN, …); on every subsequent invocation it restores those snapshots. Without this, a second pipeline call would inherit the previous run's tuned values: tuning once and then re-running without tuning would silently use the tuned widths from the prior run. The tracked-constants list (`_TRACKED_CONSTANTS`) mirrors exactly what `_apply_tuned_params` writes; new tuned hyperparameters must be added to both.
 
 **LSTM index handling.** LSTM consumes windowed sequences (length 14), so it produces fewer predictions than other models. The pipeline tracks `last_valid_indices` to align LSTM predictions back to original timestamps. Calibration uses `fit_from_logits` to handle this alignment.
 
@@ -429,7 +443,9 @@ Implements two baseline models: an autoregressive logistic regression on lagged 
 
 ### Core concepts
 
-**AR Logistic — econometric baseline.** Constructs its own features: lagged log returns at lags [1, 2, 3, 5, 10, 21]. Ignores the selected feature set entirely. The role of this baseline is to test whether the engineered features (TA, AFML mathematical, macro, on-chain) add value beyond simple price momentum. If a more complex model cannot beat AR Logistic, it has not learned anything beyond autocorrelation.
+**AR Logistic — econometric baseline.** Selects 6 precomputed lag columns (`log_returns_lag1`, `log_returns_lag2`, `log_returns_lag3`, `log_returns_lag5`, `log_returns_lag10`, `log_returns_lag21`) from the pre-selection feature matrix and ignores everything else. The lag columns are produced once on the full daily series by `pre_cpcv.features.compute_lag_features` and routed only to AR Logistic via the pipeline's `X_tr_full`. The role of this baseline is to test whether the engineered features (TA, AFML mathematical, macro, on-chain) add value beyond simple price momentum. If a more complex model cannot beat AR Logistic, it has not learned anything beyond autocorrelation.
+
+NaN lag columns at predict time raise an exception. An earlier inline-build version silently `bfill()`-imputed missing lags inside `fit` and `predict`, which leaked future test observations into earlier ones. Moving lag construction upstream to `pre_cpcv.features` (computed once on the full daily series, no fold-local bfill) eliminated that leakage path.
 
 **Logistic Regression — linear ML baseline.** Uses sklearn's standard `LogisticRegression` on the full selected feature set. Class-weighted to handle label imbalance, with L1 or L2 penalty (chosen via tuning). Solver auto-selected based on penalty (LBFGS for L2, liblinear for L1).
 
@@ -437,7 +453,7 @@ Implements two baseline models: an autoregressive logistic regression on lagged 
 
 ### `predict_logits` method
 
-Both models expose a `predict_logits` method that returns raw log-odds for downstream calibration. AR Logistic computes log-odds from `predict_proba`; Logistic Regression uses sklearn's `decision_function` which returns the raw decision value before sigmoid.
+Both models expose a `predict_logits` method that returns raw log-odds for downstream calibration. AR Logistic computes log-odds from `predict_proba` with a symmetric `np.clip(proba, 1e-10, 1 − 1e-10)` matching the tree-model convention (the earlier asymmetric `log(p₁ / (p₀ + 1e-10))` is gone, eliminating a mild numerical asymmetry between baselines and tree models). Logistic Regression uses sklearn's `decision_function` which returns the raw decision value before sigmoid.
 
 ---
 
@@ -519,7 +535,7 @@ A KAN classifier using the `efficient-kan` library, trained as a standard PyTorc
 
 **Single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~700 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
 
-**Stored dataset.** `_dataset` dict is preserved on the fitted model (train and validation tensors, normalized). This is consumed by `symbolic_extraction.py` to ensure the symbolic re-training matches the CPCV predictor's input distribution.
+**No state passed to symbolic extraction.** The fitted KAN holds only its standard PyTorch state (parameters, normalization buffers). It does not store the training dataset on the instance — an earlier version cached a `_dataset` dict on the model so symbolic extraction could read its training tensors directly, but the symbolic pipeline now reconstructs everything it needs from `prep_info` (the FFD d* values, the fitted scaler, the selected feature list stored alongside predictions). Removing the cached dataset cuts a ~10 MB redundancy per fold and makes the prediction-vs-extraction handoff a clean data interface rather than a stateful coupling.
 
 ### Why KAN
 
@@ -549,8 +565,10 @@ Comprehensive evaluation pipeline: split-level metrics, bet sizing, path stitchi
 2. Confidence: `p = max(P(class_0), P(class_1))`, always in [0.5, 1].
 3. Z-score: `z = (p - 0.5) / sqrt(p × (1-p))`.
 4. Raw bet: `2 × Φ(z) - 1` where Φ is the standard normal CDF.
-5. Minimum threshold: bets below 0.10 in absolute value snap to 0 (the abstention mechanism).
-6. Discretization: snap to nearest of {0, 0.25, 0.5, 0.75, 1.0}.
+5. Maximum bet cap: `np.clip(raw_bet, -0.75, 0.75)` (`MAX_BET_SIZE=0.75`) prevents the highest-confidence predictions from dominating the equity curve.
+6. Minimum threshold: bets below 0.05 (`MIN_BET_SIZE=0.05`) in absolute value snap to 0 (the abstention mechanism).
+7. Discretization: snap to nearest of {0.0, 0.25, 0.50, 0.75}. The 1.0 level was dropped to stay consistent with the 0.75 cap.
+8. Apply sign: `bet = direction × |bet|`.
 
 The abstention mechanism is the crucial AFML innovation: predictions with probability near 0.5 produce zero bet, meaning no capital is allocated despite having a directional prediction. This separates classification accuracy (always evaluated) from trading behavior (selective).
 
@@ -558,7 +576,11 @@ The abstention mechanism is the crucial AFML innovation: predictions with probab
 
 **Path stitching.** Assembles 5 full-span backtest paths from the 15 splits using the path-assignment matrix from `cv.py`. For each path, collects test-fold predictions for each group from the corresponding split, concatenates chronologically, and computes performance. With multiple seeds, calibrated probabilities are averaged across seeds before bet sizing (ensemble averaging reduces prediction variance by ~1/√n_seeds).
 
-**Path performance metrics.** Per path: annualized Sharpe (using √365 for BTC's continuous trading), cumulative return, annualized return, maximum drawdown, time under water, win rate, profit factor, number of trades, average bet size, return distribution skewness and kurtosis.
+**Path performance metrics.** Per path: annualized Sharpe (using √365 for BTC's continuous trading), cumulative return, annualized return, maximum drawdown, time under water, win rate, profit factor, number of trades (`n_trades`), full event count (`n_returns`), elapsed years, average bet size, return distribution skewness and kurtosis.
+
+**Annualized return formula.** Calendar-time CAGR: `(1 + cum_ret)^(1 / years_elapsed) − 1`, where `years_elapsed = (timestamps[-1] − timestamps[0]).days / 365.25`. An earlier version used `(1 + cum_ret)^(365 / n_events) − 1`, which assumed `n` was the number of daily bars but was actually the number of CUSUM events (~75/year, not 365). That over-stated `ann_ret` by roughly 5–6× for typical multi-year paths. The Sharpe formula's `√365` annualisation is internally consistent with the deflated-Sharpe de-annualisation downstream and is left unchanged.
+
+**Profit factor.** Three-way logic: NaN if `n_trades == 0` (undefined for an empty path), `inf` if there are trades but no losses, normal `Σ(positive returns) / |Σ(negative returns)|` otherwise. The earlier convention returned `inf` for both "trades, no losses" and "no trades at all" and `0.0` for empty paths from `_empty_performance`, which were inconsistent under aggregation.
 
 **Deflated Sharpe Ratio (AFML Chapter 14).** Corrects observed Sharpe for two biases:
 
@@ -568,6 +590,8 @@ The abstention mechanism is the crucial AFML innovation: predictions with probab
 $$\text{DSR} = \Phi\left(\frac{SR_{obs} - E[\max SR]}{\sigma_{SR}}\right)$$
 
 where σ_SR includes the Mertens non-normality correction. The implementation correctly handles scipy's *excess* kurtosis (γ_4 - 3) by converting to the raw kurtosis the Mertens formula expects: `(γ_4 - 1)/4 = (excess + 2)/4`. Includes a clamp on the variance to prevent NaN from numerical edge cases.
+
+The Mertens formula divides by `(n_obs − 1)`. `n_obs` is set to `avg_n_returns` (mean across paths of `len(strategy_returns)`), matching the n used to estimate the Sharpe ratio. Earlier versions used `avg_n_trades` (the strict subset where `bet_size ≠ 0`), which inflated `sr_std` and conservatively understated DSR; the previous convention was internally inconsistent with the Sharpe estimation horizon.
 
 DSR > 0.95 indicates a result that survives multiple-testing correction. DSR < 0.95 may be a statistical artifact.
 

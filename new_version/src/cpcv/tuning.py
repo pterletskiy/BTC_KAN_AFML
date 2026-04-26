@@ -449,10 +449,16 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     """Tune LSTM via Optuna TPE + Purged K-Fold.
 
     Search space:
-        hidden_size:   int [32, 128] step 32
+        hidden_size:   int [16, 32] step 16
         num_layers:    int [1, 3]
         dropout:       uniform [0.1, 0.5]
         learning_rate: log-uniform [1e-4, 5e-2]
+
+    The hidden_size cap of 32 (vs an earlier 128 ceiling) was tightened
+    to prevent memorisation on ~700-sample purged folds. Tuning runs
+    fewer epochs and a shorter patience window than production
+    (epochs=50, patience=7) to keep the per-trial cost bounded; the
+    production fit re-runs at epochs=100, patience=15.
     """
     from torch.utils.data import TensorDataset, DataLoader
     from src.cpcv.models.lstm_model import LSTMClassifier, create_sequences
@@ -665,11 +671,15 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     """Tune KAN via Optuna TPE + Purged K-Fold.
 
     Search space:
-        width1:       int [5, 16]          (1st hidden layer)
-        width2:       int [0, 8]           (2nd hidden; 0 = skip)
+        width1:       int [3, 12]          (1st hidden layer)
+        width2:       int [0, 10]          (2nd hidden; 0 = skip)
         lr:           log-uniform [5e-4, 5e-2]
         weight_decay: log-uniform [1e-5, 5e-3]
-        grid:         categorical {3, 5, 8}
+        grid:         categorical {3, 5}
+
+    The width1 ceiling of 12 (vs an earlier 16) and the dropping of
+    grid=8 from the categorical set were tightened to prevent
+    memorisation on ~700-sample purged folds.
 
     Fixed: k=3, epochs=200, patience=20, full-batch, tanh normalization.
     """

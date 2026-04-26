@@ -11,14 +11,16 @@ Macro (13):
   sp500_ret_30, nasdaq_ret_30, gold_ret_30, silver_ret_30, copper_ret_30,
   oil_ret_30, natgas_ret_30
 
-Crypto-Macro (2):
-  Market-level cross-crypto signals (not blockchain fundamentals).
-  eth_btc_ratio, btc_dominance
+Crypto-Macro (1):
+  Market-level cross-crypto signal (not blockchain fundamentals).
+  eth_btc_ratio
 
 On-Chain (8):
   Blockchain network activity from CoinMetrics Community API.
   active_addr_roc_14, tx_count_roc_14, hashrate_roc_30, mvrv,
   net_exchange_flow, fee_per_tx, exchange_supply_pct, issuance_ntv
+
+Total: 22 external features.
 
 All external data is forward-filled to BTC's trading calendar via
 pd.merge_asof(direction='backward') so that each BTC day uses the
@@ -58,12 +60,6 @@ MACRO_TICKERS = {
 
 # rolling return period (~1 crypto month)
 RET_WINDOW = 30
-
-# CoinGecko API
-COINGECKO_BTC_DOM_URL = (
-    "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-    "?vs_currency=usd&days=max&interval=daily"
-)
 
 # CoinMetrics metrics to fetch (daily, community tier)
 COINMETRICS_METRICS = [
@@ -122,66 +118,6 @@ def _fetch_us2y(start: str, end: str) -> pd.Series:
         logger.warning("FRED DGS2 failed: %s", e)
 
     return pd.Series(dtype=float)
-
-
-def _fetch_btc_dominance(start: str, end: str) -> pd.Series:
-    """Fetch BTC market cap history from CoinGecko.
-
-    Returns BTC market cap (in USD) rather than dominance percentage.
-    The absolute market cap carries the same signal as dominance after
-    feature scaling and is more reliable to fetch in a single call.
-    """
-    try:
-        import requests
-
-        resp = requests.get(COINGECKO_BTC_DOM_URL, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-
-        btc_mcap = pd.DataFrame(data["market_caps"], columns=["timestamp", "btc_mcap"])
-        btc_mcap["date"] = pd.to_datetime(btc_mcap["timestamp"], unit="ms").dt.normalize()
-        btc_mcap = btc_mcap.drop_duplicates("date", keep="last").set_index("date")["btc_mcap"]
-        btc_mcap.index = btc_mcap.index.tz_localize(None)
-        btc_mcap = btc_mcap.loc[start:end]
-
-        if len(btc_mcap) > 100:
-            logger.info("BTC market cap from CoinGecko: %d days.", len(btc_mcap))
-            return btc_mcap
-
-        return pd.Series(dtype=float)
-
-    except Exception as e:
-        logger.warning("CoinGecko fetch failed: %s", e)
-        return pd.Series(dtype=float)
-
-
-def _compute_btc_dominance_proxy(
-    btc_close: pd.Series, start: str, end: str,
-) -> pd.Series:
-    """Approximate BTC dominance using the inverse ETH/BTC ratio.
-
-    When CoinGecko is unavailable, 100 / (1 + ETH_USD / BTC_USD) serves
-    as a rough proxy: when ETH outperforms BTC, dominance proxy falls.
-    This is not true market-cap dominance but preserves the directional
-    signal after feature scaling.
-    """
-    try:
-        eth = _fetch_yfinance("ETH-USD", start, end)
-        if len(eth) < 100:
-            return pd.Series(dtype=float)
-
-        common = btc_close.index.intersection(eth.index)
-        if len(common) < 100:
-            return pd.Series(dtype=float)
-
-        ratio = eth.loc[common] / btc_close.loc[common]
-        dominance_proxy = 100.0 / (1.0 + ratio)
-
-        return dominance_proxy
-
-    except Exception as e:
-        logger.warning("BTC dominance proxy failed: %s", e)
-        return pd.Series(dtype=float)
 
 
 def _align_to_btc(
@@ -335,16 +271,20 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
 
 
 # =====================================================================
-# Crypto-Macro Features (2)
+# Crypto-Macro Features (1)
 # =====================================================================
 def compute_crypto_macro_features(
     btc_close: pd.Series,
     btc_index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
-    """Compute 2 crypto-macro features aligned to BTC's calendar.
+    """Compute 1 crypto-macro feature aligned to BTC's calendar.
 
-    These are market-level cross-crypto signals, distinct from
-    blockchain fundamentals (which are in compute_onchain_features).
+    Currently produces only ETH/BTC ratio. ``btc_dominance`` was
+    removed because the CoinGecko endpoint returned BTC market cap in
+    USD (not the bounded dominance percentage), and the proxy fallback
+    was a price-correlated approximation. ETH/BTC ratio carries the
+    alt-rotation signal alone, distinct from blockchain fundamentals
+    in compute_onchain_features.
 
     Parameters
     ----------
@@ -356,7 +296,7 @@ def compute_crypto_macro_features(
     Returns
     -------
     pd.DataFrame
-        2 crypto-macro feature columns indexed on btc_index.
+        Single-column ('eth_btc_ratio') DataFrame indexed on btc_index.
     """
     start = str(btc_index[0].date() - pd.Timedelta(days=30))
     end = str(btc_index[-1].date() + pd.Timedelta(days=1))
@@ -365,7 +305,7 @@ def compute_crypto_macro_features(
 
     print("[external] Fetching crypto-macro data...")
 
-    # 1. ETH/BTC ratio
+    # ETH/BTC ratio
     t0 = time.time()
     try:
         eth = _fetch_yfinance("ETH-USD", start, end)
@@ -377,24 +317,6 @@ def compute_crypto_macro_features(
     except Exception as e:
         logger.warning("ETH/BTC ratio failed: %s", e)
         features["eth_btc_ratio"] = np.nan
-
-    # 2. BTC dominance (CoinGecko with ETH/BTC proxy fallback)
-    t0 = time.time()
-    print("  Fetching BTC dominance from CoinGecko...")
-
-    btc_dom = _fetch_btc_dominance(start, end)
-
-    if btc_dom.empty or btc_dom.notna().sum() < 100:
-        print("  CoinGecko unavailable, computing dominance proxy from ETH/BTC...")
-        btc_dom = _compute_btc_dominance_proxy(btc_close, start, end)
-
-    if not btc_dom.empty and btc_dom.notna().sum() > 100:
-        features["btc_dominance"] = _align_to_btc(btc_dom, btc_index, "btc_dominance")
-        print(f"  BTC dominance: {features['btc_dominance'].notna().sum()} valid days "
-              f"({time.time()-t0:.1f}s)")
-    else:
-        features["btc_dominance"] = np.nan
-        logger.warning("BTC dominance unavailable. Column will be NaN.")
 
     return features
 
@@ -544,6 +466,8 @@ def build_external_features(
 ) -> pd.DataFrame:
     """Fetch, compute, and cache all external features.
 
+    Total feature count: 13 macro + 1 crypto-macro + 8 on-chain = 22.
+
     Parameters
     ----------
     btc_df : pd.DataFrame
@@ -551,7 +475,7 @@ def build_external_features(
     include_macro : bool
         Whether to include macro features (traditional finance).
     include_crypto_macro : bool
-        Whether to include crypto-macro features (ETH/BTC, BTC dominance).
+        Whether to include crypto-macro features (ETH/BTC ratio).
     include_onchain : bool
         Whether to include on-chain features (requires coinmetrics-api-client).
 
@@ -564,15 +488,26 @@ def build_external_features(
     btc_index = btc_df.index
     btc_close = btc_df["Close"]
 
-    # check cache
+    # check cache (date-range AND column-set match, the latter so dropping
+    # a feature like btc_dominance does not silently return a stale cache)
+    expected_cols = _expected_external_columns(
+        include_macro, include_crypto_macro, include_onchain,
+    )
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
         if (cached.index[0] == btc_index[0]
-                and cached.index[-1] == btc_index[-1]):
+                and cached.index[-1] == btc_index[-1]
+                and set(cached.columns) == set(expected_cols)):
             logger.info("External features loaded from cache (%d cols).", cached.shape[1])
             print(f"[external] Loaded from cache: {list(cached.columns)}")
             return cached
-        logger.info("External cache date range mismatch, refetching.")
+        if set(cached.columns) != set(expected_cols):
+            logger.info(
+                "External cache column mismatch (cached=%s, expected=%s), refetching.",
+                sorted(cached.columns), sorted(expected_cols),
+            )
+        else:
+            logger.info("External cache date range mismatch, refetching.")
 
     print("=" * 60)
     print("Fetching External Features")
@@ -619,3 +554,35 @@ def build_external_features(
     logger.info("External features cached to %s.", cache_path)
 
     return features
+
+
+def _expected_external_columns(
+    include_macro: bool,
+    include_crypto_macro: bool,
+    include_onchain: bool,
+) -> list[str]:
+    """Return the column set the cache must match for a hit.
+
+    Used by build_external_features to invalidate the cache when the
+    feature set changes (e.g., dropping btc_dominance), since the prior
+    cache check only compared index endpoints.
+    """
+    cols: list[str] = []
+    if include_macro:
+        cols += [
+            "dxy_roc_30", "us10y", "us2y",
+            "yield_curve_2y10y", "yield_curve_10y30y",
+            "vix",
+            "sp500_ret_30", "nasdaq_ret_30",
+            "gold_ret_30", "silver_ret_30", "copper_ret_30",
+            "oil_ret_30", "natgas_ret_30",
+        ]
+    if include_crypto_macro:
+        cols += ["eth_btc_ratio"]
+    if include_onchain:
+        cols += [
+            "active_addr_roc_14", "tx_count_roc_14", "hashrate_roc_30",
+            "mvrv", "net_exchange_flow", "fee_per_tx",
+            "exchange_supply_pct", "issuance_ntv",
+        ]
+    return cols

@@ -6,7 +6,7 @@ matrix covering every daily bar. Feature selection by row (restricting
 to labeled events) happens later in alignment.
 
 Implements technical analysis features, AFML Part 4 mathematical
-features, and log transforms.
+features, lag features (AR Logistic baseline), and log transforms.
 
 All time windows use crypto calendar (365 days/year, 7 days/week):
   1 week = 7,  1 month = 30,  1 quarter = 90,  6 months = 180
@@ -21,6 +21,15 @@ TA features (25 total):
 Mathematical features (9 total):
   shannon_entropy, lz_complexity, hurst, variance_ratio, jarque_bera,
   negentropy, sadf, smt_poly1, smt_exp
+
+Lag features (6 total, AR Logistic only):
+  log_returns_lag1, log_returns_lag2, log_returns_lag3,
+  log_returns_lag5, log_returns_lag10, log_returns_lag21
+
+  Precomputed once on the full daily series so the AR Logistic baseline
+  does not need to build lags inline at fit/predict time. Excluded
+  from MDA feature selection in preprocessing — they are a separate
+  category routed only to AR Logistic.
 """
 
 import logging
@@ -68,6 +77,10 @@ VR_WINDOW = 90                   # ~1 crypto quarter
 VR_LAG = 7                       # 1 crypto week
 JB_WINDOW = 90                   # ~1 crypto quarter
 GAUSS_ENT_WINDOW = 30            # ~1 crypto month
+
+# ── Lag features (consumed only by AR Logistic baseline) ──────────────
+AR_LAGS = [1, 2, 3, 5, 10, 21]
+LAG_COLUMN_PREFIX = "log_returns_lag"
 
 # ── Log transform targets ─────────────────────────────────────────────
 LOG_TRANSFORM_COLUMNS = ["atr", "obv"]
@@ -788,6 +801,78 @@ def _hurst_rs(data: np.ndarray, sub_periods: np.ndarray) -> float:
 
 
 # =====================================================================
+# Lag features (AR Logistic baseline — separate category)
+# =====================================================================
+def lag_column_names(lags: list[int] | None = None) -> list[str]:
+    """Return the canonical column names for the lag features.
+
+    Parameters
+    ----------
+    lags : list[int], optional
+        Lag periods. Defaults to ``AR_LAGS``.
+
+    Returns
+    -------
+    list[str]
+        Column names in the same order as ``lags``.
+    """
+    if lags is None:
+        lags = AR_LAGS
+    return [f"{LAG_COLUMN_PREFIX}{k}" for k in lags]
+
+
+def compute_lag_features(
+    df: pd.DataFrame,
+    lags: list[int] | None = None,
+) -> pd.DataFrame:
+    """Precompute lagged log-return features on the full daily series.
+
+    These columns are kept as a separate feature category because they
+    are consumed only by the AR Logistic baseline. ML models (Logistic
+    Regression, Random Forest, XGBoost, LSTM, KAN) do not see them and
+    the multi-model MDA feature selection in ``preprocessing.py``
+    excludes them by name prefix.
+
+    Computing the lags here on the full daily series instead of inline
+    inside the AR Logistic model removes a look-ahead artefact: the
+    previous inline ``ffill().bfill()`` imputation at predict time
+    backfilled NaN lags at the head of each test fold from later test
+    observations. Precomputing on the global series gives every aligned
+    event valid lookback values that respect chronological order.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        OHLCV DataFrame with a 'Close' column and DatetimeIndex.
+    lags : list[int], optional
+        Lag periods to compute. Defaults to ``AR_LAGS``.
+
+    Returns
+    -------
+    pd.DataFrame
+        One column per lag, named ``log_returns_lag{k}``. Indexed
+        identically to ``df``. The first ``max(lags)`` rows contain
+        NaN; downstream alignment with CUSUM events drops these because
+        CUSUM filtering only fires after the volatility EWMA warmup,
+        which exceeds ``max(AR_LAGS)``.
+    """
+    if lags is None:
+        lags = AR_LAGS
+
+    log_ret = np.log(df["Close"] / df["Close"].shift(1))
+
+    lag_df = pd.DataFrame(index=df.index)
+    for k in lags:
+        lag_df[f"{LAG_COLUMN_PREFIX}{k}"] = log_ret.shift(k)
+
+    logger.info(
+        "Lag features: %d columns, %d rows (lags=%s).",
+        lag_df.shape[1], lag_df.shape[0], lags,
+    )
+    return lag_df
+
+
+# =====================================================================
 # Log transforms
 # =====================================================================
 def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
@@ -818,6 +903,10 @@ def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
 def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """Chain TA features, math features, and log transforms.
 
+    External features and lag features are added separately in the
+    notebook (they have their own loaders / fetchers and are kept in
+    distinct categories).
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -826,7 +915,7 @@ def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        Feature columns covering every daily bar.
+        TA + math feature columns covering every daily bar.
     """
     ta = compute_ta_features(df)
     math = compute_math_features(df)

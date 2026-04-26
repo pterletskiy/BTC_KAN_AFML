@@ -36,6 +36,72 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
+# Pristine module-default capture and reset
+# =====================================================================
+# ``_apply_tuned_params`` mutates module-level constants on the model
+# files (LOGISTIC_C, RF_N_ESTIMATORS, KAN_HIDDEN, ...). Without a reset,
+# a second ``run_cpcv_pipeline`` call inherits the previous run's tuned
+# values: e.g. running with tuning, then re-running without tuning,
+# gives the second run's "untuned" models the first run's tuned widths.
+# ``_reset_module_defaults`` snapshots the original constants the first
+# time it is invoked and restores them on every subsequent call.
+_PRISTINE_DEFAULTS: dict[str, dict[str, object]] = {}
+
+# Names per module mirror the keys ``_apply_tuned_params`` writes to.
+_TRACKED_CONSTANTS = {
+    "benchmarks":  ["LOGISTIC_C", "LOGISTIC_PENALTY"],
+    "tree_models": [
+        "RF_N_ESTIMATORS", "RF_MAX_DEPTH", "RF_MIN_SAMPLES_LEAF", "RF_MAX_FEATURES",
+        "XGB_MAX_DEPTH", "XGB_LEARNING_RATE", "XGB_MIN_CHILD_WEIGHT",
+        "XGB_SUBSAMPLE", "XGB_COLSAMPLE_BYTREE", "XGB_GAMMA",
+        "XGB_REG_ALPHA", "XGB_REG_LAMBDA",
+    ],
+    "lstm_model":  ["LSTM_HIDDEN_SIZE", "LSTM_NUM_LAYERS", "LSTM_DROPOUT", "LSTM_LR"],
+    "kan_model":   ["KAN_HIDDEN", "KAN_HIDDEN2", "KAN_GRID", "KAN_LR", "KAN_WEIGHT_DECAY"],
+}
+
+
+def _model_module(name: str):
+    """Resolve a tracked-module name to the live module object."""
+    import src.cpcv.models.benchmarks as bench_mod
+    import src.cpcv.models.tree_models as tree_mod
+    import src.cpcv.models.lstm_model as lstm_mod
+    import src.cpcv.models.kan_model as kan_mod
+    return {
+        "benchmarks": bench_mod,
+        "tree_models": tree_mod,
+        "lstm_model": lstm_mod,
+        "kan_model": kan_mod,
+    }[name]
+
+
+def _reset_module_defaults() -> None:
+    """Restore tracked module-level constants to their pristine values.
+
+    On the first call, snapshots the current values (which are the
+    pristine import-time defaults, since this runs before any
+    ``_apply_tuned_params`` mutation). On every subsequent call,
+    restores those snapshots, undoing any tuning-driven mutation
+    from a prior ``run_cpcv_pipeline`` invocation.
+    """
+    first_call = not _PRISTINE_DEFAULTS
+
+    for mod_name, attr_names in _TRACKED_CONSTANTS.items():
+        mod = _model_module(mod_name)
+
+        if first_call:
+            _PRISTINE_DEFAULTS[mod_name] = {
+                a: getattr(mod, a) for a in attr_names if hasattr(mod, a)
+            }
+        else:
+            for a, v in _PRISTINE_DEFAULTS[mod_name].items():
+                setattr(mod, a, v)
+
+    if not first_call:
+        logger.debug("Reset tracked module-level constants to pristine defaults.")
+
+
+# =====================================================================
 # Apply tuned hyperparameters to module-level constants
 # =====================================================================
 def _apply_tuned_params(tuning_results: dict) -> dict:
@@ -208,6 +274,11 @@ def run_cpcv_pipeline(
         'n_splits', 'models', 'n_seeds', and optionally 'tuning_results'.
     """
     pipeline_start = time.time()
+
+    # Restore pristine module constants. Prevents one run's tuned
+    # hyperparameters from leaking into a later run that does not
+    # tune those models.
+    _reset_module_defaults()
 
     # ── defaults ──────────────────────────────────────────────────────
     if models is None:

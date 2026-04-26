@@ -226,14 +226,6 @@ class KANModel(BaseModel):
         model.eval()
         self.kan_model = model
 
-        # ── store dataset reference for downstream use ────────────────
-        self._dataset = {
-            "train_input": X_t,
-            "train_label": y_t.float(),
-            "test_input": X_val_t if has_val else X_t,
-            "test_label": y_val_t.float() if has_val else y_t.float(),
-        }
-
         # ── log results ───────────────────────────────────────────────
         with torch.no_grad():
             test_input = X_val_t if has_val else X_t

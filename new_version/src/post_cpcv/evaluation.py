@@ -138,9 +138,9 @@ def compute_strategy_returns(
     """Compute daily net strategy returns from bet sizes and realized returns."""
     gross = bet_sizes * label_returns
 
-    # turnover
+    # turnover at each event: |Δbet|, with prepend=0 making the first
+    # element |bet_sizes[0]| automatically (cost of opening the position).
     turnover = np.abs(np.diff(bet_sizes, prepend=0))
-    turnover[0] = np.abs(bet_sizes[0])
 
     tx_cost = cost * turnover
     net = gross - tx_cost
@@ -172,8 +172,18 @@ def compute_path_performance(
     # cumulative return
     cum_ret = np.prod(1.0 + returns) - 1.0
 
-    # annualized return
-    ann_ret = (1.0 + cum_ret) ** (ANNUALIZATION_FACTOR / n) - 1.0 if n > 0 else 0.0
+    # annualized return uses calendar time, not event count.
+    # The previous formula `(1 + cum_ret) ** (ANNUALIZATION_FACTOR / n)`
+    # assumed n was the number of daily bars; n here is the number of
+    # CUSUM events (~75/year, not 365), so that exponent over-annualised
+    # ann_ret by roughly 5–6× for typical multi-year paths.
+    ts = strategy_returns.index
+    if len(ts) < 2:
+        years_elapsed = 0.0
+        ann_ret = 0.0
+    else:
+        years_elapsed = max((ts[-1] - ts[0]).days / 365.25, 1.0 / 365.25)
+        ann_ret = (1.0 + cum_ret) ** (1.0 / years_elapsed) - 1.0
 
     # maximum drawdown
     equity = np.cumprod(1.0 + returns)
@@ -195,10 +205,19 @@ def compute_path_performance(
     n_trades = int(traded_mask.sum())
     win_rate = np.mean(traded_returns > 0) if n_trades > 0 else 0.0
 
-    # profit factor
+    # profit factor — three-way logic:
+    #   no trades at all   → NaN  (undefined; matches _empty_performance)
+    #   trades, no losses  → inf  (winning streak)
+    #   trades, no winners → 0.0
+    #   otherwise          → pos / |neg|
     pos_returns = traded_returns[traded_returns > 0].sum()
     neg_returns = traded_returns[traded_returns < 0].sum()
-    profit_factor = pos_returns / abs(neg_returns) if neg_returns != 0 else np.inf
+    if n_trades == 0:
+        profit_factor = np.nan
+    elif neg_returns == 0:
+        profit_factor = np.inf
+    else:
+        profit_factor = pos_returns / abs(neg_returns)
 
     # average bet size
     avg_bet = np.mean(np.abs(bet_sizes[traded_mask])) if n_trades > 0 else 0.0
@@ -220,6 +239,8 @@ def compute_path_performance(
         "win_rate": win_rate,
         "profit_factor": profit_factor,
         "n_trades": n_trades,
+        "n_returns": n,
+        "years_elapsed": years_elapsed,
         "avg_bet_size": avg_bet,
         "skewness": skewness,
         "kurtosis": kurtosis,
@@ -231,7 +252,8 @@ def _empty_performance() -> dict:
         "annualized_sharpe": 0.0, "cumulative_return": 0.0,
         "annualized_return": 0.0, "max_drawdown": 0.0,
         "time_under_water": 0, "win_rate": 0.0,
-        "profit_factor": 0.0, "n_trades": 0,
+        "profit_factor": np.nan, "n_trades": 0,
+        "n_returns": 0, "years_elapsed": 0.0,
         "avg_bet_size": 0.0, "skewness": 0.0, "kurtosis": 0.0,
     }
 
@@ -637,12 +659,17 @@ def compute_model_summary(
     pooled_skew = float(np.mean(all_skew))
     pooled_kurt = float(np.mean(all_kurt))
     
-    # average trades per path (not sum, which would inflate N by 5x)
-    avg_obs = int(np.mean([p["n_trades"] for p in path_performances]))
+    # DSR's n_obs must match the n used to estimate Sharpe. Sharpe
+    # is computed over the full event series (zero-bet rows included),
+    # so n_obs is the average n_returns per path, not n_trades.
+    # The Mertens variance correction in compute_deflated_sharpe uses
+    # (n_obs - 1) in the denominator; using n_trades (a strict subset)
+    # inflated sr_std and conservatively understated DSR.
+    avg_n_returns = int(np.mean([p["n_returns"] for p in path_performances]))
 
     # DSR
     dsr = compute_deflated_sharpe(
-        median_sharpe, max(avg_obs, 2), pooled_skew, pooled_kurt, n_trials
+        median_sharpe, max(avg_n_returns, 2), pooled_skew, pooled_kurt, n_trials
     )
 
     # split-level averages
