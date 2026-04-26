@@ -261,6 +261,41 @@ def _empty_performance() -> dict:
 # =====================================================================
 # Path stitching (AFML Chapter 12.4)
 # =====================================================================
+def _compute_group_bounds(T: int, n_groups: int) -> list[tuple[int, int]]:
+    """Return (start, end) positional index pairs for each CPCV group.
+
+    Mirrors ``cv._compute_group_bounds`` so this module does not import
+    a private symbol. Groups 0..N-2 have size ``T // n_groups``; the last
+    group absorbs the remainder. End indices are exclusive: ``[start, end)``.
+    """
+    base_size = T // n_groups
+    bounds = []
+    for g in range(n_groups):
+        start = g * base_size
+        end = (g + 1) * base_size if g < n_groups - 1 else T
+        bounds.append((start, end))
+    return bounds
+
+
+def _derive_event_index(predictions: dict) -> pd.DatetimeIndex:
+    """Reconstruct the full ordered event index from stored predictions.
+
+    The pipeline does not store ``X.index`` directly. Every prediction
+    entry stores its own ``timestamps`` slice; the union of all such
+    slices, sorted and de-duplicated, recovers the full event index
+    used at alignment time. Required for mapping stored timestamps back
+    to positional indices when filtering by CPCV group.
+    """
+    seen = set()
+    for pred in predictions.values():
+        ts = pred.get("timestamps")
+        if ts is None:
+            continue
+        for t in pd.DatetimeIndex(ts):
+            seen.add(t)
+    return pd.DatetimeIndex(sorted(seen))
+
+
 def stitch_paths(
     predictions: dict,
     path_map: dict,
@@ -268,13 +303,37 @@ def stitch_paths(
     model_name: str,
     seed: int = 0,
     n_seeds: int = 1,
+    *,
+    event_index: pd.DatetimeIndex | None = None,
+    group_bounds: list[tuple[int, int]] | None = None,
+    n_groups: int = 6,
 ) -> dict:
     """Assemble full backtest paths by stitching test-fold predictions.
 
-    If n_seeds > 1, calibrated probabilities are averaged across all
+    For each path, ``path_map[path_id]`` is a list of ``(group_id, split_id)``
+    pairs telling the function which split's predictions to use for which
+    chronological group. Each split's stored test set covers ``k`` groups
+    concatenated; this function filters down to the events belonging to
+    ``group_id`` before stitching.
+
+    If ``n_seeds > 1``, calibrated probabilities are averaged across all
     available seeds before computing bet sizes. This ensemble averaging
     reduces prediction variance by ~1/sqrt(n_seeds).
+
+    Parameters
+    ----------
+    event_index, group_bounds, n_groups
+        Filtering inputs. If left as ``None``, both are derived from
+        ``predictions`` and ``n_groups``: this is the standard usage from
+        ``analyze_results``. Passing them explicitly is supported for
+        callers that have them at hand.
     """
+    # ── derive event index and group bounds if not supplied ──────────
+    if event_index is None:
+        event_index = _derive_event_index(predictions)
+    if group_bounds is None:
+        group_bounds = _compute_group_bounds(len(event_index), n_groups)
+
     path_results = {}
 
     for path_id in range(n_paths):
@@ -322,16 +381,35 @@ def stitch_paths(
                 pred = predictions[key]
                 proba = pred["cal_proba"]
 
-            ts = pred["timestamps"]
-            ret = pred["ret"]
+            ts = pd.DatetimeIndex(pred["timestamps"])
+            ret = np.asarray(pred["ret"])
 
             # Align timestamps/returns to proba length (LSTM may be shorter)
             n_proba = len(proba)
-            if hasattr(ts, '__len__') and len(ts) > n_proba:
+            if len(ts) > n_proba:
                 ts = ts[:n_proba]
                 ret = ret[:n_proba]
 
-            all_timestamps.append(ts)
+            # ── filter by CPCV group ─────────────────────────────────
+            # Each split's test set covers k groups; only those events
+            # whose positional index falls within group_bounds[group_id]
+            # belong to this (path, group, split) assignment.
+            positions = event_index.get_indexer(ts)
+            start, end = group_bounds[group_id]
+            mask = (positions >= start) & (positions < end)
+
+            if not mask.any():
+                logger.debug(
+                    "No events for %s, path=%d, group=%d, split=%d after "
+                    "group filter.", model_name, path_id, group_id, split_id,
+                )
+                continue
+
+            ts = ts[mask]
+            proba = proba[mask]
+            ret = ret[mask]
+
+            all_timestamps.append(np.asarray(ts))
             all_proba.append(proba)
             all_ret.append(ret)
 
@@ -354,6 +432,19 @@ def stitch_paths(
         timestamps = pd.DatetimeIndex(timestamps[sort_idx])
         proba_concat = proba_concat[sort_idx]
         ret_concat = ret_concat[sort_idx]
+
+        # ── post-stitch sanity check ─────────────────────────────────
+        # After group-filtering, each event should appear at most once
+        # per path. A duplicate here would indicate path_map assigning
+        # the same group to multiple splits within one path, which
+        # violates the CPCV path-construction contract.
+        n_dup = len(timestamps) - timestamps.nunique()
+        if n_dup > 0:
+            logger.warning(
+                "Path %d for %s has %d duplicate timestamps after group "
+                "filter; this should not happen under standard CPCV.",
+                path_id, model_name, n_dup,
+            )
 
         # bet sizing
         bet_sizes = bet_size_from_proba(proba_concat)
@@ -842,6 +933,14 @@ def analyze_results(cpcv_results: dict) -> dict:
     n_seeds = cpcv_results["n_seeds"]
     n_trials = len(models)
 
+    # ── derive the event index and group bounds once ─────────────────
+    # ``stitch_paths`` needs these to filter each split's stored
+    # predictions down to the events belonging to the requested group.
+    # Computing once and reusing avoids repeating work for every model.
+    n_groups = cpcv_results.get("n_groups", 6)
+    event_index = _derive_event_index(predictions)
+    group_bounds = _compute_group_bounds(len(event_index), n_groups)
+
     all_summaries = []
     path_sharpes_matrix = np.zeros((len(models), n_paths))
 
@@ -873,6 +972,7 @@ def analyze_results(cpcv_results: dict) -> dict:
         path_results = stitch_paths(
             predictions, path_map, n_paths, model_name,
             seed=0, n_seeds=n_seeds,
+            event_index=event_index, group_bounds=group_bounds,
         )
 
         path_performances = []
@@ -926,6 +1026,7 @@ def analyze_results(cpcv_results: dict) -> dict:
         all_path_results[m] = stitch_paths(
             predictions, path_map, n_paths, m,
             seed=0, n_seeds=n_seeds,
+            event_index=event_index, group_bounds=group_bounds,
         )
 
     return {
