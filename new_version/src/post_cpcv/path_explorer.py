@@ -1,4 +1,6 @@
 """
+12.2) Path Explorer
+===================
 Per-model multi-path equity curves (Brownian-motion-style).
 
 Three views of the same idea:
