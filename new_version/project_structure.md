@@ -42,7 +42,7 @@ project/
 │   │   ├── cv.py                           ← CPCV splits, purging, embargo, path matrix
 │   │   ├── preprocessing.py                ← per-fold FFD, RobustScaler, multi-model MDA feature selection
 │   │   ├── tuning.py                       ← Optuna TPE + Purged K-Fold nested per-split tuning
-│   │   ├── calibration.py                  ← Platt scaling, temperature scaling
+│   │   ├── calibration.py                  ← Platt scaling, vector scaling (default for PyTorch models)
 │   │   ├── pipeline.py                     ← full CPCV loop orchestration (accepts n_trials parameter)
 │   │   └── models/
 │   │       ├── __init__.py                 ← model registry & factory
@@ -55,6 +55,7 @@ project/
 │   └── post_cpcv/                          ← PHASE 3: Evaluation & Interpretability
 │       ├── __init__.py
 │       ├── evaluation.py                   ← metrics, path stitching, DSR, PBO, DeLong AUC, comparison
+│       ├── diagnostics.py                  ← interactive inspection helpers (calibration audit, regime concentration, bet-size, reliability curves)
 │       └── symbolic_extraction.py          ← PyKAN re-train, prune, symbolify, formula extraction
 │
 └── cache/                                  ← Parquet cache for expensive features
@@ -679,14 +680,18 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 | Method | Models | Input | Mechanism |
 |--------|--------|-------|-----------|
-| **Platt scaling** (Platt 1999) | AR Logistic, Logistic Regression, Random Forest, XGBoost | 1D log-odds | Fits `LogisticRegression(C=1e10)` mapping logits → calibrated proba |
-| **Temperature scaling** (Guo et al. 2017) | LSTM, KAN | 2D logits (n, n_classes) | Finds scalar T minimizing NLL of `softmax(logits/T)` via `scipy.optimize.minimize_scalar` over T ∈ [0.1, 10.0] |
+| **Platt scaling** (Platt 1999) | AR Logistic, Logistic Regression, Random Forest, XGBoost | 1D log-odds | Fits `LogisticRegression(C=1e10)` mapping logits → calibrated proba (slope and intercept) |
+| **Vector scaling** (Guo et al. 2017, §4.2) | LSTM, KAN | 2D logits (n, n_classes) | Fits temperature `T` and per-class bias `b` minimising NLL of `softmax((logits + b) / T)` via `scipy.optimize.minimize(L-BFGS-B)` with bounds `T ∈ [0.05, 20]`, `b_c ∈ [-5, 5]` |
 
-**`Calibrator` class** provides unified interface: `fit(model, X_cal, y_cal)` auto-detects method from `model.get_name()`, `calibrate(logits)` applies the fitted calibration. For LSTM, a separate `fit_from_logits(logits, y_cal, method)` handles the index-aligned calibration data.
+Both methods are two-parameter (Platt) or three-parameter (vector). Each can correct both miscalibration sharpness *and* directional bias. `fit_temperature_scaling` is retained in the module for reference and unit tests but is no longer the default for any model.
+
+**`Calibrator` class** provides a unified interface: `fit(model, X_cal, y_cal)` auto-detects method from `model.get_name()`, `calibrate(logits)` applies the fitted calibration. For LSTM, `fit_from_logits(logits, y_cal, method)` handles the index-aligned calibration data. Method tags: `"platt"`, `"vector"` (default for PyTorch), `"temperature"` (opt-in for backward compatibility).
 
 Calibration is fitted on the held-out 20% of the training fold (chronological split, no shuffling). Never touches test data. If calibration fails (logged as warning), the pipeline falls back to uncalibrated `predict_proba`.
 
-**Methodological note:** The 20% calibration subset serves a dual role: early stopping monitor for XGBoost and input for temperature scaling across all models. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set), and temperature scaling fits a single scalar parameter, this shared use introduces minimal information leakage. Splitting the already-small cal set (~120 observations) further would degrade both purposes.
+**Methodological note: why vector scaling rather than temperature scaling.** An earlier implementation used pure temperature scaling for PyTorch models. A calibration audit before final evaluation revealed that both LSTM and KAN exhibited systematic under-prediction of P(y=1) by 10-23 percentage points across the bulk of the predicted-probability distribution, while the empirical base rate of class 1 was approximately 0.55. Pure temperature scaling preserves the argmax of the raw logits by construction, so a single-parameter `T` cannot shift a "lean class 0" prediction to "lean class 1" no matter what value it takes. The bias propagated through bet sizing as systematic short bets in regimes where the market drifted upward, contributing to the negative path-level Sharpe ratio that an early version of the KAN equity curves displayed. Vector scaling adds a per-class bias `b` that lifts the directional constraint and is the natural extension recommended by Guo et al. (2017) for cases where temperature scaling alone is insufficient. The substitution was made before the final evaluation pass and constitutes a correction of methodological inadequacy rather than test-set-informed model selection.
+
+**Methodological note (calibration set dual role):** The 20% calibration subset serves a dual role: early-stopping monitor for XGBoost and input for Platt/vector scaling. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set), and each calibration method fits at most three parameters, this shared use introduces minimal information leakage. Splitting the already-small cal set (~120 observations) further would degrade both purposes.
 
 ---
 
@@ -779,10 +784,16 @@ For each observation: `gross_return = bet_size × label_return`, `turnover = |Δ
 #### Step 16.d — Path stitching (`stitch_paths`)
 
 Assembles 5 full-span backtest paths from the 15 splits using the path-assignment matrix. For each path:
-1. Collects `(group_id, split_id)` pairs from `path_map[path_id]`
-2. Retrieves calibrated probabilities and returns for each group from the corresponding split's predictions (seed=0)
-3. Concatenates chronologically, sorts by timestamp
-4. Computes bet sizes → strategy returns → path performance
+1. Collects `(group_id, split_id)` pairs from `path_map[path_id]`.
+2. For each pair, retrieves the corresponding split's stored predictions (calibrated probabilities and returns) **and filters down to the events whose positional index falls within `group_bounds[group_id]`**. Each split's stored test set covers `k=2` chronological groups concatenated, so this filter is essential: without it, events from co-tested groups get pulled into the path multiple times.
+3. With multiple seeds, calibrated probabilities are averaged across seeds before bet sizing (ensemble averaging reduces prediction variance by ~1/√n_seeds).
+4. Concatenates chronologically, sorts by timestamp.
+5. Asserts no duplicate timestamps after the group filter; emits a warning if any are detected so future regressions in `path_map` construction surface immediately.
+6. Computes bet sizes → strategy returns → path performance.
+
+`stitch_paths` accepts `event_index` and `group_bounds` as optional inputs. When not supplied, both are derived from `predictions` via `_derive_event_index` (union of all stored timestamp slices, sorted and de-duplicated) and `_compute_group_bounds` (mirroring the helper in `cv.py`). The orchestrator (`analyze_results`) computes them once and passes them to every per-model stitch call.
+
+**Bug-fix disclosure.** An earlier implementation pulled each split's full test set whenever the split was referenced, double- or quintuple-counting events from groups co-tested with the requested group. The bug surfaced as a 1/3/5 duplication pattern in the stitched series (groups appearing once, three times, or five times depending on how many splits referenced them in a given path), and was identified by direct timestamp inspection. The fix is the group filter described above. All path-level metrics in this thesis use the corrected stitching; the bug-fix history is preserved in the methodology chapter as a transparency disclosure.
 
 #### Step 16.e — Path performance (`compute_path_performance`)
 
@@ -865,6 +876,8 @@ Per model: pools path-level metrics (median/mean/std Sharpe, median drawdown, wi
 #### Top-level orchestration (`analyze_results`)
 
 Called from notebook as `analysis = analyze_results(results)`. Chains: split metrics → path stitching → path performance → model summaries → comparison table → PBO → DeLong AUC significance → feature stability → FFD stability. Returns a dictionary with all results for the notebook's visualization cells (confusion matrices, equity curves, Sharpe box plots, feature stability bar chart, FFD d* values, DeLong significance heatmap).
+
+Each component (`compute_pbo`, `compute_auc_significance`, `compute_feature_stability`, `compute_ffd_stability`, `stitch_paths`, `compute_split_metrics`, `compute_model_summary`, `compare_models`) is also exposed as a standalone function. The notebook's results section can call them à la carte for individual subsections without going through the full orchestration. This is useful when iterating on a single subsection's figure without re-running the entire analysis.
 
 ---
 
@@ -1017,6 +1030,38 @@ for feat in symbolic['surviving_features']:
 - `suggest_symbolic` return format varies across PyKAN versions
 - `sympy.simplify` can hang indefinitely on complex expressions (→ 30s timeout)
 - `"0"` (constant) always wins `total_loss` due to zero complexity penalty (→ brute-force fallback)
+
+**Defensive input handling at `prepare_extraction_data`.** The function coerces `y` to a `pd.Series` indexed on `X.index` before any indexing, regardless of whether the caller passed a Series, a numpy array, or another array-like. If the supplied `y` length does not match `X`, the function raises a clear `ValueError` rather than letting pandas's generic length-mismatch error propagate. This catches a common notebook pattern where `y` gets shadowed by a pooled-prediction array (e.g., from a calibration audit cell that does `y = np.concatenate(...)`) and fails fast with a message naming the alignment requirement.
+
+---
+
+### Step 18 — Diagnostics (`diagnostics.py`)
+
+A separate module in `post_cpcv/` housing interactive inspection helpers for the notebook's results section. None of these functions belong to the AFML evaluation protocol per se; they exist to support specific arguments in the thesis (calibration audit, regime-concentration check, bet-size distribution, reliability diagrams) and to keep that argument-supporting code out of `evaluation.py`.
+
+All functions operate on `cpcv_results["predictions"]` or `analysis["path_results"]` and return DataFrames or arrays. They never touch the canonical event-aligned `X / y / w / t1` series, so they cannot accidentally shadow notebook globals.
+
+**Function families:**
+
+#### Step 18.a — Calibration audit
+- `pool_predictions(model, results, n_seeds, n_splits) → (proba, y)`: concatenates calibrated `P(class=1)` and ground-truth labels across all `(split, seed)` combinations for a given model.
+- `calibration_audit(model, results, n_seeds, n_splits, n_bins=10)`: prints a binned predicted-vs-empirical comparison table. Reports only bins with at least 10 samples. The diagnostic that exposed the temperature-vs-vector-scaling issue.
+
+#### Step 18.b — Path-level dispersion and regime concentration
+- `compute_top_k_concentration(returns, k=5) → dict`: quantifies how much of a path's cumulative return comes from the top-K largest-magnitude returns. Returns `cum_full`, `cum_ex_top_k`, `top_k_share`, `top_k_dates`, `top_k_values`, `date_range`. A high concentration share (e.g., > 50%) indicates regime-fluke.
+- `build_path_dispersion_table(analysis, k=5) → DataFrame`: assembles a `(model, path)` indexed DataFrame with Sharpe, cumulative return, drawdown, `top_k_share`, and the date range of the top-K returns. One row per (model, path).
+- `summarize_path_dispersion(dispersion) → DataFrame`: collapses to one row per model with `sharpe_min/median/max`, `cum_min/median/max`, and `avg_top_k_share`.
+
+#### Step 18.c — Bet-size distribution
+- `compute_bet_size_summary(analysis, min_bet_size=0.05, max_bet_size=0.75) → DataFrame`: per-model abstention rate, mean and median absolute bet size among traded events, share at the cap, long/short balance.
+- `collect_bet_sizes(analysis, model) → np.ndarray`: raw bet-size array for a given model, pooled across paths. Convenience helper for histogram plotting.
+
+#### Step 18.d — Reliability curves
+- `compute_reliability_curve(model, results, n_seeds, n_splits, n_bins=10, min_count=10) → DataFrame`: returns binned `(predicted_mean, empirical_mean, n_samples)` triples ready for plotting as a reliability diagram.
+
+**Why a separate module.** `evaluation.py` is the canonical AFML evaluation pipeline (DSR, PBO, DeLong, comparison table). It runs once per CPCV experiment and produces the headline numbers. `diagnostics.py` holds inspection helpers called interactively while writing the thesis. Different lifetimes, different stability requirements; separating them keeps `evaluation.py` focused.
+
+**Notebook usage:** Each function corresponds to one paragraph or one figure in the thesis chapters. `calibration_audit` populates the methodology chapter's calibration section. `build_path_dispersion_table` and `compute_top_k_concentration` populate the results chapter's path-dispersion and regime-concentration analysis. `compute_bet_size_summary` plus `collect_bet_sizes` populate the trading-behaviour subsection. `compute_reliability_curve` provides the visual companion to the calibration audit table.
 
 ---
 
