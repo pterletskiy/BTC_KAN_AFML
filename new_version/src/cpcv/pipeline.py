@@ -455,7 +455,7 @@ def run_cpcv_pipeline(
                         cal_logits = model.predict_logits(X_c)
                         cal_valid_idx = model.last_valid_indices
                         y_cal_aligned = y_cal.iloc[cal_valid_idx]
-                        calibrator.fit_from_logits(cal_logits, y_cal_aligned, method="temperature")
+                        calibrator.fit_from_logits(cal_logits, y_cal_aligned, method="vector")
                     else:
                         calibrator.fit(model, X_c, y_cal)
 

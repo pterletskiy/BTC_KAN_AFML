@@ -4,7 +4,7 @@
 Take the best CPCV fold (or full dataset), retrain a fresh PyKAN model
 with the same architecture as the efficient-kan used in CPCV, then
 apply Algorithm 1 from the VIX KAN paper:
-  1. Train with staged optimizer (Adam → LBFGS warmup → LBFGS sparsity)
+  1. Train with staged optimizer (Adam → grid extend → LBFGS)
   2. Prune low-importance edges and nodes
   3. Symbolify activation functions with closed-form candidates
   4. Fine-tune affine parameters
@@ -14,13 +14,6 @@ This module uses PyKAN independently because only PyKAN supports
 prune(), suggest_symbolic(), fix_symbolic(), and symbolic_formula().
 Both share the same [n_features, HIDDEN, n_classes] architecture
 and B-spline basis.
-
-Note on grid extension: Algorithm 1 in the VIX KAN paper includes a
-grid-extension step between Adam and LBFGS. It is gated here by
-the PYKAN_GRID_EXTEND flag and an inline n_train > 1000 guard;
-with the default flag (False) and ~350-sample training folds, the
-step never fires. Re-enable it only for datasets large enough that
-finer splines do not memorise.
 """
 
 import copy
@@ -312,6 +305,12 @@ def prepare_extraction_data(
     splits = generate_cpcv_splits(X, t1)
     train_idx, _ = splits[best_split_idx]
 
+    # ``y`` may arrive as a numpy array, a pandas Series, or anything
+    # array-like depending on how the notebook assembles the inputs.
+    # Coerce to a pandas Series indexed on ``X.index`` so subsequent
+    # ``.loc`` lookups work uniformly regardless of input type.
+    if not isinstance(y, pd.Series):
+        y = pd.Series(np.asarray(y), index=X.index)
     y_mapped = ((y + 1) // 2).astype(int)
 
     ffd_info = prep_info.get("ffd", {})
