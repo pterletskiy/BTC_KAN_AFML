@@ -310,7 +310,23 @@ def prepare_extraction_data(
     # Coerce to a pandas Series indexed on ``X.index`` so subsequent
     # ``.loc`` lookups work uniformly regardless of input type.
     if not isinstance(y, pd.Series):
-        y = pd.Series(np.asarray(y), index=X.index)
+        y_arr = np.asarray(y)
+        if len(y_arr) != len(X):
+            raise ValueError(
+                f"prepare_extraction_data: ``y`` has length {len(y_arr)} "
+                f"but ``X`` has length {len(X)}. The function expects the "
+                "event-aligned label series produced by the pre-CPCV "
+                "alignment step, not the pooled prediction labels from "
+                "``cpcv_results``. Verify that ``y`` in the notebook is "
+                "the same variable that was passed to ``run_cpcv_pipeline``."
+            )
+        y = pd.Series(y_arr, index=X.index)
+    elif len(y) != len(X) or not y.index.equals(X.index):
+        raise ValueError(
+            f"prepare_extraction_data: ``y`` (length {len(y)}) and ``X`` "
+            f"(length {len(X)}) do not share an aligned index. Re-run "
+            "the pre-CPCV alignment step to restore them."
+        )
     y_mapped = ((y + 1) // 2).astype(int)
 
     ffd_info = prep_info.get("ffd", {})
