@@ -11,7 +11,7 @@
 The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Networks (KANs), benchmarked against AR Logistic, Logistic Regression, Random Forest, XGBoost, and LSTM models, evaluated under López de Prado's *Advances in Financial Machine Learning* (2018) framework. The pipeline is organized into three phases with strict leakage boundaries between them.
 
 **Data:** BTC-USD daily OHLCV, September 2014 – April 2026 (~4,200 bars).
-**Features:** 62 columns total. 56 reach MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 22 external: 13 macro, 1 crypto-macro, 8 on-chain from CoinMetrics). 6 lag features (`log_returns_lag1` … `log_returns_lag21`) are precomputed in a separate category and routed only to AR Logistic; they are excluded from MDA by name prefix.
+**Features:** 62 columns total. 56 reach MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 22 external: 13 macro, 1 crypto-macro, 8 on-chain from CoinMetrics). 6 lag features (`log_returns_lag1` … `log_returns_lag30`) are precomputed in a separate category and routed only to AR Logistic; they are excluded from MDA by name prefix.
 **Calendar:** All rolling windows use the BTC trading calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year).
 **Evaluation:** CPCV (N=6, k=2) producing 15 splits and 5 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
 **Tuning:** Nested Optuna TPE + Purged K-Fold, per-split, inside each CPCV training fold (AFML Ch. 7 compliant).
@@ -212,7 +212,7 @@ TA: RSI_PERIOD=14, MACD_FAST=12, MACD_SLOW=26, MACD_SIGNAL=9, BB_PERIOD=20,
 Math: SADF_MIN_SL=90, SADF_LAGS=1, ENTROPY_WINDOW=30, LZ_WINDOW=90,
       HURST_WINDOW=180, VR_WINDOW=90, VR_LAG=7, JB_WINDOW=90, GAUSS_ENT_WINDOW=30
 
-Lag: AR_LAGS=[1, 2, 3, 5, 10, 21], LAG_COLUMN_PREFIX="log_returns_lag"
+Lag: AR_LAGS=[1, 2, 3, 7, 14, 30], LAG_COLUMN_PREFIX="log_returns_lag"
 
 Cache: CACHE_DIR="cache/", MATH_CACHE_FILE="math_features.parquet",
        EXTERNAL_CACHE_FILE="external_features.parquet", ONCHAIN_CACHE_FILE="onchain_raw.parquet"
@@ -280,9 +280,11 @@ The `which` parameter accepts `"all"` or a list of specific feature names for pa
 
 **Function:** `compute_lag_features(df, lags=AR_LAGS) → pd.DataFrame` — 6 columns
 
-Precomputes lagged log-return features on the full daily series. Columns are named `log_returns_lag1`, `log_returns_lag2`, `log_returns_lag3`, `log_returns_lag5`, `log_returns_lag10`, `log_returns_lag21`.
+Precomputes lagged log-return features on the full daily series. Columns are named `log_returns_lag1`, `log_returns_lag2`, `log_returns_lag3`, `log_returns_lag7`, `log_returns_lag14`, `log_returns_lag30`.
 
 **Why a separate category.** Lag features are consumed only by the AR Logistic baseline. Computing them once on the full daily series instead of inline inside `ARLogistic.fit` / `ARLogistic.predict` removes a look-ahead artefact that the inline version had: previously, NaN lags at the head of each test fold were imputed with `bfill()`, which used later test observations to fill earlier ones. Precomputing on the global series gives every aligned event valid lookback values that respect chronological order.
+
+**Why these lags.** The set `[1, 2, 3, 7, 14, 30]` follows a calendar-day convention rather than the trading-day convention `[1, 2, 3, 5, 10, 21]` common in equity ML literature. BTC trades 24/7 with no weekend or holiday gaps, so trading-day arithmetic has no natural meaning for this asset. The chosen lags correspond to one to three days of short-term autocorrelation, one and two calendar weeks, and one calendar month, anchoring autoregressive structure to the calendar cycles that drive BTC dynamics. The 14-day lag additionally aligns with the BTC mining-difficulty adjustment cycle (~2,016 blocks ≈ 14 days), a BTC-native cycle the equity convention does not capture.
 
 **Helpers:**
 - `lag_column_names(lags=None)`: returns the canonical column names in the order matching `lags` (defaulting to `AR_LAGS`).
@@ -394,7 +396,7 @@ Lives directly in `main.ipynb` section 2.5 as inline plotting cells. Inspects da
 
 #### `align_for_cv(features, bins, weights) → (X, y, w, t1)`
 
-Computes the triple intersection of features (all ~4,200 daily bars), bins (CUSUM-filtered ~911 events), and weights (same index as bins) via `features.index.intersection(bins.index).intersection(weights.index)`.
+Computes the triple intersection of features (all ~4,200 daily bars), bins (CUSUM-filtered events, **1,245** after dropping rare class 0 at 8.5% threshold), and weights (same index as bins) via `features.index.intersection(bins.index).intersection(weights.index)`.
 
 **Assertions (raises on failure):**
 - Non-empty intersection
@@ -417,14 +419,32 @@ Standalone validation for the CV loop to call. Checks everything `align_for_cv` 
 
 ---
 
+### NaN Handling Across Phase 1
+
+Feature computation produces NaN values for two reasons:
+
+1. **Rolling-window warm-up.** Lookback features cannot be computed before their window has filled. RSI needs 14 bars, EMA-50 needs ~50, Bollinger Bands need 20, ATR needs 14, Shannon entropy needs 30, SADF needs 90, variance ratio needs 90, Hurst exponent needs 180. Each feature carries a leading NaN run of length equal to its rolling window.
+2. **External-data calendar gaps.** Equity tickers (S&P 500, gold, oil, etc.) do not trade on weekends; FRED macro releases occur weekly or monthly with publication delays; CoinMetrics on-chain data has its own warm-up and occasional missing days. Each external column has scattered NaN cells where the source data was not yet released or not aligned to a BTC trading day.
+
+**Phase 1 does not drop or impute these NaNs.** The feature-engineering layer simply produces them and logs per-column NaN percentages. Reasoning: dropping rows at this stage would lose the early period where some features are fully computable but others are not (e.g., RSI is valid by day 15 but Hurst is not valid until day 180); imputing would fabricate values from a future-looking window.
+
+**Alignment** (`align_for_cv`) hardens the policy slightly. The step performs:
+- A *hard assertion* that no feature column is entirely NaN (catches dead columns from a failed external-data fetch).
+- A *hard assertion* that `t1` is fully populated (any missing barrier-touch timestamp would break CPCV purging).
+- A *soft warning* listing per-column NaN counts for partial-NaN columns; the pipeline continues.
+
+Most warm-up NaNs are eliminated naturally at alignment because `bins.index` (the CUSUM event index, ~1,245 events after dropping the rare class) does not start firing until daily volatility itself has warmed up. By that point most TA features are valid. A handful of leading rows from slow-warming features (Hurst at 180 bars, SADF at 90) may still be NaN at alignment time, and external columns may still have scattered NaN cells. Both are acknowledged and deferred to Phase 2.
+
+The X passed to CPCV may therefore contain partial-NaN rows. This is intentional: the per-fold preprocessing step resolves them with a partition-aware policy described in Step 11 (FFD).
+
 ### Pre-CPCV Output Summary
 
 | Object | Shape | Description |
 |--------|-------|-------------|
-| `X` | ~911 × 62 | Feature matrix (25 TA + 9 math + 22 external + 6 lag, post log-transform). 56 reach MDA; 6 lag columns route only to AR Logistic. |
-| `y` | ~911 | Binary labels {-1, +1} |
-| `w` | ~911 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
-| `t1` | ~911 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
+| `X` | 1,245 × 62 | Feature matrix (25 TA + 9 math + 22 external + 6 lag, post log-transform). 56 reach MDA; 6 lag columns route only to AR Logistic. |
+| `y` | 1,245 | Binary labels {-1, +1}. Class balance: {+1: 697, -1: 548}. The 0 class is removed by `drop_rare_labels(min_pct=0.085)` after triple-barrier labeling. |
+| `w` | 1,245 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
+| `t1` | 1,245 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
 
 These four objects are the contract between Phase 1 and Phase 2. Everything from FFD onward happens inside the CPCV loop, fitted on training data only.
 
@@ -488,7 +508,9 @@ Applies FFD to the **full** series (so test observations have lookback history) 
 1. `find_optimal_d(train_series)`: Sweeps d from 0 to 1 in steps of 0.05. At each d, computes FFD weights via `ω_0 = 1, ω_k = -ω_{k-1} × (d - k + 1) / k`, truncated when `|ω_k| < 1e-4` or k reaches 200. Applies as convolution, runs ADF test. Returns minimum d where p-value < 0.05.
 2. `apply_ffd(full_series, d_star)`: Applies FFD at d* to the complete series.
 3. Splits into train/test by positional indices.
-4. Forward-fills NaN in non-FFD columns (external data gaps). Drops rows where FFD columns have NaN (from lookback window).
+4. **Per-fold NaN resolution (asymmetric by column type).** The leading-NaN problem inherited from Phase 1 is resolved here, inside the CPCV loop, with a policy that differentiates FFD-eligible from non-FFD columns and respects the train-test boundary.
+   - **Non-FFD columns (the majority).** External-data calendar gaps and remaining slow-warmup gaps are imputed via `ffill().bfill()` *applied independently within `X_train` and within `X_test`*. The forward fill carries the most recent valid observation across calendar gaps (the natural economic interpretation: the model uses the last published macro reading or last on-chain snapshot, exactly as a human trader would). The trailing back-fill handles any leading NaN at the very start of the partition. The two operations never cross the train-test boundary, so test-set values cannot leak into train and vice versa.
+   - **FFD columns (currently ATR only).** Rows where any FFD column is NaN are dropped, not imputed. Forward-filling an FFD-transformed column would inject stale weighted-lookback values into the model's input; dropping the leading rows is the correct response. The function logs the dropped row count: `"FFD: dropped X train, Y test NaN rows from FFD lookback."` Typically 2-10 rows per partition, concentrated at the start.
 
 **Currently applied to:** ATR only (identified as non-stationary in EDA ADF tests).
 
@@ -555,7 +577,7 @@ The `run_cpcv_pipeline()` function accepts an `n_trials` parameter that override
 
 #### `_purged_kfold_splits(X, y, w) → list[(train_idx, val_idx)]`
 
-Creates 3 chronological inner folds with 10-observation embargo around boundaries (matches TBL num_days). Fewer folds (3 vs 5) improves runtime by ~40% and increases inner validation set size (~200 vs ~120 observations per fold), providing more reliable log loss estimates in a low-signal environment.
+Creates 3 chronological inner folds with 10-observation embargo around boundaries (matches TBL num_days). Fewer folds (3 vs 5) improves runtime by ~40% and increases inner validation set size (~270 vs ~160 observations per fold), providing more reliable log loss estimates in a low-signal environment.
 
 #### Per-model tuning functions
 
@@ -572,7 +594,7 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 - `max_features`: categorical {sqrt, log2}
 
 **`tune_xgboost(X, y, w, n_trials=None)`** — Search space:
-- `max_depth`: int [2, 6] (capped from 10 to prevent overfitting ~900 samples)
+- `max_depth`: int [2, 6] (capped from 10 to prevent overfitting on ~800-sample folds)
 - `learning_rate`: log-uniform [0.01, 0.3]
 - `min_child_weight`: int [1, 30]
 - `subsample`, `colsample_bytree`: uniform [0.6, 1.0]
@@ -587,7 +609,7 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 - `learning_rate`: log-uniform [1e-4, 5e-2]
 
 **`tune_kan(X, y, w, n_features, n_trials=None)`** — Search space:
-- `width1`: int [3, 12] (capped from an earlier 16 to prevent memorisation on ~700-sample folds)
+- `width1`: int [3, 12] (capped from an earlier 16 to prevent memorisation on ~800-sample folds)
 - `width2`: int [0, 10], 0 = skip second hidden layer (capped from an earlier 15)
 - `lr`: log-uniform [5e-4, 5e-2]
 - `weight_decay`: log-uniform [1e-5, 5e-3]
@@ -628,7 +650,7 @@ The model registry in `models/__init__.py` provides `create_model(name, n_featur
 
 | Model | Class | Key Behavior |
 |-------|-------|-------------|
-| **AR Logistic** | `ARLogistic` | Selects the 6 precomputed lag columns (`log_returns_lag1` … `log_returns_lag21`) from the pre-selection feature matrix and ignores everything else. The lag columns are produced once on the full daily series by `pre_cpcv.features.compute_lag_features` and routed only to AR Logistic via the pipeline's `X_tr_full`. `predict_logits` returns log-odds via `log(p₁/p₀)` with a symmetric `np.clip(proba, 1e-10, 1 − 1e-10)` matching the tree-model convention. NaN lag columns at predict time raise (the previous inline-build path silently `bfill()`-imputed and is gone). Not tuned (deterministic baseline). |
+| **AR Logistic** | `ARLogistic` | Selects the 6 precomputed lag columns (`log_returns_lag1` … `log_returns_lag30`) from the pre-selection feature matrix and ignores everything else. The lag columns are produced once on the full daily series by `pre_cpcv.features.compute_lag_features` and routed only to AR Logistic via the pipeline's `X_tr_full`. `predict_logits` returns log-odds via `log(p₁/p₀)` with a symmetric `np.clip(proba, 1e-10, 1 − 1e-10)` matching the tree-model convention. NaN lag columns at predict time raise (the previous inline-build path silently `bfill()`-imputed and is gone). Not tuned (deterministic baseline). |
 | **Logistic Regression** | `LogisticRegressionModel` | Standard sklearn LogisticRegression, `class_weight='balanced'`, solver chosen based on penalty (lbfgs for L2, liblinear for L1). Tuned per split. `predict_logits` returns `decision_function` (raw log-odds). |
 
 AR Logistic uses `LOGISTIC_MAX_ITER=1000` and L2 penalty as hardcoded defaults. Logistic Regression's `C` and `penalty` are tuned per split.
@@ -646,7 +668,7 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 **Architecture:** Multi-layer `nn.LSTM` (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier. All architectural parameters are tuned per split.
 
-**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer serves as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~700-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
+**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer serves as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~800-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
 
 **Tanh input normalization.** Features are tanh-normalized: `z = tanh((x - μ) / σ)`. Maps features to [-1, 1] regardless of original scale, stabilizing training on fat-tailed financial data. Mean and std are fitted on training data only and stored for inference.
 
@@ -668,7 +690,7 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 **Why no SWA or entropy regularization.** Earlier experimentation included Stochastic Weight Averaging and entropy-of-prediction regularization. SWA conflicted with early stopping (either early stopping terminates before SWA activates, or SWA overrides `best_state` with potentially worse weights). Entropy regularization was redundant with `label_smoothing=0.1` (both discourage confident predictions). Both were removed for coherence and to simplify the methodology defense.
 
-**Why a single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~700 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
+**Why a single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~800 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
 
 **Dual-library strategy.** efficient-kan is used for CPCV training/inference across all 15 splits (fast, reliable, integrates with standard PyTorch tooling). PyKAN is re-trained independently for symbolic extraction only (Phase 3). This avoids the PyKAN parameter and training fragility while leveraging its symbolic features. Both libraries share the same B-spline basis and tanh input normalization.
 
@@ -691,7 +713,7 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 
 **Methodological note: why vector scaling rather than temperature scaling.** An earlier implementation used pure temperature scaling for PyTorch models. A calibration audit before final evaluation revealed that both LSTM and KAN exhibited systematic under-prediction of P(y=1) by 10-23 percentage points across the bulk of the predicted-probability distribution, while the empirical base rate of class 1 was approximately 0.55. Pure temperature scaling preserves the argmax of the raw logits by construction, so a single-parameter `T` cannot shift a "lean class 0" prediction to "lean class 1" no matter what value it takes. The bias propagated through bet sizing as systematic short bets in regimes where the market drifted upward, contributing to the negative path-level Sharpe ratio that an early version of the KAN equity curves displayed. Vector scaling adds a per-class bias `b` that lifts the directional constraint and is the natural extension recommended by Guo et al. (2017) for cases where temperature scaling alone is insufficient. The substitution was made before the final evaluation pass and constitutes a correction of methodological inadequacy rather than test-set-informed model selection.
 
-**Methodological note (calibration set dual role):** The 20% calibration subset serves a dual role: early-stopping monitor for XGBoost and input for Platt/vector scaling. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set), and each calibration method fits at most three parameters, this shared use introduces minimal information leakage. Splitting the already-small cal set (~120 observations) further would degrade both purposes.
+**Methodological note (calibration set dual role):** The 20% calibration subset serves a dual role: early-stopping monitor for XGBoost and input for Platt/vector scaling. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set), and each calibration method fits at most three parameters, this shared use introduces minimal information leakage. Splitting the already-small cal set (~160 observations) further would degrade both purposes.
 
 ---
 
@@ -730,7 +752,7 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 
 | Model | Seeds | Tuned per split | Notes |
 |-------|-------|-----------------|-------|
-| AR Logistic | 3 | No | Fixed: C=1.0, L2, lags [1,2,3,5,10,21]. Consumes precomputed lag columns from `pre_cpcv.features.compute_lag_features`; not subject to MDA. |
+| AR Logistic | 3 | No | Fixed: C=1.0, L2, lags [1,2,3,7,14,30]. Consumes precomputed lag columns from `pre_cpcv.features.compute_lag_features`; not subject to MDA. |
 | Logistic Regression | 3 | Yes (30 trials) | C, penalty |
 | Random Forest | 3 | Yes (30 trials) | n_estimators ≤ 300, depth, leaf, max_features |
 | XGBoost | 3 | Yes (30 trials) | 8 params, depth ≤ 6, early stopping |
@@ -1079,3 +1101,4 @@ All functions operate on `cpcv_results["predictions"]` or `analysis["path_result
 | Shared cal set for XGB early stop + calibration | Acknowledged trade-off; only ensemble size affected, no tree decisions | `pipeline.py` |
 | On-chain data look-ahead | CoinMetrics data shifted by 1 day before alignment | `external_features.py` |
 | CUSUM threshold on full data | Minor approximation (h uses full-sample vol mean); acknowledged, negligible impact | `labeling.py` |
+| NaN imputation across train-test boundary | `ffill().bfill()` applied independently within each partition; FFD columns drop NaN rather than impute | `preprocessing.py` |

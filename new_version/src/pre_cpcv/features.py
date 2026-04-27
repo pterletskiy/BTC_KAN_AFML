@@ -24,7 +24,7 @@ Mathematical features (9 total):
 
 Lag features (6 total, AR Logistic only):
   log_returns_lag1, log_returns_lag2, log_returns_lag3,
-  log_returns_lag5, log_returns_lag10, log_returns_lag21
+  log_returns_lag7, log_returns_lag14, log_returns_lag30
 
   Precomputed once on the full daily series so the AR Logistic baseline
   does not need to build lags inline at fit/predict time. Excluded
@@ -79,7 +79,7 @@ JB_WINDOW = 90                   # ~1 crypto quarter
 GAUSS_ENT_WINDOW = 30            # ~1 crypto month
 
 # ── Lag features (consumed only by AR Logistic baseline) ──────────────
-AR_LAGS = [1, 2, 3, 5, 10, 21]
+AR_LAGS = [1, 2, 3, 7, 14, 30]
 LAG_COLUMN_PREFIX = "log_returns_lag"
 
 # ── Log transform targets ─────────────────────────────────────────────
