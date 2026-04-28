@@ -561,8 +561,8 @@ Orchestration chaining FFD → scaling → selection. Returns DataFrames with **
 ```
 N_INNER_FOLDS = 3              # Purged K-Fold folds inside each training fold
 PURGE_EMBARGO = 10             # observations purged around inner-fold boundaries
-N_TRIALS_CLASSICAL = 60        # default trials for Logistic, RF, XGBoost
-N_TRIALS_NEURAL = 40           # default trials for LSTM, KAN
+N_TRIALS_CLASSICAL = 30        # default trials for Logistic, RF, XGBoost
+N_TRIALS_NEURAL = 30           # default trials for LSTM, KAN
 ```
 
 The `run_cpcv_pipeline()` function accepts an `n_trials` parameter that overrides these defaults. The notebook currently passes `n_trials=30` for every tuned model. The recommendations below give a wider menu balancing exploration against runtime:
