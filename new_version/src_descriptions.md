@@ -55,7 +55,7 @@ The zero floor is what makes CUSUM a structural-break detector rather than a vol
 
 Walks forward through the price path, records the first barrier touch. Labels: +1 (upper hit), -1 (lower hit), sign(return) at vertical (or 0 if below `min_return` threshold).
 
-**Parameter choices.** Symmetric `pt_sl=(1.5, 1.5)` avoids imposing a directional prior. With σ ≈ 3% daily, barriers sit at roughly ±4.5% from entry. `num_days=10` gives horizontal barriers meaningful time to trigger without letting labels go stale. Observed mean holding period is ~5 days, indicating horizontal barriers hit roughly half the time before the vertical barrier. The function's `min_return` parameter defaults to 0.0, but the notebook calls it with `min_return=0.02`: very small vertical-barrier returns get bucketed into class 0, which is then dropped as a rare label. This produces clean binary {-1, +1} labels without forcing every near-flat vertical-barrier return into the sign-of-return camp.
+**Parameter choices.** Symmetric `pt_sl=(1.5, 1.5)` avoids imposing a directional prior. With σ ≈ 3% daily, barriers sit at roughly ±4.5% from entry. `num_days=10` gives horizontal barriers meaningful time to trigger without letting labels go stale. Observed mean holding period is ~5.1 days, with the vertical (time) barrier hit on only 19.9% of events — horizontal barriers (profit-take or stop-loss) close ~80% of positions before the time barrier triggers. The function's `min_return` parameter defaults to 0.0, but the notebook calls it with `min_return=0.02`: very small vertical-barrier returns get bucketed into class 0, which is then dropped as a rare label. This produces clean binary {-1, +1} labels without forcing every near-flat vertical-barrier return into the sign-of-return camp.
 
 **The t1 column.** Every label carries a timestamp t1 indicating when the label was resolved (first barrier touch). This is critical for CPCV purging in Phase 2: training labels whose t1 extends into the test period must be purged to prevent leakage.
 
@@ -313,7 +313,7 @@ For each CPCV training fold, runs Bayesian hyperparameter optimization (Optuna's
 
 **TPE (Tree-structured Parzen Estimator).** Bergstra et al. (2011). A Bayesian optimizer that maintains two probability distributions over the hyperparameter space: one for "good" trials (low loss) and one for "bad" trials. New trials are sampled from regions where the ratio of good to bad density is highest. Concentrates compute in promising regions instead of grid-search exhaustiveness.
 
-**Purged K-Fold inner CV.** Three chronological inner folds with a 10-observation embargo around each fold's boundaries. The embargo length matches the triple-barrier horizon (`num_days=10`), ensuring overlapping labels cannot leak between inner train and inner validation. Three folds (rather than five) increase inner validation size to ~200 observations per fold, giving more reliable log-loss estimates in a low-signal environment.
+**Purged K-Fold inner CV.** Three chronological inner folds with a 10-observation embargo around each fold's boundaries. The embargo length matches the triple-barrier horizon (`num_days=10`), ensuring overlapping labels cannot leak between inner train and inner validation. Three folds (rather than five) increase inner validation size to ~270 observations per fold (vs ~160 with five folds), giving more reliable log-loss estimates in a low-signal environment.
 
 **Median pruner.** After each inner fold, Optuna can terminate underperforming trials whose intermediate log loss is worse than the median of completed trials. Saves compute on clearly bad regions of the search space.
 
@@ -325,7 +325,7 @@ For each CPCV training fold, runs Bayesian hyperparameter optimization (Optuna's
 - **LSTM**: `hidden_size` ∈ [16, 32], `num_layers` ∈ [1, 3], `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=14 (matches production).
 - **KAN**: `width1` ∈ [3, 12], `width2` ∈ [0, 10], `lr` ∈ log [5e-4, 5e-2], `weight_decay` ∈ log [1e-5, 5e-3], `grid` ∈ {3, 5}.
 
-The caps are deliberately tighter than common defaults. With ~800 training samples per fold, overly flexible architectures guarantee overfitting. Each cap is justified by the samples-to-parameters ratio.
+The caps are deliberately tighter than common defaults. With ~810 training samples per fold, overly flexible architectures guarantee overfitting. Each cap is justified by the samples-to-parameters ratio.
 
 ### Production consistency
 
@@ -335,7 +335,7 @@ The LSTM tuning loop deliberately runs fewer epochs and a shorter patience windo
 
 ### Default trial counts
 
-`N_TRIALS_CLASSICAL = 30` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 30` (LSTM, KAN). The `run_cpcv_pipeline()` function accepts an `n_trials` override, and the notebook currently passes `n_trials=30` for every tuned model.
+`N_TRIALS_CLASSICAL = 60` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 40` (LSTM, KAN). The `run_cpcv_pipeline()` function accepts an `n_trials` override, and the notebook currently passes `n_trials=30` for every tuned model.
 
 ### Key function: `tune_all_models`
 
@@ -506,7 +506,7 @@ A PyTorch LSTM with last-hidden-state pooling that consumes windowed sequences a
 
 **Architecture.** Multi-layer LSTM (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier.
 
-**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer is used as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~800-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
+**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer is used as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~810-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
 
 **Window length matched to labeling horizon.** The 14-day window (~2 BTC weeks) is intentionally close to the 10-day triple-barrier horizon. Longer windows (30+ days) caused two problems: gradient signal attenuation across many recurrent steps, and a parameter-to-sample ratio that encouraged overfitting on small training folds.
 
@@ -548,7 +548,7 @@ A KAN classifier using the `efficient-kan` library, trained as a standard PyTorc
 
 **Training stack.** AdamW (lr and weight_decay tuned), label smoothing (0.1), gradient clipping (max norm 1.0), cosine annealing warm restarts (T_0=30), early stopping (patience 20) with best-state restoration. The same regularization stack as LSTM, with no neural-net-specific tricks like SWA or entropy regularization (both tested and removed for being either redundant or non-coherent with early stopping).
 
-**Single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~800 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
+**Single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~810 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
 
 **No state passed to symbolic extraction.** The fitted KAN holds only its standard PyTorch state (parameters, normalization buffers). It does not store the training dataset on the instance — an earlier version cached a `_dataset` dict on the model so symbolic extraction could read its training tensors directly, but the symbolic pipeline now reconstructs everything it needs from `prep_info` (the FFD d* values, the fitted scaler, the selected feature list stored alongside predictions). Removing the cached dataset cuts a ~10 MB redundancy per fold and makes the prediction-vs-extraction handoff a clean data interface rather than a stateful coupling.
 

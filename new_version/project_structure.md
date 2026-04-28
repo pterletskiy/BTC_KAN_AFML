@@ -94,7 +94,7 @@ Fetches daily OHLCV from yfinance and returns a validated DataFrame with columns
 | Volume < 0 | Logs warning, keeps row |
 | NaN Close | Drops row + logs warning |
 
-**Parameters used in notebook:** `ticker="BTC-USD"`, `start="2014-09-17"`, `end="2026-04-17"`
+**Parameters used in notebook:** `ticker="BTC-USD"`, `start="2014-09-17"`, `end="2026-04-16"`
 
 **Internal helpers:** `_fill_small_gaps(df)` handles gap detection and forward-filling with the 3-day limit. `_check_ohlcv_consistency(df)` validates OHLCV relationships row-by-row.
 
@@ -149,7 +149,7 @@ Aligns events to non-NaN volatility timestamps. Skips events with NaN vertical b
 
 **Parameter choice rationale:**
 - Symmetric `pt_sl=(1.5, 1.5)` avoids imposing any prior directional bias. With σ ≈ 3% daily, barriers sit at roughly ±4.5% from entry.
-- `num_days=10` gives horizontal barriers meaningful time to trigger without letting labels go stale. Observed mean holding period is ~5.1 days, indicating horizontal barriers hit roughly half the time before the vertical barrier.
+- `num_days=10` gives horizontal barriers meaningful time to trigger without letting labels go stale. Observed mean holding period is ~5.1 days, with the vertical (time) barrier hit on only 19.9% of events — horizontal barriers (profit-take or stop-loss) close ~80% of positions before the time barrier triggers.
 - `min_return=0.02` collapses very small vertical-barrier returns into class 0 (later dropped as a rare label). Without this floor, the symmetric pt_sl already produces few class-0 events; the floor pushes the few remaining near-zero vertical-barrier returns into the rare-label drop bucket, leaving cleaner binary {-1, +1} labels.
 
 ---
@@ -561,8 +561,8 @@ Orchestration chaining FFD → scaling → selection. Returns DataFrames with **
 ```
 N_INNER_FOLDS = 3              # Purged K-Fold folds inside each training fold
 PURGE_EMBARGO = 10             # observations purged around inner-fold boundaries
-N_TRIALS_CLASSICAL = 30        # default trials for Logistic, RF, XGBoost
-N_TRIALS_NEURAL = 30           # default trials for LSTM, KAN
+N_TRIALS_CLASSICAL = 60        # default trials for Logistic, RF, XGBoost
+N_TRIALS_NEURAL = 40           # default trials for LSTM, KAN
 ```
 
 The `run_cpcv_pipeline()` function accepts an `n_trials` parameter that overrides these defaults. The notebook currently passes `n_trials=30` for every tuned model. The recommendations below give a wider menu balancing exploration against runtime:
@@ -594,7 +594,7 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 - `max_features`: categorical {sqrt, log2}
 
 **`tune_xgboost(X, y, w, n_trials=None)`** — Search space:
-- `max_depth`: int [2, 6] (capped from 10 to prevent overfitting on ~800-sample folds)
+- `max_depth`: int [2, 6] (capped from 10 to prevent overfitting on ~810-sample folds)
 - `learning_rate`: log-uniform [0.01, 0.3]
 - `min_child_weight`: int [1, 30]
 - `subsample`, `colsample_bytree`: uniform [0.6, 1.0]
@@ -609,7 +609,7 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 - `learning_rate`: log-uniform [1e-4, 5e-2]
 
 **`tune_kan(X, y, w, n_features, n_trials=None)`** — Search space:
-- `width1`: int [3, 12] (capped from an earlier 16 to prevent memorisation on ~800-sample folds)
+- `width1`: int [3, 12] (capped from an earlier 16 to prevent memorisation on ~810-sample folds)
 - `width2`: int [0, 10], 0 = skip second hidden layer (capped from an earlier 15)
 - `lr`: log-uniform [5e-4, 5e-2]
 - `weight_decay`: log-uniform [1e-5, 5e-3]
@@ -668,7 +668,7 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 **Architecture:** Multi-layer `nn.LSTM` (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier. All architectural parameters are tuned per split.
 
-**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer serves as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~800-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
+**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer serves as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~810-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
 
 **Tanh input normalization.** Features are tanh-normalized: `z = tanh((x - μ) / σ)`. Maps features to [-1, 1] regardless of original scale, stabilizing training on fat-tailed financial data. Mean and std are fitted on training data only and stored for inference.
 
@@ -690,7 +690,7 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 **Why no SWA or entropy regularization.** Earlier experimentation included Stochastic Weight Averaging and entropy-of-prediction regularization. SWA conflicted with early stopping (either early stopping terminates before SWA activates, or SWA overrides `best_state` with potentially worse weights). Entropy regularization was redundant with `label_smoothing=0.1` (both discourage confident predictions). Both were removed for coherence and to simplify the methodology defense.
 
-**Why a single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~800 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
+**Why a single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~810 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
 
 **Dual-library strategy.** efficient-kan is used for CPCV training/inference across all 15 splits (fast, reliable, integrates with standard PyTorch tooling). PyKAN is re-trained independently for symbolic extraction only (Phase 3). This avoids the PyKAN parameter and training fragility while leveraging its symbolic features. Both libraries share the same B-spline basis and tanh input normalization.
 
