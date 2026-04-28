@@ -60,8 +60,8 @@ PURGE_EMBARGO = 10              # observations to purge between train/val
                                 # (matches TBL num_days=10)
 
 # Optuna configuration
-N_TRIALS_CLASSICAL = 60         # trials for Logistic, RF, XGBoost
-N_TRIALS_NEURAL = 40            # trials for LSTM, KAN (more expensive)
+N_TRIALS_CLASSICAL = 30         # trials for Logistic, RF, XGBoost
+N_TRIALS_NEURAL = 30            # trials for LSTM, KAN (more expensive)
 OPTUNA_SEED = 42
 OPTUNA_VERBOSITY = optuna.logging.WARNING
 
