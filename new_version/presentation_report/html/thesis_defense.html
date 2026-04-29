@@ -1,2107 +1,2550 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BTC Direction Prediction · Thesis Defense</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --bg: #0a0e17;
-    --surface: #11161f;
-    --surface-elev: #161c28;
-    --border: rgba(255,255,255,0.08);
-    --border-strong: rgba(255,255,255,0.18);
-    --text: #e8ecf3;
-    --text-muted: #95a0b3;
-    --text-dim: #5d6675;
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BTC Direction Prediction · Thesis Defense</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0e17;
+      --surface: #11161f;
+      --surface-elev: #161c28;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.18);
+      --text: #e8ecf3;
+      --text-muted: #95a0b3;
+      --text-dim: #5d6675;
 
-    --silver: #c9d0db;
-    --amber: #f59e0b;
-    --blue: #3b82f6;
-    --green: #10b981;
-    --purple: #a855f7;
-    --rose: #f43f5e;
-  }
+      --silver: #c9d0db;
+      --amber: #f59e0b;
+      --blue: #3b82f6;
+      --green: #10b981;
+      --purple: #a855f7;
+      --rose: #f43f5e;
+    }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
-  html, body {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'DM Sans', sans-serif;
-    font-size: 16px;
-    line-height: 1.55;
-    letter-spacing: -0.005em;
-  }
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 16px;
+      line-height: 1.55;
+      letter-spacing: -0.005em;
+    }
 
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.04) 1px, transparent 0);
-    background-size: 28px 28px;
-    pointer-events: none;
-    z-index: 1;
-  }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0);
+      background-size: 28px 28px;
+      pointer-events: none;
+      z-index: 1;
+    }
 
-  /* ─── Deck & Slides ─── */
-  .deck {
-    position: relative;
-    width: 100%;
-    height: 100vh;
-    z-index: 2;
-  }
+    /* ─── Deck & Slides ─── */
+    .deck {
+      position: relative;
+      width: 100%;
+      height: 100vh;
+      z-index: 2;
+    }
 
-  .slide {
-    position: absolute;
-    inset: 0;
-    padding: 48px 72px 72px;
-    display: flex;
-    flex-direction: column;
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 0.32s ease;
-    overflow: hidden;
-  }
-  .slide.active { opacity: 1; visibility: visible; }
+    .slide {
+      position: absolute;
+      inset: 0;
+      padding: 48px 72px 72px;
+      display: flex;
+      flex-direction: column;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.32s ease;
+      overflow: hidden;
+    }
 
-  .slide[data-accent="silver"] { --accent: var(--silver); }
-  .slide[data-accent="amber"]  { --accent: var(--amber);  }
-  .slide[data-accent="blue"]   { --accent: var(--blue);   }
-  .slide[data-accent="green"]  { --accent: var(--green);  }
-  .slide[data-accent="purple"] { --accent: var(--purple); }
-  .slide[data-accent="rose"]   { --accent: var(--rose);   }
+    .slide.active {
+      opacity: 1;
+      visibility: visible;
+    }
 
-  /* ─── Slide header ─── */
-  .slide-eyebrow-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 18px;
-  }
-  .eyebrow {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--accent);
-  }
-  .slide-tag {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.62rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    padding: 4px 10px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-  }
-  .slide-title {
-    font-size: 2.15rem;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    line-height: 1.15;
-    color: var(--text);
-    margin-bottom: 6px;
-  }
-  .slide-subtitle {
-    font-size: 0.98rem;
-    color: var(--text-muted);
-    max-width: 88ch;
-    margin-bottom: 22px;
-  }
-  .slide-body {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
+    .slide[data-accent="silver"] {
+      --accent: var(--silver);
+    }
 
-  /* ─── COVER ─── */
-  .cover, .countercover {
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 80px;
-  }
-  .cover-eyebrow {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--silver);
-    margin-bottom: 36px;
-    opacity: 0.85;
-  }
-  .cover-title {
-    font-size: 3rem;
-    font-weight: 600;
-    letter-spacing: -0.025em;
-    line-height: 1.1;
-    max-width: 22ch;
-    margin: 0 auto 18px;
-  }
-  .cover-subtitle {
-    font-size: 1.08rem;
-    color: var(--text-muted);
-    max-width: 60ch;
-    margin: 0 auto 56px;
-  }
-  .cover-divider {
-    width: 56px;
-    height: 1px;
-    background: var(--border-strong);
-    margin: 0 auto 24px;
-  }
-  .cover-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    align-items: center;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.82rem;
-    color: var(--text-muted);
-  }
-  .cover-meta strong {
-    color: var(--text);
-    font-weight: 500;
-    font-size: 0.95rem;
-  }
-  .cover-meta-row { display: flex; gap: 12px; }
+    .slide[data-accent="amber"] {
+      --accent: var(--amber);
+    }
 
-  .countercover-title {
-    font-size: 4rem;
-    font-weight: 600;
-    letter-spacing: -0.03em;
-    margin-bottom: 24px;
-  }
-  .countercover-sub {
-    font-size: 1.1rem;
-    color: var(--text-muted);
-    margin-bottom: 56px;
-  }
+    .slide[data-accent="blue"] {
+      --accent: var(--blue);
+    }
 
-  /* ─── TOC ─── */
-  .toc-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 18px 24px;
-    margin-top: 8px;
-  }
-  .toc-item {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px 20px;
-    background: var(--surface);
-    border-left: 3px solid var(--accent-color, var(--silver));
-  }
-  .toc-num {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    color: var(--accent-color, var(--silver));
-    margin-bottom: 4px;
-  }
-  .toc-title {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 8px;
-  }
-  .toc-children {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    line-height: 1.5;
-  }
+    .slide[data-accent="green"] {
+      --accent: var(--green);
+    }
 
-  /* ─── Q/C/R/L cards ─── */
-  .item-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 14px;
-    flex: 1;
-    min-height: 0;
-  }
-  .item-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 18px 22px;
-    display: flex;
-    flex-direction: column;
-  }
-  .item-tag {
-    display: inline-block;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.62rem;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--accent);
-    border: 1px solid var(--accent);
-    background: rgba(0,0,0,0.2);
-    padding: 2px 7px;
-    border-radius: 3px;
-    align-self: flex-start;
-    margin-bottom: 10px;
-  }
-  .item-title {
-    font-size: 1.05rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 8px;
-    line-height: 1.3;
-  }
-  .item-body {
-    font-size: 0.88rem;
-    color: var(--text-muted);
-    line-height: 1.55;
-  }
-  .item-body p { margin-bottom: 6px; }
-  .item-body p:last-child { margin-bottom: 0; }
-  .item-body strong { color: var(--text); font-weight: 500; }
-  .item-body code {
-    font-family: 'JetBrains Mono', monospace;
-    background: var(--surface-elev);
-    color: var(--text);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 0.85em;
-  }
+    .slide[data-accent="purple"] {
+      --accent: var(--purple);
+    }
 
-  /* ─── Two-column split layout ─── */
-  .two-col {
-    display: grid;
-    grid-template-columns: 1fr 1.1fr;
-    gap: 32px;
-    flex: 1;
-    min-height: 0;
-  }
-  .two-col-narrow { grid-template-columns: 1fr 1fr; }
-  .two-col-text-wide { grid-template-columns: 1.3fr 1fr; }
+    .slide[data-accent="rose"] {
+      --accent: var(--rose);
+    }
 
-  .col-block {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  .col-block-heading {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 10px;
-  }
-  .col-block-content {
-    color: var(--text-muted);
-    font-size: 0.92rem;
-    line-height: 1.6;
-  }
-  .col-block-content p { margin-bottom: 10px; }
-  .col-block-content strong { color: var(--text); font-weight: 500; }
-  .col-block-content ul { padding-left: 18px; margin-bottom: 10px; }
-  .col-block-content li { margin-bottom: 6px; }
-  .col-block-content code {
-    font-family: 'JetBrains Mono', monospace;
-    background: var(--surface);
-    color: var(--text);
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 0.88em;
-  }
+    /* ─── Slide header ─── */
+    .slide-eyebrow-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 18px;
+    }
 
-  /* ─── Formula block ─── */
-  .formula {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    border-radius: 6px;
-    padding: 14px 18px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.9rem;
-    color: var(--text);
-    margin-bottom: 10px;
-    line-height: 1.7;
-  }
-  .formula-label {
-    display: block;
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    margin-bottom: 6px;
-  }
+    .eyebrow {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
 
-  /* ─── Methodology scheme ─── */
-  .meth-scheme {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr auto 1fr;
-    gap: 12px;
-    align-items: stretch;
-    flex: 1;
-    min-height: 0;
-  }
-  .phase-col {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 18px 18px 22px;
-    display: flex;
-    flex-direction: column;
-  }
-  .phase-col[data-phase="pre"]  { border-left: 3px solid var(--amber); }
-  .phase-col[data-phase="cpcv"] { border-left: 3px solid var(--blue); }
-  .phase-col[data-phase="post"] { border-left: 3px solid var(--green); }
-  .phase-col-num {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.62rem;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    margin-bottom: 4px;
-  }
-  .phase-col-name {
-    font-size: 1.05rem;
-    font-weight: 600;
-    margin-bottom: 6px;
-  }
-  .phase-col[data-phase="pre"] .phase-col-name  { color: var(--amber); }
-  .phase-col[data-phase="cpcv"] .phase-col-name { color: var(--blue); }
-  .phase-col[data-phase="post"] .phase-col-name { color: var(--green); }
-  .phase-col-tagline {
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    margin-bottom: 16px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--border);
-  }
-  .phase-steps {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .phase-steps li {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    padding: 6px 10px;
-    background: var(--surface-elev);
-    border-radius: 4px;
-    border: 1px solid var(--border);
-  }
-  .phase-steps li strong {
-    color: var(--text);
-    font-weight: 500;
-  }
-  .phase-arrow {
-    align-self: center;
-    color: var(--text-dim);
-    font-size: 1.4rem;
-    font-family: 'JetBrains Mono', monospace;
-  }
+    .slide-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
 
-  /* ─── SVG diagrams ─── */
-  .svg-frame {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px 18px;
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-  }
-  .svg-frame svg {
-    width: 100%;
-    height: auto;
-    max-height: 100%;
-  }
-  .svg-caption {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    margin-top: 10px;
-    text-align: center;
-  }
+    .slide-title {
+      font-size: 2.15rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
 
-  /* ─── TBL barrier mini-charts ─── */
-  .tbl-row {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-    margin-top: 12px;
-  }
-  .tbl-mini {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 12px;
-    text-align: center;
-  }
-  .tbl-mini svg {
-    width: 100%;
-    height: auto;
-    margin-bottom: 8px;
-  }
-  .tbl-mini-label {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    color: var(--text-muted);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    margin-bottom: 4px;
-  }
-  .tbl-mini-outcome {
-    font-size: 0.85rem;
-    font-weight: 600;
-  }
-  .tbl-mini-outcome.up { color: var(--green); }
-  .tbl-mini-outcome.down { color: var(--rose); }
-  .tbl-mini-outcome.flat { color: var(--silver); }
+    .slide-subtitle {
+      font-size: 0.98rem;
+      color: var(--text-muted);
+      max-width: 88ch;
+      margin-bottom: 22px;
+    }
 
-  /* ─── Calibration scheme ─── */
-  .calib-flow {
-    display: flex;
-    align-items: stretch;
-    justify-content: space-between;
-    gap: 8px;
-    margin: 16px 0;
-  }
-  .calib-box {
-    flex: 1;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 12px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    min-width: 0;
-  }
-  .calib-box-tag {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    margin-bottom: 4px;
-  }
-  .calib-box-title {
-    font-size: 0.92rem;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 4px;
-    line-height: 1.25;
-  }
-  .calib-box-sub {
-    font-size: 0.74rem;
-    color: var(--text-muted);
-    line-height: 1.35;
-  }
-  .calib-box-key {
-    background: var(--surface-elev);
-    border-color: var(--accent);
-  }
-  .calib-pills {
-    display: flex;
-    gap: 4px;
-    margin-top: 6px;
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-  .calib-pill {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.62rem;
-    background: rgba(168, 85, 247, 0.1);
-    border: 1px solid var(--accent);
-    color: var(--text);
-    padding: 2px 6px;
-    border-radius: 3px;
-  }
-  .calib-arrow {
-    align-self: center;
-    color: var(--text-dim);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 1rem;
-  }
+    .slide-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
 
-  /* ─── Feature table ─── */
-  .feat-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.82rem;
-    margin-top: 4px;
-    table-layout: fixed;
-  }
-  .feat-table th, .feat-table td {
-    text-align: left;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-  }
-  .feat-table th {
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 600;
-    font-size: 0.62rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    padding-bottom: 10px;
-    background: var(--surface-elev);
-  }
-  .feat-table td.fam {
-    font-weight: 600;
-    color: var(--text);
-    width: 14%;
-    font-size: 0.88rem;
-  }
-  .feat-table td.fam .fam-count {
-    display: block;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    font-weight: 400;
-    margin-top: 2px;
-  }
-  .feat-table td.sub {
-    width: 24%;
-    color: var(--text);
-    font-size: 0.85rem;
-  }
-  .feat-table td.feats {
-    color: var(--text-muted);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.78rem;
-    line-height: 1.5;
-  }
-  .feat-table tbody tr.fam-end td { border-bottom: 1px solid var(--border-strong); }
-  .feat-table tr.fam-ta    td.fam { color: var(--amber); }
-  .feat-table tr.fam-stat  td.fam { color: var(--blue); }
-  .feat-table tr.fam-macro td.fam { color: var(--green); }
-  .feat-table tr.fam-cmac  td.fam { color: var(--purple); }
-  .feat-table tr.fam-onch  td.fam { color: var(--rose); }
-  .feat-table tr.fam-lag   td.fam { color: var(--silver); }
+    /* ─── COVER ─── */
+    .cover,
+    .countercover {
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 80px;
+    }
 
-  /* ─── Three-up grid for evaluation metrics ─── */
-  .three-up {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-    flex: 1;
-    min-height: 0;
-  }
-  .metric-box {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 18px 20px;
-    border-top: 3px solid var(--accent);
-  }
-  .metric-box[data-cat="ml"]   { border-top-color: var(--amber); }
-  .metric-box[data-cat="fin"]  { border-top-color: var(--blue); }
-  .metric-box[data-cat="afml"] { border-top-color: var(--green); }
-  .metric-box-tag {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    margin-bottom: 4px;
-  }
-  .metric-box[data-cat="ml"]   .metric-box-tag { color: var(--amber); }
-  .metric-box[data-cat="fin"]  .metric-box-tag { color: var(--blue); }
-  .metric-box[data-cat="afml"] .metric-box-tag { color: var(--green); }
-  .metric-box-title {
-    font-size: 1.05rem;
-    font-weight: 600;
-    margin-bottom: 12px;
-  }
-  .metric-box ul {
-    padding-left: 16px;
-    color: var(--text-muted);
-    font-size: 0.85rem;
-    line-height: 1.55;
-  }
-  .metric-box ul li { margin-bottom: 5px; }
-  .metric-box ul li strong { color: var(--text); font-weight: 500; }
+    .cover-eyebrow {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--silver);
+      margin-bottom: 36px;
+      opacity: 0.85;
+    }
 
-  /* ─── Result table placeholder ─── */
-  .result-table-wrap {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px 20px;
-    flex: 1;
-    overflow: auto;
-  }
-  .result-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.85rem;
-  }
-  .result-table th, .result-table td {
-    text-align: right;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border);
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .result-table th:first-child, .result-table td:first-child {
-    text-align: left;
-  }
-  .result-table th {
-    color: var(--text-dim);
-    font-size: 0.62rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    font-weight: 600;
-  }
-  .result-table td.placeholder {
-    color: var(--text-dim);
-    font-style: italic;
-  }
-  .result-table tr.kan-row { background: rgba(168, 85, 247, 0.06); }
-  .result-table tr.kan-row td { color: var(--text); }
-  .result-table tr.kan-row td:first-child { color: var(--purple); font-weight: 600; }
+    .cover-title {
+      font-size: 3rem;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+      line-height: 1.1;
+      max-width: 22ch;
+      margin: 0 auto 18px;
+    }
 
-  /* ─── Symbolic placeholder ─── */
-  .formula-block {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--purple);
-    border-radius: 6px;
-    padding: 18px 22px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.95rem;
-    color: var(--text);
-    line-height: 1.8;
-    margin-bottom: 12px;
-    white-space: pre-wrap;
-  }
-  .formula-placeholder {
-    color: var(--text-dim);
-    font-style: italic;
-  }
+    .cover-subtitle {
+      font-size: 1.08rem;
+      color: var(--text-muted);
+      max-width: 60ch;
+      margin: 0 auto 56px;
+    }
 
-  /* ─── HUD ─── */
-  .hud {
-    position: fixed;
-    bottom: 18px;
-    right: 24px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    z-index: 10;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.72rem;
-    color: var(--text-muted);
-  }
-  .hud-counter {
-    padding: 0 6px;
-    color: var(--text-dim);
-    letter-spacing: 0.05em;
-  }
-  .hud-counter strong { color: var(--text); font-weight: 500; }
-  .hud-btn {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    width: 30px;
-    height: 30px;
-    border-radius: 4px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: inherit;
-    font-size: 0.85rem;
-    transition: all 0.15s ease;
-  }
-  .hud-btn:hover {
-    border-color: var(--border-strong);
-    color: var(--text);
-    background: var(--surface-elev);
-  }
-  .hud-btn:disabled {
-    opacity: 0.3;
-    cursor: not-allowed;
-  }
-  .progress-bar {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    height: 2px;
-    background: var(--silver);
-    z-index: 10;
-    transition: width 0.32s ease;
-  }
-  .hud-hint {
-    position: fixed;
-    bottom: 22px;
-    left: 32px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    z-index: 10;
-    transition: opacity 1s ease;
-  }
-  .hud-hint.fade { opacity: 0; pointer-events: none; }
+    .cover-divider {
+      width: 56px;
+      height: 1px;
+      background: var(--border-strong);
+      margin: 0 auto 24px;
+    }
 
-  /* ─── Helper styles ─── */
-  .accent-text { color: var(--accent); }
-  .mono { font-family: 'JetBrains Mono', monospace; }
-  .text-muted { color: var(--text-muted); }
-  .text-dim { color: var(--text-dim); }
+    .cover-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
 
-  /* ─── Bullet style for body content ─── */
-  .bullets {
-    list-style: none;
-    padding: 0;
-  }
-  .bullets li {
-    position: relative;
-    padding-left: 18px;
-    margin-bottom: 8px;
-    color: var(--text-muted);
-    font-size: 0.92rem;
-    line-height: 1.55;
-  }
-  .bullets li::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 12px;
-    width: 8px;
-    height: 1px;
-    background: var(--accent);
-  }
-  .bullets li strong { color: var(--text); font-weight: 500; }
-  .bullets li code {
-    font-family: 'JetBrains Mono', monospace;
-    background: var(--surface);
-    color: var(--text);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-size: 0.85em;
-  }
+    .cover-meta strong {
+      color: var(--text);
+      font-weight: 500;
+      font-size: 0.95rem;
+    }
 
-  /* ─── Tag pills inline ─── */
-  .pill {
-    display: inline-block;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 2px 8px;
-    border-radius: 3px;
-    border: 1px solid var(--accent);
-    color: var(--accent);
-    background: rgba(0,0,0,0.2);
-    margin-right: 4px;
-  }
+    .cover-meta-row {
+      display: flex;
+      gap: 12px;
+    }
 
-  /* ─── Responsive scaling for smaller screens ─── */
-  @media (max-width: 1280px) {
-    .slide { padding: 36px 56px 56px; }
-    .slide-title { font-size: 1.85rem; }
-    .cover-title { font-size: 2.4rem; }
-  }
-</style>
+    .countercover-title {
+      font-size: 4rem;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      margin-bottom: 24px;
+    }
+
+    .countercover-sub {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      margin-bottom: 56px;
+    }
+
+    /* ─── TOC ─── */
+    .toc-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 18px 24px;
+      margin-top: 8px;
+    }
+
+    .toc-item {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      background: var(--surface);
+      border-left: 3px solid var(--accent-color, var(--silver));
+    }
+
+    .toc-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      color: var(--accent-color, var(--silver));
+      margin-bottom: 4px;
+    }
+
+    .toc-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .toc-children {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* ─── Q/C/R/L cards ─── */
+    .item-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .item-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 22px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .item-tag {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      background: rgba(0, 0, 0, 0.2);
+      padding: 2px 7px;
+      border-radius: 3px;
+      align-self: flex-start;
+      margin-bottom: 10px;
+    }
+
+    .item-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+      line-height: 1.3;
+    }
+
+    .item-body {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    .item-body p {
+      margin-bottom: 6px;
+    }
+
+    .item-body p:last-child {
+      margin-bottom: 0;
+    }
+
+    .item-body strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .item-body code {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--surface-elev);
+      color: var(--text);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.85em;
+    }
+
+    /* ─── Two-column split layout ─── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1.1fr;
+      gap: 32px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .two-col-narrow {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .two-col-text-wide {
+      grid-template-columns: 1.3fr 1fr;
+    }
+
+    .col-block {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .col-block-heading {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+
+    .col-block-content {
+      color: var(--text-muted);
+      font-size: 0.92rem;
+      line-height: 1.6;
+    }
+
+    .col-block-content p {
+      margin-bottom: 10px;
+    }
+
+    .col-block-content strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .col-block-content ul {
+      padding-left: 18px;
+      margin-bottom: 10px;
+    }
+
+    .col-block-content li {
+      margin-bottom: 6px;
+    }
+
+    .col-block-content code {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--surface);
+      color: var(--text);
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.88em;
+    }
+
+    /* ─── Formula block ─── */
+    .formula {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 6px;
+      padding: 14px 18px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9rem;
+      color: var(--text);
+      margin-bottom: 10px;
+      line-height: 1.7;
+    }
+
+    .formula-label {
+      display: block;
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    /* ─── Methodology scheme ─── */
+    .meth-scheme {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: stretch;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .phase-col {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 18px 22px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .phase-col[data-phase="pre"] {
+      border-left: 3px solid var(--amber);
+    }
+
+    .phase-col[data-phase="cpcv"] {
+      border-left: 3px solid var(--blue);
+    }
+
+    .phase-col[data-phase="post"] {
+      border-left: 3px solid var(--green);
+    }
+
+    .phase-col-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+    }
+
+    .phase-col-name {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .phase-col[data-phase="pre"] .phase-col-name {
+      color: var(--amber);
+    }
+
+    .phase-col[data-phase="cpcv"] .phase-col-name {
+      color: var(--blue);
+    }
+
+    .phase-col[data-phase="post"] .phase-col-name {
+      color: var(--green);
+    }
+
+    .phase-col-tagline {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .phase-steps {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .phase-steps li {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      padding: 6px 10px;
+      background: var(--surface-elev);
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    .phase-steps li strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .phase-arrow {
+      align-self: center;
+      color: var(--text-dim);
+      font-size: 1.4rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ─── SVG diagrams ─── */
+    .svg-frame {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .svg-frame svg {
+      width: 100%;
+      height: auto;
+      max-height: 100%;
+    }
+
+    .svg-caption {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 10px;
+      text-align: center;
+    }
+
+    /* ─── TBL barrier mini-charts ─── */
+    .tbl-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .tbl-mini {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    .tbl-mini svg {
+      width: 100%;
+      height: auto;
+      margin-bottom: 8px;
+    }
+
+    .tbl-mini-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .tbl-mini-outcome {
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .tbl-mini-outcome.up {
+      color: var(--green);
+    }
+
+    .tbl-mini-outcome.down {
+      color: var(--rose);
+    }
+
+    .tbl-mini-outcome.flat {
+      color: var(--silver);
+    }
+
+    /* ─── Calibration scheme ─── */
+    .calib-flow {
+      display: flex;
+      align-items: stretch;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 16px 0;
+    }
+
+    .calib-box {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      min-width: 0;
+    }
+
+    .calib-box-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      color: var(--text-dim);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .calib-box-title {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+      line-height: 1.25;
+    }
+
+    .calib-box-sub {
+      font-size: 0.74rem;
+      color: var(--text-muted);
+      line-height: 1.35;
+    }
+
+    .calib-box-key {
+      background: var(--surface-elev);
+      border-color: var(--accent);
+    }
+
+    .calib-pills {
+      display: flex;
+      gap: 4px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .calib-pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.62rem;
+      background: rgba(168, 85, 247, 0.1);
+      border: 1px solid var(--accent);
+      color: var(--text);
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    .calib-arrow {
+      align-self: center;
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1rem;
+    }
+
+    /* ─── Feature table ─── */
+    .feat-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+      margin-top: 4px;
+      table-layout: fixed;
+    }
+
+    .feat-table th,
+    .feat-table td {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    .feat-table th {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      font-size: 0.62rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding-bottom: 10px;
+      background: var(--surface-elev);
+    }
+
+    .feat-table td.fam {
+      font-weight: 600;
+      color: var(--text);
+      width: 14%;
+      font-size: 0.88rem;
+    }
+
+    .feat-table td.fam .fam-count {
+      display: block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-weight: 400;
+      margin-top: 2px;
+    }
+
+    .feat-table td.sub {
+      width: 24%;
+      color: var(--text);
+      font-size: 0.85rem;
+    }
+
+    .feat-table td.feats {
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      line-height: 1.5;
+    }
+
+    .feat-table tbody tr.fam-end td {
+      border-bottom: 1px solid var(--border-strong);
+    }
+
+    .feat-table tr.fam-ta td.fam {
+      color: var(--amber);
+    }
+
+    .feat-table tr.fam-stat td.fam {
+      color: var(--blue);
+    }
+
+    .feat-table tr.fam-macro td.fam {
+      color: var(--green);
+    }
+
+    .feat-table tr.fam-cmac td.fam {
+      color: var(--purple);
+    }
+
+    .feat-table tr.fam-onch td.fam {
+      color: var(--rose);
+    }
+
+    .feat-table tr.fam-lag td.fam {
+      color: var(--silver);
+    }
+
+    /* ─── Three-up grid for evaluation metrics ─── */
+    .three-up {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .metric-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 20px;
+      border-top: 3px solid var(--accent);
+    }
+
+    .metric-box[data-cat="ml"] {
+      border-top-color: var(--amber);
+    }
+
+    .metric-box[data-cat="fin"] {
+      border-top-color: var(--blue);
+    }
+
+    .metric-box[data-cat="afml"] {
+      border-top-color: var(--green);
+    }
+
+    .metric-box-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .metric-box[data-cat="ml"] .metric-box-tag {
+      color: var(--amber);
+    }
+
+    .metric-box[data-cat="fin"] .metric-box-tag {
+      color: var(--blue);
+    }
+
+    .metric-box[data-cat="afml"] .metric-box-tag {
+      color: var(--green);
+    }
+
+    .metric-box-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .metric-box ul {
+      padding-left: 16px;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+
+    .metric-box ul li {
+      margin-bottom: 5px;
+    }
+
+    .metric-box ul li strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    /* ─── Result table placeholder ─── */
+    .result-table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      flex: 1;
+      overflow: auto;
+    }
+
+    .result-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    .result-table th,
+    .result-table td {
+      text-align: right;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .result-table th:first-child,
+    .result-table td:first-child {
+      text-align: left;
+    }
+
+    .result-table th {
+      color: var(--text-dim);
+      font-size: 0.62rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    .result-table td.placeholder {
+      color: var(--text-dim);
+      font-style: italic;
+    }
+
+    .result-table tr.kan-row {
+      background: rgba(168, 85, 247, 0.06);
+    }
+
+    .result-table tr.kan-row td {
+      color: var(--text);
+    }
+
+    .result-table tr.kan-row td:first-child {
+      color: var(--purple);
+      font-weight: 600;
+    }
+
+    /* ─── Symbolic placeholder ─── */
+    .formula-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--purple);
+      border-radius: 6px;
+      padding: 18px 22px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.95rem;
+      color: var(--text);
+      line-height: 1.8;
+      margin-bottom: 12px;
+      white-space: pre-wrap;
+    }
+
+    .formula-placeholder {
+      color: var(--text-dim);
+      font-style: italic;
+    }
+
+    /* ─── HUD ─── */
+    .hud {
+      position: fixed;
+      bottom: 18px;
+      right: 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      z-index: 10;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    .hud-counter {
+      padding: 0 6px;
+      color: var(--text-dim);
+      letter-spacing: 0.05em;
+    }
+
+    .hud-counter strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .hud-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      width: 30px;
+      height: 30px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: inherit;
+      font-size: 0.85rem;
+      transition: all 0.15s ease;
+    }
+
+    .hud-btn:hover {
+      border-color: var(--border-strong);
+      color: var(--text);
+      background: var(--surface-elev);
+    }
+
+    .hud-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+
+    .progress-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      height: 2px;
+      background: var(--silver);
+      z-index: 10;
+      transition: width 0.32s ease;
+    }
+
+    .hud-hint {
+      position: fixed;
+      bottom: 22px;
+      left: 32px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      z-index: 10;
+      transition: opacity 1s ease;
+    }
+
+    .hud-hint.fade {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* ─── Helper styles ─── */
+    .accent-text {
+      color: var(--accent);
+    }
+
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .text-muted {
+      color: var(--text-muted);
+    }
+
+    .text-dim {
+      color: var(--text-dim);
+    }
+
+    /* ─── Bullet style for body content ─── */
+    .bullets {
+      list-style: none;
+      padding: 0;
+    }
+
+    .bullets li {
+      position: relative;
+      padding-left: 18px;
+      margin-bottom: 8px;
+      color: var(--text-muted);
+      font-size: 0.92rem;
+      line-height: 1.55;
+    }
+
+    .bullets li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 12px;
+      width: 8px;
+      height: 1px;
+      background: var(--accent);
+    }
+
+    .bullets li strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .bullets li code {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--surface);
+      color: var(--text);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.85em;
+    }
+
+    /* ─── Tag pills inline ─── */
+    .pill {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 3px;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      background: rgba(0, 0, 0, 0.2);
+      margin-right: 4px;
+    }
+
+    /* ─── Responsive scaling for smaller screens ─── */
+    @media (max-width: 1280px) {
+      .slide {
+        padding: 36px 56px 56px;
+      }
+
+      .slide-title {
+        font-size: 1.85rem;
+      }
+
+      .cover-title {
+        font-size: 2.4rem;
+      }
+    }
+  </style>
 </head>
+
 <body>
 
-<div class="deck" id="deck">
+  <div class="deck" id="deck">
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 1 · COVER
      ═══════════════════════════════════════════════════════ -->
-<section class="slide cover active" data-accent="silver">
-  <div class="cover-eyebrow">Master's Thesis · ISEG · 2024 / 2026</div>
-  <h1 class="cover-title">BTC Daily Direction Prediction Using KANs Within the AFML Framework</h1>
-  <p class="cover-subtitle">A leakage-free benchmark of six models, with closed-form symbolic formula extraction from a Kolmogorov-Arnold Network.</p>
-  <div class="cover-divider"></div>
-  <div class="cover-meta">
-    <div><strong>Petr Terletskiy</strong> · l63023</div>
-    <div>Master's in Mathematical Finance</div>
-    <div>ISEG · Universidade de Lisboa</div>
-    <div class="cover-meta-row" style="margin-top:18px;">
-      <span>Supervisor: <span class="text-dim">[ TBD ]</span></span>
-      <span>·</span>
-      <span>Defense: <span class="text-dim">[ DATE ]</span></span>
-    </div>
-  </div>
-</section>
+    <section class="slide cover active" data-accent="silver">
+      <div class="cover-eyebrow">Master's Thesis · ISEG · 2024 / 2026</div>
+      <h1 class="cover-title">BTC Daily Direction Prediction Using KANs Within the AFML Framework</h1>
+      <p class="cover-subtitle">A leakage-free benchmark of six models, with closed-form symbolic formula extraction
+        from a Kolmogorov-Arnold Network.</p>
+      <div class="cover-divider"></div>
+      <div class="cover-meta">
+        <div><strong>Petr Terletskiy</strong> · l63023</div>
+        <div>Master's in Mathematical Finance</div>
+        <div>ISEG · Universidade de Lisboa</div>
+        <div class="cover-meta-row" style="margin-top:18px;">
+          <span>Supervisor: <span class="text-dim">[ TBD ]</span></span>
+          <span>·</span>
+          <span>Defense: <span class="text-dim">[ DATE ]</span></span>
+        </div>
+      </div>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 2 · TABLE OF CONTENTS
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="silver">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Contents</span>
-    <span class="slide-tag">Overview</span>
-  </div>
-  <h2 class="slide-title">Table of Contents</h2>
-  <p class="slide-subtitle">Five parts. Methodology is the heart of the thesis; results sit on top.</p>
-  <div class="slide-body">
-    <div class="toc-grid">
-      <div class="toc-item" style="--accent-color: var(--amber);">
-        <div class="toc-num">01</div>
-        <div class="toc-title">Problems &amp; Research Questions</div>
-        <div class="toc-children">Why crypto-ML literature numbers don't survive scrutiny. Q1 to Q4.</div>
+    <section class="slide" data-accent="silver">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Contents</span>
+        <span class="slide-tag">Overview</span>
       </div>
-      <div class="toc-item" style="--accent-color: var(--blue);">
-        <div class="toc-num">02</div>
-        <div class="toc-title">Solution &amp; Contributions</div>
-        <div class="toc-children">Full AFML, six-model benchmark, novel symbolic extraction. C1 to C4.</div>
+      <h2 class="slide-title">Table of Contents</h2>
+      <p class="slide-subtitle">Five parts. Methodology is the heart of the thesis; results sit on top.</p>
+      <div class="slide-body">
+        <div class="toc-grid">
+          <div class="toc-item" style="--accent-color: var(--amber);">
+            <div class="toc-num">01</div>
+            <div class="toc-title">Problems &amp; Research Questions</div>
+            <div class="toc-children">Why crypto-ML literature numbers don't survive scrutiny. Q1 to Q4.</div>
+          </div>
+          <div class="toc-item" style="--accent-color: var(--blue);">
+            <div class="toc-num">02</div>
+            <div class="toc-title">Solution &amp; Contributions</div>
+            <div class="toc-children">Full AFML, six-model benchmark, novel symbolic extraction. C1 to C4.</div>
+          </div>
+          <div class="toc-item" style="--accent-color: var(--green);">
+            <div class="toc-num">03</div>
+            <div class="toc-title">Methodology</div>
+            <div class="toc-children">Pre-CPCV, CPCV pipeline, Post-CPCV. 14 steps from raw OHLCV to closed-form
+              formula.</div>
+          </div>
+          <div class="toc-item" style="--accent-color: var(--purple);">
+            <div class="toc-num">04</div>
+            <div class="toc-title">Results</div>
+            <div class="toc-children">Six-model comparison; KAN's symbolic expression for P(Up).</div>
+          </div>
+          <div class="toc-item" style="--accent-color: var(--rose); grid-column: span 2;">
+            <div class="toc-num">05</div>
+            <div class="toc-title">Discussion &amp; Next Steps</div>
+            <div class="toc-children">Five honest limitations and the future work each one frames.</div>
+          </div>
+        </div>
       </div>
-      <div class="toc-item" style="--accent-color: var(--green);">
-        <div class="toc-num">03</div>
-        <div class="toc-title">Methodology</div>
-        <div class="toc-children">Pre-CPCV, CPCV pipeline, Post-CPCV. 14 steps from raw OHLCV to closed-form formula.</div>
-      </div>
-      <div class="toc-item" style="--accent-color: var(--purple);">
-        <div class="toc-num">04</div>
-        <div class="toc-title">Results</div>
-        <div class="toc-children">Six-model comparison; KAN's symbolic expression for P(Up).</div>
-      </div>
-      <div class="toc-item" style="--accent-color: var(--rose); grid-column: span 2;">
-        <div class="toc-num">05</div>
-        <div class="toc-title">Discussion &amp; Next Steps</div>
-        <div class="toc-children">Five honest limitations and the future work each one frames.</div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 3 · PROBLEMS & RESEARCH QUESTIONS
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="amber">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Part 01 · Problems &amp; Research Questions</span>
-    <span class="slide-tag">3 / 23</span>
-  </div>
-  <h2 class="slide-title">What this thesis tries to answer</h2>
-  <p class="slide-subtitle">Four questions structure the thesis. They follow from a single observation about the field's reported numbers.</p>
-  <div class="slide-body">
-    <div class="item-grid">
-      <div class="item-card">
-        <span class="item-tag">Q1</span>
-        <h3 class="item-title">Predictability under leakage-free evaluation</h3>
-        <div class="item-body">
-          <p><strong>The crypto-ML literature reports 85% to 95% daily-direction accuracy.</strong> Does BTC daily direction remain predictable once labels stop leaking the future and overlapping observations are downweighted? Does any positive Sharpe survive the AFML statistical-correction layer?</p>
+    <section class="slide" data-accent="amber">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Part 01 · Problems &amp; Research Questions</span>
+        <span class="slide-tag">3 / 23</span>
+      </div>
+      <h2 class="slide-title">What this thesis tries to answer</h2>
+      <p class="slide-subtitle">Four questions structure the thesis. They follow from a single observation about the
+        field's reported numbers.</p>
+      <div class="slide-body">
+        <div class="item-grid">
+          <div class="item-card">
+            <span class="item-tag">Q1</span>
+            <h3 class="item-title">Predictability under leakage-free evaluation</h3>
+            <div class="item-body">
+              <p><strong>The crypto-ML literature reports 85% to 95% daily-direction accuracy.</strong> Does BTC daily
+                direction remain predictable once labels stop leaking the future and overlapping observations are
+                downweighted? Does any positive Sharpe survive the AFML statistical-correction layer?</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">Q2</span>
+            <h3 class="item-title">Which feature families carry signal</h3>
+            <div class="item-body">
+              <p>Are technical, statistical, macroeconomic, or on-chain features the ones that survive multi-model
+                feature selection? Are on-chain features the free lunch the literature suggests they are?</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">Q3</span>
+            <h3 class="item-title">KAN versus standard model families</h3>
+            <div class="item-body">
+              <p>Where does a Kolmogorov-Arnold Network sit relative to econometric (AR Logistic), linear (LR),
+                tree-based (RF, XGBoost), and deep-learning (LSTM) baselines under the same protocol?</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">Q4</span>
+            <h3 class="item-title">Closed-form formula extraction</h3>
+            <div class="item-body">
+              <p>Can a human-readable mathematical expression for P(Up) be extracted from a CPCV-trained KAN, while
+                preserving most of its predictive accuracy?</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="item-card">
-        <span class="item-tag">Q2</span>
-        <h3 class="item-title">Which feature families carry signal</h3>
-        <div class="item-body">
-          <p>Are technical, statistical, macroeconomic, or on-chain features the ones that survive multi-model feature selection? Are on-chain features the free lunch the literature suggests they are?</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">Q3</span>
-        <h3 class="item-title">KAN versus standard model families</h3>
-        <div class="item-body">
-          <p>Where does a Kolmogorov-Arnold Network sit relative to econometric (AR Logistic), linear (LR), tree-based (RF, XGBoost), and deep-learning (LSTM) baselines under the same protocol?</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">Q4</span>
-        <h3 class="item-title">Closed-form formula extraction</h3>
-        <div class="item-body">
-          <p>Can a human-readable mathematical expression for P(Up) be extracted from a CPCV-trained KAN, while preserving most of its predictive accuracy?</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 4 · SOLUTION & CONTRIBUTIONS
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="blue">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Part 02 · Solution &amp; Contributions</span>
-    <span class="slide-tag">4 / 23</span>
-  </div>
-  <h2 class="slide-title">What this thesis delivers</h2>
-  <p class="slide-subtitle">Four contributions, mapped one-to-one to the four research questions.</p>
-  <div class="slide-body">
-    <div class="item-grid">
-      <div class="item-card">
-        <span class="item-tag">C1 → Q1</span>
-        <h3 class="item-title">Honest evaluation under full AFML</h3>
-        <div class="item-body">
-          <p>End-to-end pipeline applying the full AFML stack: CUSUM event sampling, triple-barrier labels, sample weights, fractional differencing, CPCV, plus DSR / PBO / DeLong corrections.</p>
+    <section class="slide" data-accent="blue">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Part 02 · Solution &amp; Contributions</span>
+        <span class="slide-tag">4 / 23</span>
+      </div>
+      <h2 class="slide-title">What this thesis delivers</h2>
+      <p class="slide-subtitle">Four contributions, mapped one-to-one to the four research questions.</p>
+      <div class="slide-body">
+        <div class="item-grid">
+          <div class="item-card">
+            <span class="item-tag">C1 → Q1</span>
+            <h3 class="item-title">Honest evaluation under full AFML</h3>
+            <div class="item-body">
+              <p>End-to-end pipeline applying the full AFML stack: CUSUM event sampling, triple-barrier labels, sample
+                weights, fractional differencing, CPCV, plus DSR / PBO / DeLong corrections.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">C2 → Q2</span>
+            <h3 class="item-title">A 56-feature universe across 4 families</h3>
+            <div class="item-body">
+              <p>25 technical, 9 statistical, 22 external (13 macro, 1 crypto-macro, 8 on-chain), plus 6 lag features.
+                Most crypto-ML papers use one or two families; this thesis uses four.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">C3 → Q3</span>
+            <h3 class="item-title">Six-model apples-to-apples benchmark</h3>
+            <div class="item-body">
+              <p>Identical CPCV splits, identical features, identical sample weights, identical metrics. Pairwise DeLong
+                AUC tests determine which differences are statistically real.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">C4 → Q4</span>
+            <h3 class="item-title">Closed-form symbolic formula from KAN</h3>
+            <div class="item-body">
+              <p>A human-readable expression for P(Up), pruned and substituted from the trained KAN. The novel
+                contribution that distinguishes this thesis from a standard model-benchmarking study.</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="item-card">
-        <span class="item-tag">C2 → Q2</span>
-        <h3 class="item-title">A 56-feature universe across 4 families</h3>
-        <div class="item-body">
-          <p>25 technical, 9 statistical, 22 external (13 macro, 1 crypto-macro, 8 on-chain), plus 6 lag features. Most crypto-ML papers use one or two families; this thesis uses four.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">C3 → Q3</span>
-        <h3 class="item-title">Six-model apples-to-apples benchmark</h3>
-        <div class="item-body">
-          <p>Identical CPCV splits, identical features, identical sample weights, identical metrics. Pairwise DeLong AUC tests determine which differences are statistically real.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">C4 → Q4</span>
-        <h3 class="item-title">Closed-form symbolic formula from KAN</h3>
-        <div class="item-body">
-          <p>A human-readable expression for P(Up), pruned and substituted from the trained KAN. The novel contribution that distinguishes this thesis from a standard model-benchmarking study.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 5 · METHODOLOGY OVERVIEW
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="green">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Part 03 · Methodology</span>
-    <span class="slide-tag">5 / 23</span>
-  </div>
-  <h2 class="slide-title">Pipeline overview</h2>
-  <p class="slide-subtitle">Three phases. Each phase produces inputs for the next; no output crosses a phase boundary without going through the proper preprocessing first.</p>
-  <div class="slide-body">
-    <div class="meth-scheme">
-      <div class="phase-col" data-phase="pre">
-        <div class="phase-col-num">Phase I</div>
-        <div class="phase-col-name">Pre-CPCV</div>
-        <div class="phase-col-tagline">From raw OHLCV to <code class="mono">(X, y, w, t1)</code></div>
-        <ol class="phase-steps">
-          <li><strong>1 ·</strong> Data Loading</li>
-          <li><strong>2 ·</strong> Daily Volatility (EWMA)</li>
-          <li><strong>3 ·</strong> CUSUM Filter</li>
-          <li><strong>4 ·</strong> Triple-Barrier Labels</li>
-          <li><strong>5 ·</strong> Sample Weights</li>
-          <li><strong>6 ·</strong> Feature Engineering</li>
-          <li><strong>7 ·</strong> Data Alignment</li>
-        </ol>
+    <section class="slide" data-accent="green">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Part 03 · Methodology</span>
+        <span class="slide-tag">5 / 23</span>
       </div>
-      <div class="phase-arrow">→</div>
-      <div class="phase-col" data-phase="cpcv">
-        <div class="phase-col-num">Phase II</div>
-        <div class="phase-col-name">CPCV Pipeline</div>
-        <div class="phase-col-tagline">15 splits · 5 paths · 6 models</div>
-        <ol class="phase-steps">
-          <li><strong>8 ·</strong> CPCV Split Generation</li>
-          <li><strong>9 ·</strong> Per-Fold Preproc · FFD &amp; Scale</li>
-          <li><strong>10 ·</strong> Per-Fold Preproc · Multi-Model MDA</li>
-          <li><strong>11 ·</strong> Nested Hyperparameter Tuning</li>
-          <li><strong>12 ·</strong> Model Training</li>
-          <li><strong>13 ·</strong> Calibration</li>
-        </ol>
+      <h2 class="slide-title">Pipeline overview</h2>
+      <p class="slide-subtitle">Three phases. Each phase produces inputs for the next; no output crosses a phase
+        boundary without going through the proper preprocessing first.</p>
+      <div class="slide-body">
+        <div class="meth-scheme">
+          <div class="phase-col" data-phase="pre">
+            <div class="phase-col-num">Phase I</div>
+            <div class="phase-col-name">Pre-CPCV</div>
+            <div class="phase-col-tagline">From raw OHLCV to <code class="mono">(X, y, w, t1)</code></div>
+            <ol class="phase-steps">
+              <li><strong>1 ·</strong> Data Loading</li>
+              <li><strong>2 ·</strong> Daily Volatility (EWMA)</li>
+              <li><strong>3 ·</strong> CUSUM Filter</li>
+              <li><strong>4 ·</strong> Triple-Barrier Labels</li>
+              <li><strong>5 ·</strong> Sample Weights</li>
+              <li><strong>6 ·</strong> Feature Engineering</li>
+              <li><strong>7 ·</strong> Data Alignment</li>
+            </ol>
+          </div>
+          <div class="phase-arrow">→</div>
+          <div class="phase-col" data-phase="cpcv">
+            <div class="phase-col-num">Phase II</div>
+            <div class="phase-col-name">CPCV Pipeline</div>
+            <div class="phase-col-tagline">15 splits · 5 paths · 6 models</div>
+            <ol class="phase-steps">
+              <li><strong>8 ·</strong> CPCV Split Generation</li>
+              <li><strong>9 ·</strong> Per-Fold Preproc · FFD &amp; Scale</li>
+              <li><strong>10 ·</strong> Per-Fold Preproc · Multi-Model MDA</li>
+              <li><strong>11 ·</strong> Nested Hyperparameter Tuning</li>
+              <li><strong>12 ·</strong> Model Training</li>
+              <li><strong>13 ·</strong> Calibration</li>
+            </ol>
+          </div>
+          <div class="phase-arrow">→</div>
+          <div class="phase-col" data-phase="post">
+            <div class="phase-col-num">Phase III</div>
+            <div class="phase-col-name">Post-CPCV</div>
+            <div class="phase-col-tagline">Evaluation &amp; closed-form formula</div>
+            <ol class="phase-steps">
+              <li><strong>14 ·</strong> Evaluation Metrics<br /><span class="text-dim mono" style="font-size:0.7rem;">ML
+                  · Financial · AFML</span></li>
+              <li><strong>15 ·</strong> Symbolic Extraction<br /><span class="text-dim mono"
+                  style="font-size:0.7rem;">PyKAN · Algorithm 1</span></li>
+            </ol>
+          </div>
+        </div>
       </div>
-      <div class="phase-arrow">→</div>
-      <div class="phase-col" data-phase="post">
-        <div class="phase-col-num">Phase III</div>
-        <div class="phase-col-name">Post-CPCV</div>
-        <div class="phase-col-tagline">Evaluation &amp; closed-form formula</div>
-        <ol class="phase-steps">
-          <li><strong>14 ·</strong> Evaluation Metrics<br/><span class="text-dim mono" style="font-size:0.7rem;">ML · Financial · AFML</span></li>
-          <li><strong>15 ·</strong> Symbolic Extraction<br/><span class="text-dim mono" style="font-size:0.7rem;">PyKAN · Algorithm 1</span></li>
-        </ol>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 6 · DATA LOADING & DAILY VOLATILITY
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="amber">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase I · Step 01-02</span>
-    <span class="slide-tag">6 / 23</span>
-  </div>
-  <h2 class="slide-title">Data Loading &amp; Daily Volatility</h2>
-  <p class="slide-subtitle">The foundation: a clean OHLCV series and an EWMA volatility estimate that scales the entire downstream protocol.</p>
-  <div class="slide-body">
-    <div class="two-col">
-      <div class="col-block">
-        <div class="col-block-heading">Data Loading</div>
-        <div class="col-block-content">
-          <p><strong>Source:</strong> BTC-USD daily OHLCV via <code>yfinance</code>.</p>
-          <p><strong>Range:</strong> September 2014 to April 2026 (≈ 4,200 daily bars).</p>
-          <p><strong>Validation:</strong></p>
-          <ul>
-            <li>Empty downloads raise.</li>
-            <li>MultiIndex columns are flattened.</li>
-            <li>Duplicate dates raise.</li>
-            <li>Calendar gaps ≤ 3 days forward-filled; larger gaps raise.</li>
-          </ul>
-          <p><strong>Why daily?</strong> Daily bars match the economic horizon of the macro and on-chain feature set. Higher frequencies introduce microstructure noise that overwhelms signal at this horizon.</p>
-        </div>
+    <section class="slide" data-accent="amber">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase I · Step 01-02</span>
+        <span class="slide-tag">6 / 23</span>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">Daily Volatility · EWMA</div>
-        <div class="col-block-content">
-          <p>Exponentially-weighted moving standard deviation of log returns, with span 50:</p>
-          <div class="formula">
-            <span class="formula-label">EWMA volatility</span>
-            σ<sub>t</sub> = √( EWMA<sub>span=50</sub>[ r<sub>t</sub><sup>2</sup> ] )
+      <h2 class="slide-title">Data Loading &amp; Daily Volatility</h2>
+      <p class="slide-subtitle">The foundation: a clean OHLCV series and an EWMA volatility estimate that scales the
+        entire downstream protocol.</p>
+      <div class="slide-body">
+        <div class="two-col">
+          <div class="col-block">
+            <div class="col-block-heading">Data Loading</div>
+            <div class="col-block-content">
+              <p><strong>Source:</strong> BTC-USD daily OHLCV via <code>yfinance</code>.</p>
+              <p><strong>Range:</strong> September 2014 to April 2026 (≈ 4,200 daily bars).</p>
+              <p><strong>Validation:</strong></p>
+              <ul>
+                <li>Empty downloads raise.</li>
+                <li>MultiIndex columns are flattened.</li>
+                <li>Duplicate dates raise.</li>
+                <li>Calendar gaps ≤ 3 days forward-filled; larger gaps raise.</li>
+              </ul>
+              <p><strong>Why daily?</strong> Daily bars match the economic horizon of the macro and on-chain feature
+                set. Higher frequencies introduce microstructure noise that overwhelms signal at this horizon.</p>
+            </div>
           </div>
-          <p><strong>Why span 50, not 100.</strong> López de Prado's default for equities is 100; BTC's regime-cycle is shorter, so 50 reacts faster to volatility shifts.</p>
-          <p><strong>Two downstream uses:</strong></p>
-          <ul>
-            <li>Sets the <strong>CUSUM threshold</strong> (Step 3).</li>
-            <li>Sets the <strong>profit-take and stop-loss barrier widths</strong> in triple-barrier labeling (Step 4).</li>
-          </ul>
-          <p>One volatility estimate, two roles. This is what couples sampling and labeling to the prevailing market regime.</p>
+          <div class="col-block">
+            <div class="col-block-heading">Daily Volatility · EWMA</div>
+            <div class="col-block-content">
+              <p>Exponentially-weighted moving standard deviation of log returns, with span 50:</p>
+              <div class="formula">
+                <span class="formula-label">EWMA volatility</span>
+                σ<sub>t</sub> = √( EWMA<sub>span=50</sub>[ r<sub>t</sub><sup>2</sup> ] )
+              </div>
+              <p><strong>Why span 50, not 100.</strong> López de Prado's default for equities is 100; BTC's regime-cycle
+                is shorter, so 50 reacts faster to volatility shifts.</p>
+              <p><strong>Two downstream uses:</strong></p>
+              <ul>
+                <li>Sets the <strong>CUSUM threshold</strong> (Step 3).</li>
+                <li>Sets the <strong>profit-take and stop-loss barrier widths</strong> in triple-barrier labeling (Step
+                  4).</li>
+              </ul>
+              <p>One volatility estimate, two roles. This is what couples sampling and labeling to the prevailing market
+                regime.</p>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 7 · CUSUM FILTER
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="amber">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase I · Step 03</span>
-    <span class="slide-tag">7 / 23</span>
-  </div>
-  <h2 class="slide-title">CUSUM Filter · event sampling</h2>
-  <p class="slide-subtitle">Don't label every bar. Label only the bars where something economically meaningful has accumulated.</p>
-  <div class="slide-body">
-    <div class="two-col" style="grid-template-columns: 1fr 1.4fr;">
-      <div class="col-block">
-        <div class="col-block-heading">Recursion</div>
-        <div class="formula">
-          <span class="formula-label">Positive cumulative deviation</span>
-          s<sub>t</sub><sup>+</sup> = max(0, s<sub>t-1</sub><sup>+</sup> + r<sub>t</sub> − E[r])
-        </div>
-        <div class="formula">
-          <span class="formula-label">Negative cumulative deviation</span>
-          s<sub>t</sub><sup>−</sup> = min(0, s<sub>t-1</sub><sup>−</sup> + r<sub>t</sub> − E[r])
-        </div>
-        <div class="formula">
-          <span class="formula-label">Trigger condition</span>
-          | s<sub>t</sub><sup>±</sup> | ≥ h · σ<sub>t</sub>
-        </div>
-        <div class="col-block-content" style="margin-top: 14px;">
-          <p><strong>h = 1.5</strong> (multiplier on daily volatility). When triggered, fire an event and reset the corresponding accumulator to 0.</p>
-          <p><strong>The intuition.</strong> Returns drift around a small mean. <code>s<sup>+</sup></code> counts how much price has accumulated <em>above</em> the mean since the last reset. When that accumulation exceeds 1.5 daily-volatility units, the regime has shifted enough to warrant labeling.</p>
-          <p><strong>Output:</strong> ≈ 1,245 events from ≈ 4,200 bars (~30%). The rest is noise.</p>
-        </div>
+    <section class="slide" data-accent="amber">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase I · Step 03</span>
+        <span class="slide-tag">7 / 23</span>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">CUSUM in action</div>
-        <div class="svg-frame">
-          <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
-            <!-- background grid -->
-            <defs>
-              <pattern id="grid" width="40" height="32" patternUnits="userSpaceOnUse">
-                <path d="M 40 0 L 0 0 0 32" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
-              </pattern>
-            </defs>
-            <rect width="720" height="320" fill="url(#grid)"/>
+      <h2 class="slide-title">CUSUM Filter · event sampling</h2>
+      <p class="slide-subtitle">Don't label every bar. Label only the bars where something economically meaningful has
+        accumulated.</p>
+      <div class="slide-body">
+        <div class="two-col" style="grid-template-columns: 1fr 1.4fr;">
+          <div class="col-block">
+            <div class="col-block-heading">Recursion</div>
+            <div class="formula">
+              <span class="formula-label">Positive cumulative deviation</span>
+              s<sub>t</sub><sup>+</sup> = max(0, s<sub>t-1</sub><sup>+</sup> + r<sub>t</sub> − E[r])
+            </div>
+            <div class="formula">
+              <span class="formula-label">Negative cumulative deviation</span>
+              s<sub>t</sub><sup>−</sup> = min(0, s<sub>t-1</sub><sup>−</sup> + r<sub>t</sub> − E[r])
+            </div>
+            <div class="formula">
+              <span class="formula-label">Trigger condition</span>
+              | s<sub>t</sub><sup>±</sup> | ≥ h · σ<sub>t</sub>
+            </div>
+            <div class="col-block-content" style="margin-top: 14px;">
+              <p><strong>h = 1.0</strong> (multiplier on daily volatility). When triggered, fire an event and reset the
+                corresponding accumulator to 0.</p>
+              <p><strong>The intuition.</strong> Returns drift around a small mean. <code>s<sup>+</sup></code> counts
+                how much price has accumulated <em>above</em> the mean since the last reset. When that accumulation
+                exceeds 1.5 daily-volatility units, the regime has shifted enough to warrant labeling.</p>
+              <p><strong>Output:</strong> ≈ 1,245 events from ≈ 4,200 bars (~30%). The rest is noise.</p>
+            </div>
+          </div>
+          <div class="col-block">
+            <div class="col-block-heading">CUSUM in action</div>
+            <div class="svg-frame">
+              <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+                <!-- background grid -->
+                <defs>
+                  <pattern id="grid" width="40" height="32" patternUnits="userSpaceOnUse">
+                    <path d="M 40 0 L 0 0 0 32" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1" />
+                  </pattern>
+                </defs>
+                <rect width="720" height="320" fill="url(#grid)" />
 
-            <!-- axes -->
-            <line x1="50" y1="160" x2="700" y2="160" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
-            <line x1="50" y1="20" x2="50" y2="300" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
+                <!-- axes -->
+                <line x1="50" y1="160" x2="700" y2="160" stroke="rgba(255,255,255,0.18)" stroke-width="1" />
+                <line x1="50" y1="20" x2="50" y2="300" stroke="rgba(255,255,255,0.18)" stroke-width="1" />
 
-            <!-- thresholds -->
-            <line x1="50"  y1="65"  x2="700" y2="65"  stroke="#10b981" stroke-width="1" stroke-dasharray="5 5" opacity="0.7"/>
-            <line x1="50"  y1="255" x2="700" y2="255" stroke="#f43f5e" stroke-width="1" stroke-dasharray="5 5" opacity="0.7"/>
-            <text x="708" y="69"  fill="#10b981" font-family="JetBrains Mono" font-size="11">+h·σ</text>
-            <text x="708" y="259" fill="#f43f5e" font-family="JetBrains Mono" font-size="11">−h·σ</text>
-            <text x="35"  y="164" fill="#5d6675" font-family="JetBrains Mono" font-size="10" text-anchor="end">0</text>
+                <!-- thresholds -->
+                <line x1="50" y1="65" x2="700" y2="65" stroke="#10b981" stroke-width="1" stroke-dasharray="5 5"
+                  opacity="0.7" />
+                <line x1="50" y1="255" x2="700" y2="255" stroke="#f43f5e" stroke-width="1" stroke-dasharray="5 5"
+                  opacity="0.7" />
+                <text x="708" y="69" fill="#10b981" font-family="JetBrains Mono" font-size="11">+h·σ</text>
+                <text x="708" y="259" fill="#f43f5e" font-family="JetBrains Mono" font-size="11">−h·σ</text>
+                <text x="35" y="164" fill="#5d6675" font-family="JetBrains Mono" font-size="10"
+                  text-anchor="end">0</text>
 
-            <!-- s+ trace: climbs, hits threshold, resets, climbs, etc. -->
-            <path d="M 50 160 L 70 158 L 90 152 L 110 145 L 130 140 L 150 130 L 170 115 L 190 100 L 210 80 L 230 65
+                <!-- s+ trace: climbs, hits threshold, resets, climbs, etc. -->
+                <path d="M 50 160 L 70 158 L 90 152 L 110 145 L 130 140 L 150 130 L 170 115 L 190 100 L 210 80 L 230 65
                      L 232 160 L 250 156 L 270 150 L 290 142 L 310 132 L 330 120 L 350 100 L 370 85 L 380 65
                      L 382 160 L 400 158 L 420 152 L 440 148 L 460 145 L 480 140 L 500 138 L 520 134 L 540 130
                      L 560 124 L 580 110 L 600 92 L 615 65
-                     L 617 160 L 640 158 L 660 156 L 680 152 L 700 150"
-                  fill="none" stroke="#10b981" stroke-width="2" stroke-linejoin="round" opacity="0.85"/>
+                     L 617 160 L 640 158 L 660 156 L 680 152 L 700 150" fill="none" stroke="#10b981" stroke-width="2"
+                  stroke-linejoin="round" opacity="0.85" />
 
-            <!-- s- trace -->
-            <path d="M 50 160 L 70 162 L 90 165 L 110 170 L 130 180 L 150 195 L 170 215 L 185 240 L 200 255
+                <!-- s- trace -->
+                <path d="M 50 160 L 70 162 L 90 165 L 110 170 L 130 180 L 150 195 L 170 215 L 185 240 L 200 255
                      L 202 160 L 220 162 L 240 168 L 260 175 L 280 180 L 300 178 L 320 172 L 340 165 L 360 162
                      L 380 162 L 400 162 L 430 165 L 460 175 L 490 195 L 520 220 L 540 245 L 553 255
-                     L 555 160 L 580 162 L 600 165 L 620 168 L 640 175 L 660 182 L 680 188 L 700 195"
-                  fill="none" stroke="#f43f5e" stroke-width="2" stroke-linejoin="round" opacity="0.85"/>
+                     L 555 160 L 580 162 L 600 165 L 620 168 L 640 175 L 660 182 L 680 188 L 700 195" fill="none"
+                  stroke="#f43f5e" stroke-width="2" stroke-linejoin="round" opacity="0.85" />
 
-            <!-- trigger event markers (where curves hit thresholds) -->
-            <circle cx="230" cy="65"  r="5" fill="#10b981" stroke="#0a0e17" stroke-width="2"/>
-            <circle cx="380" cy="65"  r="5" fill="#10b981" stroke="#0a0e17" stroke-width="2"/>
-            <circle cx="615" cy="65"  r="5" fill="#10b981" stroke="#0a0e17" stroke-width="2"/>
-            <circle cx="200" cy="255" r="5" fill="#f43f5e" stroke="#0a0e17" stroke-width="2"/>
-            <circle cx="553" cy="255" r="5" fill="#f43f5e" stroke="#0a0e17" stroke-width="2"/>
+                <!-- trigger event markers (where curves hit thresholds) -->
+                <circle cx="230" cy="65" r="5" fill="#10b981" stroke="#0a0e17" stroke-width="2" />
+                <circle cx="380" cy="65" r="5" fill="#10b981" stroke="#0a0e17" stroke-width="2" />
+                <circle cx="615" cy="65" r="5" fill="#10b981" stroke="#0a0e17" stroke-width="2" />
+                <circle cx="200" cy="255" r="5" fill="#f43f5e" stroke="#0a0e17" stroke-width="2" />
+                <circle cx="553" cy="255" r="5" fill="#f43f5e" stroke="#0a0e17" stroke-width="2" />
 
-            <!-- annotation arrows down to time axis -->
-            <line x1="230" y1="70"  x2="230" y2="290" stroke="#10b981" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>
-            <line x1="380" y1="70"  x2="380" y2="290" stroke="#10b981" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>
-            <line x1="615" y1="70"  x2="615" y2="290" stroke="#10b981" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>
-            <line x1="200" y1="250" x2="200" y2="290" stroke="#f43f5e" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>
-            <line x1="553" y1="250" x2="553" y2="290" stroke="#f43f5e" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>
+                <!-- annotation arrows down to time axis -->
+                <line x1="230" y1="70" x2="230" y2="290" stroke="#10b981" stroke-width="1" stroke-dasharray="2 3"
+                  opacity="0.5" />
+                <line x1="380" y1="70" x2="380" y2="290" stroke="#10b981" stroke-width="1" stroke-dasharray="2 3"
+                  opacity="0.5" />
+                <line x1="615" y1="70" x2="615" y2="290" stroke="#10b981" stroke-width="1" stroke-dasharray="2 3"
+                  opacity="0.5" />
+                <line x1="200" y1="250" x2="200" y2="290" stroke="#f43f5e" stroke-width="1" stroke-dasharray="2 3"
+                  opacity="0.5" />
+                <line x1="553" y1="250" x2="553" y2="290" stroke="#f43f5e" stroke-width="1" stroke-dasharray="2 3"
+                  opacity="0.5" />
 
-            <text x="230" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9" text-anchor="middle">EVENT</text>
-            <text x="380" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9" text-anchor="middle">EVENT</text>
-            <text x="615" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9" text-anchor="middle">EVENT</text>
-            <text x="200" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9" text-anchor="middle">EVENT</text>
-            <text x="553" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9" text-anchor="middle">EVENT</text>
+                <text x="230" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9"
+                  text-anchor="middle">EVENT</text>
+                <text x="380" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9"
+                  text-anchor="middle">EVENT</text>
+                <text x="615" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9"
+                  text-anchor="middle">EVENT</text>
+                <text x="200" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9"
+                  text-anchor="middle">EVENT</text>
+                <text x="553" y="305" fill="#95a0b3" font-family="JetBrains Mono" font-size="9"
+                  text-anchor="middle">EVENT</text>
 
-            <!-- legend -->
-            <rect x="60"  y="28" width="14" height="2" fill="#10b981"/>
-            <text x="80"  y="32" fill="#e8ecf3" font-family="JetBrains Mono" font-size="10">s⁺ (positive accumulation)</text>
-            <rect x="290" y="28" width="14" height="2" fill="#f43f5e"/>
-            <text x="310" y="32" fill="#e8ecf3" font-family="JetBrains Mono" font-size="10">s⁻ (negative accumulation)</text>
-            <text x="500" y="32" fill="#5d6675" font-family="JetBrains Mono" font-size="10">— — — threshold ±h·σ</text>
-          </svg>
-          <div class="svg-caption">Accumulators climb until the threshold is breached; an event fires and the accumulator resets to zero.</div>
+                <!-- legend -->
+                <rect x="60" y="28" width="14" height="2" fill="#10b981" />
+                <text x="80" y="32" fill="#e8ecf3" font-family="JetBrains Mono" font-size="10">s⁺ (positive
+                  accumulation)</text>
+                <rect x="290" y="28" width="14" height="2" fill="#f43f5e" />
+                <text x="310" y="32" fill="#e8ecf3" font-family="JetBrains Mono" font-size="10">s⁻ (negative
+                  accumulation)</text>
+                <text x="500" y="32" fill="#5d6675" font-family="JetBrains Mono" font-size="10">— — — threshold
+                  ±h·σ</text>
+              </svg>
+              <div class="svg-caption">Accumulators climb until the threshold is breached; an event fires and the
+                accumulator resets to zero.</div>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 8 · TRIPLE-BARRIER LABELING
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="amber">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase I · Step 04</span>
-    <span class="slide-tag">8 / 23</span>
-  </div>
-  <h2 class="slide-title">Triple-Barrier Labeling</h2>
-  <p class="slide-subtitle">For each event from CUSUM, place three barriers around the entry price. Whichever barrier is touched first determines the label.</p>
-  <div class="slide-body">
-    <div class="two-col" style="grid-template-columns: 0.85fr 1.15fr;">
-      <div class="col-block">
-        <div class="col-block-heading">The three barriers</div>
-        <div class="col-block-content">
-          <ul>
-            <li><strong style="color: var(--green);">Profit-taking (PT)</strong> — horizontal line above entry at <code>+1.5 · σ<sub>t</sub></code>. If hit first → label <strong>+1</strong>.</li>
-            <li><strong style="color: var(--rose);">Stop-loss (SL)</strong> — horizontal line below entry at <code>−1.5 · σ<sub>t</sub></code>. If hit first → label <strong>−1</strong>.</li>
-            <li><strong style="color: var(--silver);">Vertical timeout</strong> — entry time plus <strong>10 calendar days</strong>. If reached without hitting PT or SL → label = <strong>sign(final return)</strong>.</li>
-          </ul>
-          <p><strong>Why this beats fixed-time-horizon labels.</strong> Fixed labels use the same horizon for every event regardless of regime. Triple-barrier adapts horizon to volatility (the σ<sub>t</sub> scales) and lets the path itself decide the outcome.</p>
-          <p><strong>Class balance after dropping the rare class:</strong> { +1: 697, −1: 548 } → 1,245 events.</p>
+    <section class="slide" data-accent="amber">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase I · Step 04</span>
+        <span class="slide-tag">8 / 23</span>
+      </div>
+      <h2 class="slide-title">Triple-Barrier Labeling</h2>
+      <p class="slide-subtitle">For each event from CUSUM, place three barriers around the entry price. Whichever
+        barrier is touched first determines the label.</p>
+      <div class="slide-body">
+        <div class="two-col" style="grid-template-columns: 0.85fr 1.15fr;">
+          <div class="col-block">
+            <div class="col-block-heading">The three barriers</div>
+            <div class="col-block-content">
+              <ul>
+                <li><strong style="color: var(--green);">Profit-taking (PT)</strong> — horizontal line above entry at
+                  <code>+1.5 · σ<sub>t</sub></code>. If hit first → label <strong>+1</strong>.</li>
+                <li><strong style="color: var(--rose);">Stop-loss (SL)</strong> — horizontal line below entry at
+                  <code>−1.5 · σ<sub>t</sub></code>. If hit first → label <strong>−1</strong>.</li>
+                <li><strong style="color: var(--silver);">Vertical timeout</strong> — entry time plus <strong>10
+                    calendar days</strong>. If reached without hitting PT or SL → label = <strong>sign(final
+                    return)</strong>.</li>
+              </ul>
+              <p><strong>Why this beats fixed-time-horizon labels.</strong> Fixed labels use the same horizon for every
+                event regardless of regime. Triple-barrier adapts horizon to volatility (the σ<sub>t</sub> scales) and
+                lets the path itself decide the outcome.</p>
+              <p><strong>Class balance after dropping the rare class:</strong> { +1: 697, −1: 548 } → 1,245 events.</p>
+            </div>
+          </div>
+          <div class="col-block">
+            <div class="col-block-heading">Three example outcomes</div>
+            <div class="tbl-row">
+              <div class="tbl-mini">
+                <svg viewBox="0 0 200 140" xmlns="http://www.w3.org/2000/svg">
+                  <line x1="20" y1="35" x2="180" y2="35" stroke="#10b981" stroke-dasharray="4 4" stroke-width="1" />
+                  <line x1="20" y1="105" x2="180" y2="105" stroke="#f43f5e" stroke-dasharray="4 4" stroke-width="1" />
+                  <line x1="20" y1="20" x2="20" y2="120" stroke="#5d6675" stroke-width="1" />
+                  <line x1="170" y1="20" x2="170" y2="120" stroke="#5d6675" stroke-dasharray="4 4" stroke-width="1" />
+                  <text x="20" y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8"
+                    text-anchor="middle">t₀</text>
+                  <text x="170" y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8"
+                    text-anchor="middle">t₀+10</text>
+                  <text x="184" y="38" fill="#10b981" font-family="JetBrains Mono" font-size="8">PT</text>
+                  <text x="184" y="108" fill="#f43f5e" font-family="JetBrains Mono" font-size="8">SL</text>
+                  <path d="M 20 70 L 35 65 L 55 72 L 75 60 L 95 55 L 115 50 L 130 42 L 142 35" fill="none"
+                    stroke="#e8ecf3" stroke-width="2" stroke-linejoin="round" />
+                  <circle cx="142" cy="35" r="4" fill="#10b981" stroke="#0a0e17" stroke-width="1.5" />
+                </svg>
+                <div class="tbl-mini-label">Path A · hits PT</div>
+                <div class="tbl-mini-outcome up">label = +1</div>
+              </div>
+              <div class="tbl-mini">
+                <svg viewBox="0 0 200 140" xmlns="http://www.w3.org/2000/svg">
+                  <line x1="20" y1="35" x2="180" y2="35" stroke="#10b981" stroke-dasharray="4 4" stroke-width="1" />
+                  <line x1="20" y1="105" x2="180" y2="105" stroke="#f43f5e" stroke-dasharray="4 4" stroke-width="1" />
+                  <line x1="20" y1="20" x2="20" y2="120" stroke="#5d6675" stroke-width="1" />
+                  <line x1="170" y1="20" x2="170" y2="120" stroke="#5d6675" stroke-dasharray="4 4" stroke-width="1" />
+                  <text x="20" y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8"
+                    text-anchor="middle">t₀</text>
+                  <text x="170" y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8"
+                    text-anchor="middle">t₀+10</text>
+                  <text x="184" y="38" fill="#10b981" font-family="JetBrains Mono" font-size="8">PT</text>
+                  <text x="184" y="108" fill="#f43f5e" font-family="JetBrains Mono" font-size="8">SL</text>
+                  <path d="M 20 70 L 38 78 L 55 72 L 72 88 L 90 95 L 105 102 L 115 105" fill="none" stroke="#e8ecf3"
+                    stroke-width="2" stroke-linejoin="round" />
+                  <circle cx="115" cy="105" r="4" fill="#f43f5e" stroke="#0a0e17" stroke-width="1.5" />
+                </svg>
+                <div class="tbl-mini-label">Path B · hits SL</div>
+                <div class="tbl-mini-outcome down">label = −1</div>
+              </div>
+              <div class="tbl-mini">
+                <svg viewBox="0 0 200 140" xmlns="http://www.w3.org/2000/svg">
+                  <line x1="20" y1="35" x2="180" y2="35" stroke="#10b981" stroke-dasharray="4 4" stroke-width="1" />
+                  <line x1="20" y1="105" x2="180" y2="105" stroke="#f43f5e" stroke-dasharray="4 4" stroke-width="1" />
+                  <line x1="20" y1="20" x2="20" y2="120" stroke="#5d6675" stroke-width="1" />
+                  <line x1="170" y1="20" x2="170" y2="120" stroke="#c9d0db" stroke-width="2" />
+                  <text x="20" y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8"
+                    text-anchor="middle">t₀</text>
+                  <text x="170" y="14" fill="#c9d0db" font-family="JetBrains Mono" font-size="8"
+                    text-anchor="middle">t₀+10</text>
+                  <text x="184" y="38" fill="#10b981" font-family="JetBrains Mono" font-size="8">PT</text>
+                  <text x="184" y="108" fill="#f43f5e" font-family="JetBrains Mono" font-size="8">SL</text>
+                  <path d="M 20 70 L 38 65 L 55 72 L 75 78 L 95 70 L 115 62 L 135 70 L 150 64 L 170 60" fill="none"
+                    stroke="#e8ecf3" stroke-width="2" stroke-linejoin="round" />
+                  <circle cx="170" cy="60" r="4" fill="#c9d0db" stroke="#0a0e17" stroke-width="1.5" />
+                </svg>
+                <div class="tbl-mini-label">Path C · timeout</div>
+                <div class="tbl-mini-outcome flat">label = sign(r) = +1</div>
+              </div>
+            </div>
+            <p class="text-muted" style="font-size: 0.8rem; margin-top: 14px; text-align: center;">All three paths are
+              realized BTC return shapes; the barriers are scaled by σ<sub>t</sub> at entry.</p>
+          </div>
         </div>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">Three example outcomes</div>
-        <div class="tbl-row">
-          <div class="tbl-mini">
-            <svg viewBox="0 0 200 140" xmlns="http://www.w3.org/2000/svg">
-              <line x1="20" y1="35"  x2="180" y2="35"  stroke="#10b981" stroke-dasharray="4 4" stroke-width="1"/>
-              <line x1="20" y1="105" x2="180" y2="105" stroke="#f43f5e" stroke-dasharray="4 4" stroke-width="1"/>
-              <line x1="20" y1="20"  x2="20"  y2="120" stroke="#5d6675" stroke-width="1"/>
-              <line x1="170" y1="20" x2="170" y2="120" stroke="#5d6675" stroke-dasharray="4 4" stroke-width="1"/>
-              <text x="20"  y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8" text-anchor="middle">t₀</text>
-              <text x="170" y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8" text-anchor="middle">t₀+10</text>
-              <text x="184" y="38" fill="#10b981" font-family="JetBrains Mono" font-size="8">PT</text>
-              <text x="184" y="108" fill="#f43f5e" font-family="JetBrains Mono" font-size="8">SL</text>
-              <path d="M 20 70 L 35 65 L 55 72 L 75 60 L 95 55 L 115 50 L 130 42 L 142 35"
-                    fill="none" stroke="#e8ecf3" stroke-width="2" stroke-linejoin="round"/>
-              <circle cx="142" cy="35" r="4" fill="#10b981" stroke="#0a0e17" stroke-width="1.5"/>
-            </svg>
-            <div class="tbl-mini-label">Path A · hits PT</div>
-            <div class="tbl-mini-outcome up">label = +1</div>
-          </div>
-          <div class="tbl-mini">
-            <svg viewBox="0 0 200 140" xmlns="http://www.w3.org/2000/svg">
-              <line x1="20" y1="35"  x2="180" y2="35"  stroke="#10b981" stroke-dasharray="4 4" stroke-width="1"/>
-              <line x1="20" y1="105" x2="180" y2="105" stroke="#f43f5e" stroke-dasharray="4 4" stroke-width="1"/>
-              <line x1="20" y1="20"  x2="20"  y2="120" stroke="#5d6675" stroke-width="1"/>
-              <line x1="170" y1="20" x2="170" y2="120" stroke="#5d6675" stroke-dasharray="4 4" stroke-width="1"/>
-              <text x="20"  y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8" text-anchor="middle">t₀</text>
-              <text x="170" y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8" text-anchor="middle">t₀+10</text>
-              <text x="184" y="38" fill="#10b981" font-family="JetBrains Mono" font-size="8">PT</text>
-              <text x="184" y="108" fill="#f43f5e" font-family="JetBrains Mono" font-size="8">SL</text>
-              <path d="M 20 70 L 38 78 L 55 72 L 72 88 L 90 95 L 105 102 L 115 105"
-                    fill="none" stroke="#e8ecf3" stroke-width="2" stroke-linejoin="round"/>
-              <circle cx="115" cy="105" r="4" fill="#f43f5e" stroke="#0a0e17" stroke-width="1.5"/>
-            </svg>
-            <div class="tbl-mini-label">Path B · hits SL</div>
-            <div class="tbl-mini-outcome down">label = −1</div>
-          </div>
-          <div class="tbl-mini">
-            <svg viewBox="0 0 200 140" xmlns="http://www.w3.org/2000/svg">
-              <line x1="20" y1="35"  x2="180" y2="35"  stroke="#10b981" stroke-dasharray="4 4" stroke-width="1"/>
-              <line x1="20" y1="105" x2="180" y2="105" stroke="#f43f5e" stroke-dasharray="4 4" stroke-width="1"/>
-              <line x1="20" y1="20"  x2="20"  y2="120" stroke="#5d6675" stroke-width="1"/>
-              <line x1="170" y1="20" x2="170" y2="120" stroke="#c9d0db" stroke-width="2"/>
-              <text x="20"  y="14" fill="#5d6675" font-family="JetBrains Mono" font-size="8" text-anchor="middle">t₀</text>
-              <text x="170" y="14" fill="#c9d0db" font-family="JetBrains Mono" font-size="8" text-anchor="middle">t₀+10</text>
-              <text x="184" y="38" fill="#10b981" font-family="JetBrains Mono" font-size="8">PT</text>
-              <text x="184" y="108" fill="#f43f5e" font-family="JetBrains Mono" font-size="8">SL</text>
-              <path d="M 20 70 L 38 65 L 55 72 L 75 78 L 95 70 L 115 62 L 135 70 L 150 64 L 170 60"
-                    fill="none" stroke="#e8ecf3" stroke-width="2" stroke-linejoin="round"/>
-              <circle cx="170" cy="60" r="4" fill="#c9d0db" stroke="#0a0e17" stroke-width="1.5"/>
-            </svg>
-            <div class="tbl-mini-label">Path C · timeout</div>
-            <div class="tbl-mini-outcome flat">label = sign(r) = +1</div>
-          </div>
-        </div>
-        <p class="text-muted" style="font-size: 0.8rem; margin-top: 14px; text-align: center;">All three paths are realized BTC return shapes; the barriers are scaled by σ<sub>t</sub> at entry.</p>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 9 · SAMPLE WEIGHTS
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="amber">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase I · Step 05</span>
-    <span class="slide-tag">9 / 23</span>
-  </div>
-  <h2 class="slide-title">Sample Weights · why and how</h2>
-  <p class="slide-subtitle">Financial returns are not independent and identically distributed. A vanilla classifier that treats every label equally is double-counting information.</p>
-  <div class="slide-body">
-    <div class="two-col">
-      <div class="col-block">
-        <div class="col-block-heading">Why · two failures of equal weighting</div>
-        <div class="col-block-content">
-          <p><strong>1. Unequal information content.</strong> A day where BTC moves +7% carries more signal about the prevailing regime than a day where it moves +1%. Vanilla weighting gives both weight 1.</p>
-          <p><strong>2. Overlapping observations.</strong> A label starting at <code>t<sub>0</sub></code> with a 10-day horizon shares 8 bars with a label starting at <code>t<sub>0</sub>+2</code>. If both are positive, the model effectively sees the same regime twice.</p>
-          <p>AFML Section 4.6 corrects both effects with a single weighting scheme: <strong>weight is proportional to the absolute log-return attributed uniquely to that label, divided by the number of concurrent labels.</strong></p>
+    <section class="slide" data-accent="amber">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase I · Step 05</span>
+        <span class="slide-tag">9 / 23</span>
+      </div>
+      <h2 class="slide-title">Sample Weights · why and how</h2>
+      <p class="slide-subtitle">Financial returns are not independent and identically distributed. A vanilla classifier
+        that treats every label equally is double-counting information.</p>
+      <div class="slide-body">
+        <div class="two-col">
+          <div class="col-block">
+            <div class="col-block-heading">Why · two failures of equal weighting</div>
+            <div class="col-block-content">
+              <p><strong>1. Unequal information content.</strong> A day where BTC moves +7% carries more signal about
+                the prevailing regime than a day where it moves +1%. Vanilla weighting gives both weight 1.</p>
+              <p><strong>2. Overlapping observations.</strong> A label starting at <code>t<sub>0</sub></code> with a
+                10-day horizon shares 8 bars with a label starting at <code>t<sub>0</sub>+2</code>. If both are
+                positive, the model effectively sees the same regime twice.</p>
+              <p>AFML Section 4.6 corrects both effects with a single weighting scheme: <strong>weight is proportional
+                  to the absolute log-return attributed uniquely to that label, divided by the number of concurrent
+                  labels.</strong></p>
+            </div>
+          </div>
+          <div class="col-block">
+            <div class="col-block-heading">How · five-step calculation</div>
+            <ol class="bullets" style="counter-reset: step;">
+              <li><strong>Concurrent labels c<sub>t</sub>.</strong> For each daily bar, count how many labels are alive
+                (their span includes that bar).</li>
+              <li><strong>Average uniqueness.</strong> For each label, average <code>1 / c<sub>t</sub></code> over its
+                span. No-overlap label → uniqueness ≈ 1; heavy-overlap label → uniqueness ≈ 0.</li>
+              <li><strong>Return attribution.</strong> Multiply uniqueness by <code>|r<sub>t</sub>|</code> at barrier
+                touch. Decisive moves carry more weight.</li>
+              <li><strong>Time decay.</strong> Linear decay from <strong>0.4</strong> (oldest label) to
+                <strong>1.0</strong> (newest). Older labels weigh less.</li>
+              <li><strong>99th-percentile cap.</strong> No single event dominates training.</li>
+            </ol>
+            <div class="formula" style="margin-top: 10px;">
+              <span class="formula-label">Final weight (per label)</span>
+              w<sub>i</sub> ∝ ū<sub>i</sub> · |r<sub>i</sub>| · d<sub>i</sub>, &nbsp; mean(w) = 1
+            </div>
+          </div>
         </div>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">How · five-step calculation</div>
-        <ol class="bullets" style="counter-reset: step;">
-          <li><strong>Concurrent labels c<sub>t</sub>.</strong> For each daily bar, count how many labels are alive (their span includes that bar).</li>
-          <li><strong>Average uniqueness.</strong> For each label, average <code>1 / c<sub>t</sub></code> over its span. No-overlap label → uniqueness ≈ 1; heavy-overlap label → uniqueness ≈ 0.</li>
-          <li><strong>Return attribution.</strong> Multiply uniqueness by <code>|r<sub>t</sub>|</code> at barrier touch. Decisive moves carry more weight.</li>
-          <li><strong>Time decay.</strong> Linear decay from <strong>0.4</strong> (oldest label) to <strong>1.0</strong> (newest). Older labels weigh less.</li>
-          <li><strong>99th-percentile cap.</strong> No single event dominates training.</li>
-        </ol>
-        <div class="formula" style="margin-top: 10px;">
-          <span class="formula-label">Final weight (per label)</span>
-          w<sub>i</sub> ∝ ū<sub>i</sub> · |r<sub>i</sub>| · d<sub>i</sub>, &nbsp; mean(w) = 1
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 10 · FEATURE CREATION (BIG TABLE)
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="amber">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase I · Step 06</span>
-    <span class="slide-tag">10 / 23</span>
-  </div>
-  <h2 class="slide-title">Feature Creation · 62 features across 4 families</h2>
-  <p class="slide-subtitle">Of the 62 columns, 56 reach Phase II feature selection (multi-model MDA). The 6 lag features are routed exclusively to the AR Logistic baseline.</p>
-  <div class="slide-body">
-    <div style="overflow: auto; flex: 1;">
-      <table class="feat-table">
-        <thead>
-          <tr>
-            <th>Family</th>
-            <th>Subfamily</th>
-            <th>Features</th>
-          </tr>
-        </thead>
-        <tbody>
-          <!-- TA (25) -->
-          <tr class="fam-ta">
-            <td class="fam" rowspan="4">Technical<span class="fam-count">25 features</span></td>
-            <td class="sub">Momentum &amp; Oscillators (8)</td>
-            <td class="feats">RSI, MACD hist, ROC, Stochastic %K, Stochastic %D, Williams %R, CCI, MFI</td>
-          </tr>
-          <tr class="fam-ta">
-            <td class="sub">Trend (5)</td>
-            <td class="feats">MACD, MACD Signal, EMA 20/50 ratio, EMA 50/200 ratio, VWMA 20/50 ratio</td>
-          </tr>
-          <tr class="fam-ta">
-            <td class="sub">Volatility (7)</td>
-            <td class="feats">ATR, Bollinger Band Width, Realized Vol, Garman-Klass Vol, Yang-Zhang Vol, Vol Term 7/30, Vol Term 30/90</td>
-          </tr>
-          <tr class="fam-ta fam-end">
-            <td class="sub">Volume &amp; Distribution (5)</td>
-            <td class="feats">OBV, Chaikin Oscillator, Log Returns, Skewness 30d, Kurtosis 30d</td>
-          </tr>
+    <section class="slide" data-accent="amber">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase I · Step 06</span>
+        <span class="slide-tag">10 / 23</span>
+      </div>
+      <h2 class="slide-title">Feature Creation · 62 features across 4 families</h2>
+      <p class="slide-subtitle">Of the 62 columns, 56 reach Phase II feature selection (multi-model MDA). The 6 lag
+        features are routed exclusively to the AR Logistic baseline.</p>
+      <div class="slide-body">
+        <div style="overflow: auto; flex: 1;">
+          <table class="feat-table">
+            <thead>
+              <tr>
+                <th>Family</th>
+                <th>Subfamily</th>
+                <th>Features</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- TA (25) -->
+              <tr class="fam-ta">
+                <td class="fam" rowspan="4">Technical<span class="fam-count">25 features</span></td>
+                <td class="sub">Momentum &amp; Oscillators (8)</td>
+                <td class="feats">RSI, MACD hist, ROC, Stochastic %K, Stochastic %D, Williams %R, CCI, MFI</td>
+              </tr>
+              <tr class="fam-ta">
+                <td class="sub">Trend (5)</td>
+                <td class="feats">MACD, MACD Signal, EMA 20/50 ratio, EMA 50/200 ratio, VWMA 20/50 ratio</td>
+              </tr>
+              <tr class="fam-ta">
+                <td class="sub">Volatility (7)</td>
+                <td class="feats">ATR, Bollinger Band Width, Realized Vol, Garman-Klass Vol, Yang-Zhang Vol, Vol Term
+                  7/30, Vol Term 30/90</td>
+              </tr>
+              <tr class="fam-ta fam-end">
+                <td class="sub">Volume &amp; Distribution (5)</td>
+                <td class="feats">OBV, Chaikin Oscillator, Log Returns, Skewness 30d, Kurtosis 30d</td>
+              </tr>
 
-          <!-- Statistical (9) -->
-          <tr class="fam-stat">
-            <td class="fam" rowspan="4">Statistical<span class="fam-count">9 features</span></td>
-            <td class="sub">Information Theory (3)</td>
-            <td class="feats">Shannon Entropy, Negentropy, Lempel-Ziv Complexity</td>
-          </tr>
-          <tr class="fam-stat">
-            <td class="sub">Memory &amp; Autocorr (2)</td>
-            <td class="feats">Hurst Exponent, Variance Ratio</td>
-          </tr>
-          <tr class="fam-stat">
-            <td class="sub">Normality (1)</td>
-            <td class="feats">Jarque-Bera</td>
-          </tr>
-          <tr class="fam-stat fam-end">
-            <td class="sub">Explosiveness &amp; Breaks (3)</td>
-            <td class="feats">SADF, SMT-Polynomial, SMT-Exponential</td>
-          </tr>
+              <!-- Statistical (9) -->
+              <tr class="fam-stat">
+                <td class="fam" rowspan="4">Statistical<span class="fam-count">9 features</span></td>
+                <td class="sub">Information Theory (3)</td>
+                <td class="feats">Shannon Entropy, Negentropy, Lempel-Ziv Complexity</td>
+              </tr>
+              <tr class="fam-stat">
+                <td class="sub">Memory &amp; Autocorr (2)</td>
+                <td class="feats">Hurst Exponent, Variance Ratio</td>
+              </tr>
+              <tr class="fam-stat">
+                <td class="sub">Normality (1)</td>
+                <td class="feats">Jarque-Bera</td>
+              </tr>
+              <tr class="fam-stat fam-end">
+                <td class="sub">Explosiveness &amp; Breaks (3)</td>
+                <td class="feats">SADF, SMT-Polynomial, SMT-Exponential</td>
+              </tr>
 
-          <!-- Macro (13) -->
-          <tr class="fam-macro fam-end">
-            <td class="fam">Macro<span class="fam-count">13 features</span></td>
-            <td class="sub">Yields · FX · Equity · Commodity</td>
-            <td class="feats">DXY 30d ROC, US 2Y yield, US 10Y yield, 2Y/10Y spread, 10Y/30Y spread, VIX, S&amp;P 500 30d, NASDAQ 30d, Gold 30d, Silver 30d, Copper 30d, Oil 30d, Natural Gas 30d</td>
-          </tr>
+              <!-- Macro (13) -->
+              <tr class="fam-macro fam-end">
+                <td class="fam">Macro<span class="fam-count">13 features</span></td>
+                <td class="sub">Yields · FX · Equity · Commodity</td>
+                <td class="feats">DXY 30d ROC, US 2Y yield, US 10Y yield, 2Y/10Y spread, 10Y/30Y spread, VIX, S&amp;P
+                  500 30d, NASDAQ 30d, Gold 30d, Silver 30d, Copper 30d, Oil 30d, Natural Gas 30d</td>
+              </tr>
 
-          <!-- Crypto-Macro (1) -->
-          <tr class="fam-cmac fam-end">
-            <td class="fam">Crypto-Macro<span class="fam-count">1 feature</span></td>
-            <td class="sub">Capital rotation</td>
-            <td class="feats">ETH/BTC ratio</td>
-          </tr>
+              <!-- Crypto-Macro (1) -->
+              <tr class="fam-cmac fam-end">
+                <td class="fam">Crypto-Macro<span class="fam-count">1 feature</span></td>
+                <td class="sub">Capital rotation</td>
+                <td class="feats">ETH/BTC ratio</td>
+              </tr>
 
-          <!-- On-Chain (8) -->
-          <tr class="fam-onch fam-end">
-            <td class="fam">On-Chain<span class="fam-count">8 features</span></td>
-            <td class="sub">Network · Holders · Miners</td>
-            <td class="feats">Active addresses Δ14d, Tx count Δ14d, Hashrate Δ30d, MVRV ratio, Net exchange flow, Fee per tx, Exchange supply %, Daily issuance</td>
-          </tr>
+              <!-- On-Chain (8) -->
+              <tr class="fam-onch fam-end">
+                <td class="fam">On-Chain<span class="fam-count">8 features</span></td>
+                <td class="sub">Network · Holders · Miners</td>
+                <td class="feats">Active addresses Δ14d, Tx count Δ14d, Hashrate Δ30d, MVRV ratio, Net exchange flow,
+                  Fee per tx, Exchange supply %, Daily issuance</td>
+              </tr>
 
-          <!-- Lag (6) -->
-          <tr class="fam-lag">
-            <td class="fam">Lag<span class="fam-count">6 features · AR Logistic only</span></td>
-            <td class="sub">Lagged log returns</td>
-            <td class="feats">r<sub>t-1</sub>, r<sub>t-2</sub>, r<sub>t-3</sub>, r<sub>t-7</sub>, r<sub>t-14</sub>, r<sub>t-30</sub> &nbsp; <span class="text-dim">// excluded from MDA</span></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
+              <!-- Lag (6) -->
+              <tr class="fam-lag">
+                <td class="fam">Lag<span class="fam-count">6 features · AR Logistic only</span></td>
+                <td class="sub">Lagged log returns</td>
+                <td class="feats">r<sub>t-1</sub>, r<sub>t-2</sub>, r<sub>t-3</sub>, r<sub>t-7</sub>, r<sub>t-14</sub>,
+                  r<sub>t-30</sub> &nbsp; <span class="text-dim">// excluded from MDA</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 11 · DATA ALIGNMENT
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="amber">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase I · Step 07</span>
-    <span class="slide-tag">11 / 23</span>
-  </div>
-  <h2 class="slide-title">Data Alignment · the four objects entering Phase II</h2>
-  <p class="slide-subtitle">Phase I produces a single tuple <code class="mono">(X, y, w, t1)</code>. Each object is indexed by the same 1,245 CUSUM events.</p>
-  <div class="slide-body">
-    <div class="item-grid">
-      <div class="item-card">
-        <span class="item-tag">X</span>
-        <h3 class="item-title">Feature matrix &nbsp;<span class="text-dim mono" style="font-size:0.85rem;">(1245 × 62)</span></h3>
-        <div class="item-body">
-          <p>1,245 events × 62 features. Includes 25 TA, 9 statistical, 13 macro, 1 crypto-macro, 8 on-chain, and 6 lag columns. Feature selection (Phase II) operates on 56 of these (lags routed only to AR Logistic).</p>
-        </div>
+    <section class="slide" data-accent="amber">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase I · Step 07</span>
+        <span class="slide-tag">11 / 23</span>
       </div>
-      <div class="item-card">
-        <span class="item-tag">y</span>
-        <h3 class="item-title">Labels &nbsp;<span class="text-dim mono" style="font-size:0.85rem;">(1245,)</span></h3>
-        <div class="item-body">
-          <p>Triple-barrier labels in <code>{ −1, +1 }</code>. The rare class is dropped before alignment, so <code>y</code> contains only directional outcomes — no neutral zero class to fall back on.</p>
+      <h2 class="slide-title">Data Alignment · the four objects entering Phase II</h2>
+      <p class="slide-subtitle">Phase I produces a single tuple <code class="mono">(X, y, w, t1)</code>. Each object is
+        indexed by the same 1,245 CUSUM events.</p>
+      <div class="slide-body">
+        <div class="item-grid">
+          <div class="item-card">
+            <span class="item-tag">X</span>
+            <h3 class="item-title">Feature matrix &nbsp;<span class="text-dim mono" style="font-size:0.85rem;">(1245 ×
+                62)</span></h3>
+            <div class="item-body">
+              <p>1,245 events × 62 features. Includes 25 TA, 9 statistical, 13 macro, 1 crypto-macro, 8 on-chain, and 6
+                lag columns. Feature selection (Phase II) operates on 56 of these (lags routed only to AR Logistic).</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">y</span>
+            <h3 class="item-title">Labels &nbsp;<span class="text-dim mono" style="font-size:0.85rem;">(1245,)</span>
+            </h3>
+            <div class="item-body">
+              <p>Triple-barrier labels in <code>{ −1, +1 }</code>. The rare class is dropped before alignment, so
+                <code>y</code> contains only directional outcomes — no neutral zero class to fall back on.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">w</span>
+            <h3 class="item-title">Sample weights &nbsp;<span class="text-dim mono"
+                style="font-size:0.85rem;">(1245,)</span></h3>
+            <div class="item-body">
+              <p>The output of Step 5: uniqueness × <code>|r|</code> × time-decay, capped at the 99th percentile,
+                normalized to mean 1. Used by every model's loss function during training.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">t1</span>
+            <h3 class="item-title">Horizon end times &nbsp;<span class="text-dim mono"
+                style="font-size:0.85rem;">(1245,)</span></h3>
+            <div class="item-body">
+              <p>The barrier-touch time for each event. Required by CPCV's purging logic to identify which observations
+                span the test fold and must be dropped from training to prevent leakage.</p>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">w</span>
-        <h3 class="item-title">Sample weights &nbsp;<span class="text-dim mono" style="font-size:0.85rem;">(1245,)</span></h3>
-        <div class="item-body">
-          <p>The output of Step 5: uniqueness × <code>|r|</code> × time-decay, capped at the 99th percentile, normalized to mean 1. Used by every model's loss function during training.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">t1</span>
-        <h3 class="item-title">Horizon end times &nbsp;<span class="text-dim mono" style="font-size:0.85rem;">(1245,)</span></h3>
-        <div class="item-body">
-          <p>The barrier-touch time for each event. Required by CPCV's purging logic to identify which observations span the test fold and must be dropped from training to prevent leakage.</p>
-        </div>
-      </div>
-    </div>
 
-    <div style="margin-top: 18px; padding: 14px 20px; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 6px;">
-      <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber); margin-bottom: 6px;">Resulting data structure</div>
-      <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.55; margin: 0;">All four objects share the same index: the 1,245 CUSUM event timestamps, in chronological ascending order. Together they form an <strong style="color: var(--text);">irregularly-sampled, event-indexed time series</strong> &mdash; chronologically ordered but non-uniformly spaced, since events fire only when volatility-adjusted return accumulation crosses the threshold. This is no longer a regular daily-bar series; the inter-event gap can range from one bar to several weeks of quiet markets.</p>
-    </div>
-  </div>
-</section>
+        <div
+          style="margin-top: 18px; padding: 14px 20px; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 6px;">
+          <div
+            style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--amber); margin-bottom: 6px;">
+            Resulting data structure</div>
+          <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.55; margin: 0;">All four objects share
+            the same index: the 1,245 CUSUM event timestamps, in chronological ascending order. Together they form an
+            <strong style="color: var(--text);">irregularly-sampled, event-indexed time series</strong> &mdash;
+            chronologically ordered but non-uniformly spaced, since events fire only when volatility-adjusted return
+            accumulation crosses the threshold. This is no longer a regular daily-bar series; the inter-event gap can
+            range from one bar to several weeks of quiet markets.</p>
+        </div>
+      </div>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 12 · CPCV SPLIT GENERATION
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="blue">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase II · Step 08</span>
-    <span class="slide-tag">12 / 23</span>
-    </div>
-  <h2 class="slide-title">CPCV Split Generation</h2>
-  <p class="slide-subtitle">Combinatorial Purged Cross-Validation. Reuses every observation across multiple test folds, generating five reconstructed backtest paths instead of one.</p>
-  <div class="slide-body">
-    <div class="two-col">
-      <div class="col-block">
-        <div class="col-block-heading">Configuration</div>
-        <div class="col-block-content">
-          <ul>
-            <li><strong>N = 6</strong> contiguous time-ordered groups. Each group is a chronological slice of events.</li>
-            <li><strong>k = 2</strong> test groups per split. The remaining <code>N − k = 4</code> form the train set.</li>
-            <li><strong>Splits = C(6, 2) = 15</strong>. Every pairwise combination of test groups is enumerated.</li>
-            <li><strong>Reconstructed paths = 5</strong>. Each event ends up in exactly one test fold per path; assembling all paths gives full coverage.</li>
-            <li><strong>Embargo = 1%</strong> of bars. Observations within the embargo window after each test group are dropped from the training set.</li>
-          </ul>
+    <section class="slide" data-accent="blue">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase II · Step 08</span>
+        <span class="slide-tag">12 / 23</span>
+      </div>
+      <h2 class="slide-title">CPCV Split Generation</h2>
+      <p class="slide-subtitle">Combinatorial Purged Cross-Validation. Reuses every observation across multiple test
+        folds, generating five reconstructed backtest paths instead of one.</p>
+      <div class="slide-body">
+        <div class="two-col">
+          <div class="col-block">
+            <div class="col-block-heading">Configuration</div>
+            <div class="col-block-content">
+              <ul>
+                <li><strong>N = 6</strong> contiguous time-ordered groups. Each group is a chronological slice of
+                  events.</li>
+                <li><strong>k = 2</strong> test groups per split. The remaining <code>N − k = 4</code> form the train
+                  set.</li>
+                <li><strong>Splits = C(6, 2) = 15</strong>. Every pairwise combination of test groups is enumerated.
+                </li>
+                <li><strong>Reconstructed paths = 5</strong>. Each event ends up in exactly one test fold per path;
+                  assembling all paths gives full coverage.</li>
+                <li><strong>Embargo = 1%</strong> of bars. Observations within the embargo window after each test group
+                  are dropped from the training set.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="col-block">
+            <div class="col-block-heading">Why CPCV beats the alternatives</div>
+            <div class="col-block-content">
+              <p><strong>Walk-forward CV</strong> uses each event in only one test fold — the temporal one — so
+                robustness to regime changes is measured against a single timeline.</p>
+              <p><strong>K-fold CV</strong> ignores chronology and freely leaks the future into training when labels
+                overlap.</p>
+              <p><strong>CPCV combines both.</strong> Each event appears in multiple distinct test folds (across paths),
+                giving 5 path-level Sharpe estimates per model — enough variance to compute a meaningful Probability of
+                Backtest Overfitting.</p>
+              <p><strong>Purging.</strong> For each split, observations whose <code>t1</code> overlaps the test fold are
+                dropped from training. This is what closes the leakage door that K-fold leaves open.</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">Why CPCV beats the alternatives</div>
-        <div class="col-block-content">
-          <p><strong>Walk-forward CV</strong> uses each event in only one test fold — the temporal one — so robustness to regime changes is measured against a single timeline.</p>
-          <p><strong>K-fold CV</strong> ignores chronology and freely leaks the future into training when labels overlap.</p>
-          <p><strong>CPCV combines both.</strong> Each event appears in multiple distinct test folds (across paths), giving 5 path-level Sharpe estimates per model — enough variance to compute a meaningful Probability of Backtest Overfitting.</p>
-          <p><strong>Purging.</strong> For each split, observations whose <code>t1</code> overlaps the test fold are dropped from training. This is what closes the leakage door that K-fold leaves open.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 13 · PER-FOLD PREPROC · FFD & ROBUST SCALING
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="blue">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase II · Step 09</span>
-    <span class="slide-tag">13 / 23</span>
-  </div>
-  <h2 class="slide-title">Per-Fold Preprocessing · FFD &amp; Robust Scaling</h2>
-  <p class="slide-subtitle">Both transformations are <strong>fitted on the train fold only</strong> and applied to test. No global transformation, no leakage.</p>
-  <div class="slide-body">
-    <div class="two-col">
-      <div class="col-block">
-        <div class="col-block-heading">Fractional Differencing · AFML Ch. 5</div>
-        <div class="col-block-content">
-          <p><strong>Problem.</strong> Most price-derived features carry a unit root (non-stationary). Standard first-differencing makes them stationary but destroys long memory: the resulting series has zero autocorrelation at every lag.</p>
-          <p><strong>Solution.</strong> Differentiate fractionally with order <code>d ∈ (0, 1)</code>. Choose the smallest <code>d</code> that passes the ADF stationarity test. Memory is preserved up to that minimum required differencing.</p>
-          <div class="formula">
-            <span class="formula-label">Fractionally differenced series</span>
-            x̃<sub>t</sub><sup>(d)</sup> = Σ<sub>k=0</sub><sup>∞</sup> ω<sub>k</sub>(d) · x<sub>t-k</sub>
+    <section class="slide" data-accent="blue">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase II · Step 09</span>
+        <span class="slide-tag">13 / 23</span>
+      </div>
+      <h2 class="slide-title">Per-Fold Preprocessing · FFD &amp; Robust Scaling</h2>
+      <p class="slide-subtitle">Both transformations are <strong>fitted on the train fold only</strong> and applied to
+        test. No global transformation, no leakage.</p>
+      <div class="slide-body">
+        <div class="two-col">
+          <div class="col-block">
+            <div class="col-block-heading">Fractional Differencing · AFML Ch. 5</div>
+            <div class="col-block-content">
+              <p><strong>Problem.</strong> Most price-derived features carry a unit root (non-stationary). Standard
+                first-differencing makes them stationary but destroys long memory: the resulting series has zero
+                autocorrelation at every lag.</p>
+              <p><strong>Solution.</strong> Differentiate fractionally with order <code>d ∈ (0, 1)</code>. Choose the
+                smallest <code>d</code> that passes the ADF stationarity test. Memory is preserved up to that minimum
+                required differencing.</p>
+              <div class="formula">
+                <span class="formula-label">Fractionally differenced series</span>
+                x̃<sub>t</sub><sup>(d)</sup> = Σ<sub>k=0</sub><sup>∞</sup> ω<sub>k</sub>(d) · x<sub>t-k</sub>
+              </div>
+              <p><strong>Applied to ATR</strong> (cumulative-volume-like behavior, large dynamic range). Other features
+                are bounded or already stationary.</p>
+            </div>
           </div>
-          <p><strong>Applied to ATR</strong> (cumulative-volume-like behavior, large dynamic range). Other features are bounded or already stationary.</p>
+          <div class="col-block">
+            <div class="col-block-heading">Robust Scaling</div>
+            <div class="col-block-content">
+              <p><strong>Why not StandardScaler.</strong> Crypto returns are fat-tailed: extreme observations skew mean
+                and standard deviation. A model trained on standard-scaled features picks up on those extremes as scale,
+                not signal.</p>
+              <p><strong>RobustScaler.</strong> Center on the median, scale by the IQR (interquartile range). The median
+                is unaffected by outliers; the IQR captures bulk-of-the-distribution spread.</p>
+              <div class="formula">
+                <span class="formula-label">Per-feature scaling</span>
+                x̃ = (x − median(x)) / IQR(x)
+              </div>
+              <p><strong>Per-fold fit.</strong> Computed on the train fold only, then applied to the test fold without
+                recomputation. This is the same per-fold contract as FFD.</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">Robust Scaling</div>
-        <div class="col-block-content">
-          <p><strong>Why not StandardScaler.</strong> Crypto returns are fat-tailed: extreme observations skew mean and standard deviation. A model trained on standard-scaled features picks up on those extremes as scale, not signal.</p>
-          <p><strong>RobustScaler.</strong> Center on the median, scale by the IQR (interquartile range). The median is unaffected by outliers; the IQR captures bulk-of-the-distribution spread.</p>
-          <div class="formula">
-            <span class="formula-label">Per-feature scaling</span>
-            x̃ = (x − median(x)) / IQR(x)
-          </div>
-          <p><strong>Per-fold fit.</strong> Computed on the train fold only, then applied to the test fold without recomputation. This is the same per-fold contract as FFD.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 14 · PER-FOLD PREPROC · MULTI-MODEL MDA
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="blue">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase II · Step 10</span>
-    <span class="slide-tag">14 / 23</span>
-  </div>
-  <h2 class="slide-title">Per-Fold Preprocessing · Multi-Model MDA</h2>
-  <p class="slide-subtitle">Each model votes for its own top features. The union becomes the selected set. Computed inside every training fold.</p>
-  <div class="slide-body">
-    <div class="two-col">
-      <div class="col-block">
-        <div class="col-block-heading">Mean Decrease Accuracy</div>
-        <div class="col-block-content">
-          <p><strong>Definition.</strong> For each feature, permute its values across the validation set, re-evaluate the model, and measure how much accuracy drops. A feature that the model relies on causes a large drop; a useless feature causes none.</p>
-          <p><strong>Why per-model.</strong> Different architectures rely on different features. A tree-based model finds RSI useful; a linear model may not. Computing MDA against a single proxy model would bias the ranking toward that model's family.</p>
-          <p><strong>Five voters.</strong> Random Forest, XGBoost, Logistic Regression, LSTM, KAN. Each ranks the 56 MDA-eligible features.</p>
+    <section class="slide" data-accent="blue">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase II · Step 10</span>
+        <span class="slide-tag">14 / 23</span>
+      </div>
+      <h2 class="slide-title">Per-Fold Preprocessing · Multi-Model MDA</h2>
+      <p class="slide-subtitle">Each model votes for its own top features. The union becomes the selected set. Computed
+        inside every training fold.</p>
+      <div class="slide-body">
+        <div class="two-col">
+          <div class="col-block">
+            <div class="col-block-heading">Mean Decrease Accuracy</div>
+            <div class="col-block-content">
+              <p><strong>Definition.</strong> For each feature, permute its values across the validation set,
+                re-evaluate the model, and measure how much accuracy drops. A feature that the model relies on causes a
+                large drop; a useless feature causes none.</p>
+              <p><strong>Why per-model.</strong> Different architectures rely on different features. A tree-based model
+                finds RSI useful; a linear model may not. Computing MDA against a single proxy model would bias the
+                ranking toward that model's family.</p>
+              <p><strong>Five voters.</strong> Random Forest, XGBoost, Logistic Regression, LSTM, KAN. Each ranks the 56
+                MDA-eligible features.</p>
+            </div>
+          </div>
+          <div class="col-block">
+            <div class="col-block-heading">Aggregation</div>
+            <div class="col-block-content">
+              <p><strong>Top-K fraction = 0.4.</strong> Each model's top 40% (≈ 22 features) form its candidate set. The
+                selected feature set is the <strong>union</strong> of these candidate sets across the five models.</p>
+              <p><strong>Why union, not intersection.</strong> Intersection would discard any feature that is
+                informative for one architecture but not all. The benchmarking goal is to give each model its best
+                chance, not to find a single common-denominator feature set.</p>
+              <p><strong>Lag features excluded.</strong> The 6 lag columns are filtered out before MDA runs. Letting
+                pure autoregressive signal compete for slot space against engineered features would bias the comparison
+                toward the AR Logistic baseline.</p>
+              <p><strong>Per-fold.</strong> MDA runs inside each of the 15 splits; the selected set can vary fold to
+                fold.</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">Aggregation</div>
-        <div class="col-block-content">
-          <p><strong>Top-K fraction = 0.4.</strong> Each model's top 40% (≈ 22 features) form its candidate set. The selected feature set is the <strong>union</strong> of these candidate sets across the five models.</p>
-          <p><strong>Why union, not intersection.</strong> Intersection would discard any feature that is informative for one architecture but not all. The benchmarking goal is to give each model its best chance, not to find a single common-denominator feature set.</p>
-          <p><strong>Lag features excluded.</strong> The 6 lag columns are filtered out before MDA runs. Letting pure autoregressive signal compete for slot space against engineered features would bias the comparison toward the AR Logistic baseline.</p>
-          <p><strong>Per-fold.</strong> MDA runs inside each of the 15 splits; the selected set can vary fold to fold.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 15 · NESTED HYPERPARAMETER TUNING
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="blue">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase II · Step 11</span>
-    <span class="slide-tag">15 / 23</span>
-  </div>
-  <h2 class="slide-title">Nested Hyperparameter Tuning</h2>
-  <p class="slide-subtitle">Each tuned model receives its own search budget inside every training fold. AFML Chapter 9 protocol: nested cross-validation plus a Bayesian search.</p>
-  <div class="slide-body">
-    <div class="two-col">
-      <div class="col-block">
-        <div class="col-block-heading">Optuna · Tree-Structured Parzen Estimator</div>
-        <div class="col-block-content">
-          <p><strong>What TPE does.</strong> Models the conditional probability of hyperparameter values given good vs. bad past trial outcomes, then samples new candidates where the ratio favors good outcomes. Bayesian optimization without the GP overhead.</p>
-          <p><strong>Budget per fold.</strong> 30 trials per model per fold. With 6 tuned models × 15 folds, that's 900 model fits per tuned configuration; the search budget is real.</p>
-          <p><strong>Inner CV.</strong> 3-fold purged CV inside each train fold, with the same purging logic as the outer CPCV.</p>
+    <section class="slide" data-accent="blue">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase II · Step 11</span>
+        <span class="slide-tag">15 / 23</span>
+      </div>
+      <h2 class="slide-title">Nested Hyperparameter Tuning</h2>
+      <p class="slide-subtitle">Each tuned model receives its own search budget inside every training fold. AFML Chapter
+        9 protocol: nested cross-validation plus a Bayesian search.</p>
+      <div class="slide-body">
+        <div class="two-col">
+          <div class="col-block">
+            <div class="col-block-heading">Optuna · Tree-Structured Parzen Estimator</div>
+            <div class="col-block-content">
+              <p><strong>What TPE does.</strong> Models the conditional probability of hyperparameter values given good
+                vs. bad past trial outcomes, then samples new candidates where the ratio favors good outcomes. Bayesian
+                optimization without the GP overhead.</p>
+              <p><strong>Budget per fold.</strong> 30 trials per model per fold. With 6 tuned models × 15 folds, that's
+                900 model fits per tuned configuration; the search budget is real.</p>
+              <p><strong>Inner CV.</strong> 3-fold purged CV inside each train fold, with the same purging logic as the
+                outer CPCV.</p>
+            </div>
+          </div>
+          <div class="col-block">
+            <div class="col-block-heading">Median Pruner</div>
+            <div class="col-block-content">
+              <p><strong>Why pruning.</strong> Many trials are dead on arrival: extreme hyperparameters that diverge in
+                the first few epochs. Letting them run to completion wastes the search budget on configurations the
+                optimizer already knows are bad.</p>
+              <p><strong>How it works.</strong> At each intermediate step (epoch for deep models, fold for classical),
+                check whether the running performance is below the median of all trials at the same step. If so, stop
+                the trial early.</p>
+              <p><strong>Speedup.</strong> Roughly 2× to 3× depending on the model; the deep-learning models benefit
+                most because their training is the most expensive.</p>
+              <p><strong>Why per-fold tuning.</strong> Tuning capacity is part of what's being benchmarked. A single
+                global hyperparameter set rewards whichever model happened to be tuned first; per-fold tuning gives
+                every architecture a fair chance.</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">Median Pruner</div>
-        <div class="col-block-content">
-          <p><strong>Why pruning.</strong> Many trials are dead on arrival: extreme hyperparameters that diverge in the first few epochs. Letting them run to completion wastes the search budget on configurations the optimizer already knows are bad.</p>
-          <p><strong>How it works.</strong> At each intermediate step (epoch for deep models, fold for classical), check whether the running performance is below the median of all trials at the same step. If so, stop the trial early.</p>
-          <p><strong>Speedup.</strong> Roughly 2× to 3× depending on the model; the deep-learning models benefit most because their training is the most expensive.</p>
-          <p><strong>Why per-fold tuning.</strong> Tuning capacity is part of what's being benchmarked. A single global hyperparameter set rewards whichever model happened to be tuned first; per-fold tuning gives every architecture a fair chance.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 16 · MODEL TRAINING
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="blue">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase II · Step 12</span>
-    <span class="slide-tag">16 / 23</span>
-  </div>
-  <h2 class="slide-title">Model Training · six families, identical conditions</h2>
-  <p class="slide-subtitle">All six receive the same X, the same y, the same w, the same t1. The only thing that varies is the architecture.</p>
-  <div class="slide-body">
-    <div class="item-grid" style="grid-template-columns: repeat(3, 1fr); gap: 12px;">
-      <div class="item-card">
-        <span class="item-tag">M1</span>
-        <h3 class="item-title">AR Logistic</h3>
-        <div class="item-body">
-          <p><strong>Family:</strong> Econometric baseline.</p>
-          <p>Logistic regression on lagged returns only (the 6 lag features routed exclusively to this model). The classical autoregressive direction predictor.</p>
+    <section class="slide" data-accent="blue">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase II · Step 12</span>
+        <span class="slide-tag">16 / 23</span>
+      </div>
+      <h2 class="slide-title">Model Training · six families, identical conditions</h2>
+      <p class="slide-subtitle">All six receive the same X, the same y, the same w, the same t1. The only thing that
+        varies is the architecture.</p>
+      <div class="slide-body">
+        <div class="item-grid" style="grid-template-columns: repeat(3, 1fr); gap: 12px;">
+          <div class="item-card">
+            <span class="item-tag">M1</span>
+            <h3 class="item-title">AR Logistic</h3>
+            <div class="item-body">
+              <p><strong>Family:</strong> Econometric baseline.</p>
+              <p>Logistic regression on lagged returns only (the 6 lag features routed exclusively to this model). The
+                classical autoregressive direction predictor.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">M2</span>
+            <h3 class="item-title">Logistic Regression</h3>
+            <div class="item-body">
+              <p><strong>Family:</strong> Linear ML baseline.</p>
+              <p>Same architecture as AR Logistic but with the full 56-feature MDA-selected set. L1/L2 regularization
+                tuned via Optuna.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">M3</span>
+            <h3 class="item-title">Random Forest</h3>
+            <div class="item-body">
+              <p><strong>Family:</strong> Tree ensemble.</p>
+              <p>Bagged decision trees with sample-weight support. <code>n_estimators</code> and <code>max_depth</code>
+                tuned per fold.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">M4</span>
+            <h3 class="item-title">XGBoost</h3>
+            <div class="item-body">
+              <p><strong>Family:</strong> Gradient-boosted trees.</p>
+              <p>The benchmark tabular ML method. Sample weights honored; learning rate, depth, and tree count tuned per
+                fold.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">M5</span>
+            <h3 class="item-title">LSTM</h3>
+            <div class="item-body">
+              <p><strong>Family:</strong> Deep recurrent.</p>
+              <p>Multi-layer LSTM on a 14-day sliding window. Sample- and class-weighted cross-entropy. Standard
+                regularization stack.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">M6</span>
+            <h3 class="item-title">KAN</h3>
+            <div class="item-body">
+              <p><strong>Family:</strong> Novel deep architecture.</p>
+              <p>Kolmogorov-Arnold Network: each network edge carries a learnable B-spline univariate function in place
+                of a fixed weight. Same regularization as the LSTM.</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="item-card">
-        <span class="item-tag">M2</span>
-        <h3 class="item-title">Logistic Regression</h3>
-        <div class="item-body">
-          <p><strong>Family:</strong> Linear ML baseline.</p>
-          <p>Same architecture as AR Logistic but with the full 56-feature MDA-selected set. L1/L2 regularization tuned via Optuna.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">M3</span>
-        <h3 class="item-title">Random Forest</h3>
-        <div class="item-body">
-          <p><strong>Family:</strong> Tree ensemble.</p>
-          <p>Bagged decision trees with sample-weight support. <code>n_estimators</code> and <code>max_depth</code> tuned per fold.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">M4</span>
-        <h3 class="item-title">XGBoost</h3>
-        <div class="item-body">
-          <p><strong>Family:</strong> Gradient-boosted trees.</p>
-          <p>The benchmark tabular ML method. Sample weights honored; learning rate, depth, and tree count tuned per fold.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">M5</span>
-        <h3 class="item-title">LSTM</h3>
-        <div class="item-body">
-          <p><strong>Family:</strong> Deep recurrent.</p>
-          <p>Multi-layer LSTM on a 14-day sliding window. Sample- and class-weighted cross-entropy. Standard regularization stack.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">M6</span>
-        <h3 class="item-title">KAN</h3>
-        <div class="item-body">
-          <p><strong>Family:</strong> Novel deep architecture.</p>
-          <p>Kolmogorov-Arnold Network: each network edge carries a learnable B-spline univariate function in place of a fixed weight. Same regularization as the LSTM.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 17 · CALIBRATION
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="blue">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase II · Step 13</span>
-    <span class="slide-tag">17 / 23</span>
-  </div>
-  <h2 class="slide-title">Calibration · raw scores → trustable probabilities</h2>
-  <p class="slide-subtitle">Raw model outputs are not always well-calibrated. A model that predicts <code class="mono">P(up) = 0.8</code> might be right only 60% of the time. Calibration corrects this.</p>
-  <div class="slide-body">
-    <div class="calib-flow">
-      <div class="calib-box">
-        <div class="calib-box-tag">Step A</div>
-        <div class="calib-box-title">Raw model output</div>
-        <div class="calib-box-sub">Logits or scores from the trained model on the validation fold.</div>
+    <section class="slide" data-accent="blue">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase II · Step 13</span>
+        <span class="slide-tag">17 / 23</span>
       </div>
-      <div class="calib-arrow">→</div>
-      <div class="calib-box">
-        <div class="calib-box-tag">Step B</div>
-        <div class="calib-box-title">Sigmoid / Softmax</div>
-        <div class="calib-box-sub">Maps to [0, 1]. Numbers but not yet probabilities in the frequentist sense.</div>
-      </div>
-      <div class="calib-arrow">→</div>
-      <div class="calib-box calib-box-key" style="--accent: var(--blue);">
-        <div class="calib-box-tag" style="color: var(--blue);">Step C · key</div>
-        <div class="calib-box-title">Calibrator</div>
-        <div class="calib-box-sub">Fitted on validation set; matches predicted to empirical frequencies.</div>
-        <div class="calib-pills">
-          <span class="calib-pill" style="border-color: var(--amber); color: var(--amber); background: rgba(245, 158, 11, 0.08);">Platt · classical</span>
-          <span class="calib-pill" style="border-color: var(--purple); color: var(--purple); background: rgba(168, 85, 247, 0.08);">Vector · LSTM &amp; KAN</span>
+      <h2 class="slide-title">Calibration · raw scores → trustable probabilities</h2>
+      <p class="slide-subtitle">Raw model outputs are not always well-calibrated. A model that predicts <code
+          class="mono">P(up) = 0.8</code> might be right only 60% of the time. Calibration corrects this.</p>
+      <div class="slide-body">
+        <div class="calib-flow">
+          <div class="calib-box">
+            <div class="calib-box-tag">Step A</div>
+            <div class="calib-box-title">Raw model output</div>
+            <div class="calib-box-sub">Logits or scores from the trained model on the validation fold.</div>
+          </div>
+          <div class="calib-arrow">→</div>
+          <div class="calib-box">
+            <div class="calib-box-tag">Step B</div>
+            <div class="calib-box-title">Sigmoid / Softmax</div>
+            <div class="calib-box-sub">Maps to [0, 1]. Numbers but not yet probabilities in the frequentist sense.</div>
+          </div>
+          <div class="calib-arrow">→</div>
+          <div class="calib-box calib-box-key" style="--accent: var(--blue);">
+            <div class="calib-box-tag" style="color: var(--blue);">Step C · key</div>
+            <div class="calib-box-title">Calibrator</div>
+            <div class="calib-box-sub">Fitted on validation set; matches predicted to empirical frequencies.</div>
+            <div class="calib-pills">
+              <span class="calib-pill"
+                style="border-color: var(--amber); color: var(--amber); background: rgba(245, 158, 11, 0.08);">Platt ·
+                classical</span>
+              <span class="calib-pill"
+                style="border-color: var(--purple); color: var(--purple); background: rgba(168, 85, 247, 0.08);">Vector
+                · LSTM &amp; KAN</span>
+            </div>
+          </div>
+          <div class="calib-arrow">→</div>
+          <div class="calib-box">
+            <div class="calib-box-tag">Step D</div>
+            <div class="calib-box-title">Calibrated P(Up)</div>
+            <div class="calib-box-sub">Predicted 0.8 → empirical ≈ 0.8. Now usable as a probability.</div>
+          </div>
+          <div class="calib-arrow">→</div>
+          <div class="calib-box">
+            <div class="calib-box-tag">Step E</div>
+            <div class="calib-box-title">S-curve bet sizing</div>
+            <div class="calib-box-sub">Probability → trading position. AFML Chapter 10. Position cap at 0.75; abstain
+              below 0.05.</div>
+          </div>
+        </div>
+        <div class="two-col" style="margin-top: 18px;">
+          <div class="col-block">
+            <div class="col-block-heading">Why two calibrators</div>
+            <div class="col-block-content">
+              <p><strong>Platt scaling</strong> fits a single sigmoid <code>σ(a · z + b)</code> on raw scores. Two
+                parameters, very robust on small validation sets. Ideal for binary outputs from classical models (LR,
+                RF, XGBoost, AR Logistic).</p>
+              <p><strong>Vector scaling</strong> fits per-class linear scaling on softmax logits before re-applying the
+                softmax. More parameters but handles multi-class outputs natively. Used for LSTM and KAN, which output
+                two-class softmax distributions.</p>
+            </div>
+          </div>
+          <div class="col-block">
+            <div class="col-block-heading">Why it matters for the trade</div>
+            <div class="col-block-content">
+              <p>The S-curve bet-sizing layer (AFML Ch. 10) converts <code>P(Up)</code> into position size. An
+                overconfident model that says 0.8 when reality is 0.6 will be sized 0.5 standard deviations larger than
+                it should be — and lose money on average.</p>
+              <p>Calibration is therefore not optional. It's the bridge between machine-learning output and trading
+                position.</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="calib-arrow">→</div>
-      <div class="calib-box">
-        <div class="calib-box-tag">Step D</div>
-        <div class="calib-box-title">Calibrated P(Up)</div>
-        <div class="calib-box-sub">Predicted 0.8 → empirical ≈ 0.8. Now usable as a probability.</div>
-      </div>
-      <div class="calib-arrow">→</div>
-      <div class="calib-box">
-        <div class="calib-box-tag">Step E</div>
-        <div class="calib-box-title">S-curve bet sizing</div>
-        <div class="calib-box-sub">Probability → trading position. AFML Chapter 10. Position cap at 0.75; abstain below 0.05.</div>
-      </div>
-    </div>
-    <div class="two-col" style="margin-top: 18px;">
-      <div class="col-block">
-        <div class="col-block-heading">Why two calibrators</div>
-        <div class="col-block-content">
-          <p><strong>Platt scaling</strong> fits a single sigmoid <code>σ(a · z + b)</code> on raw scores. Two parameters, very robust on small validation sets. Ideal for binary outputs from classical models (LR, RF, XGBoost, AR Logistic).</p>
-          <p><strong>Vector scaling</strong> fits per-class linear scaling on softmax logits before re-applying the softmax. More parameters but handles multi-class outputs natively. Used for LSTM and KAN, which output two-class softmax distributions.</p>
-        </div>
-      </div>
-      <div class="col-block">
-        <div class="col-block-heading">Why it matters for the trade</div>
-        <div class="col-block-content">
-          <p>The S-curve bet-sizing layer (AFML Ch. 10) converts <code>P(Up)</code> into position size. An overconfident model that says 0.8 when reality is 0.6 will be sized 0.5 standard deviations larger than it should be — and lose money on average.</p>
-          <p>Calibration is therefore not optional. It's the bridge between machine-learning output and trading position.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 18 · EVALUATION METRICS
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="green">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase III · Step 14</span>
-    <span class="slide-tag">18 / 23</span>
-  </div>
-  <h2 class="slide-title">Evaluation Metrics · three categories</h2>
-  <p class="slide-subtitle">ML metrics measure prediction quality. Financial metrics measure trading performance. AFML metrics correct both for the bias that arises from running multiple experiments.</p>
-  <div class="slide-body">
-    <div class="three-up">
-      <div class="metric-box" data-cat="ml">
-        <div class="metric-box-tag">Machine Learning · per fold</div>
-        <div class="metric-box-title">Prediction quality</div>
-        <ul>
-          <li><strong>Accuracy &amp; F1 macro</strong> · sample-weighted. F1 macro is the unweighted average of per-class F1 scores; robust to class imbalance.</li>
-          <li><strong>AUC-ROC</strong> · how well the classifier ranks positive cases above negatives, independent of where the threshold is set.</li>
-          <li><strong>Log loss</strong> · penalizes overconfident wrong predictions.</li>
-          <li><strong>Brier score</strong> · mean squared error of predicted probabilities.</li>
-          <li><strong>Confusion matrices</strong> · pooled across the 15 folds.</li>
-        </ul>
+    <section class="slide" data-accent="green">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase III · Step 14</span>
+        <span class="slide-tag">18 / 23</span>
       </div>
-      <div class="metric-box" data-cat="fin">
-        <div class="metric-box-tag">Financial · per path</div>
-        <div class="metric-box-title">Trading performance</div>
-        <ul>
-          <li><strong>Sharpe ratio</strong> per path · annualized. Five paths give a median and standard deviation.</li>
-          <li><strong>Maximum drawdown</strong> · the worst peak-to-trough decline.</li>
-          <li><strong>Cumulative return</strong> · total return over the path.</li>
-          <li><strong>Win rate</strong> · fraction of winning trades.</li>
-          <li><strong>Profit factor</strong> · gross profit / gross loss.</li>
-          <li><strong>Bet-size diagnostics</strong> · abstention rate, mean absolute bet, share of capped bets.</li>
-        </ul>
+      <h2 class="slide-title">Evaluation Metrics · three categories</h2>
+      <p class="slide-subtitle">ML metrics measure prediction quality. Financial metrics measure trading performance.
+        AFML metrics correct both for the bias that arises from running multiple experiments.</p>
+      <div class="slide-body">
+        <div class="three-up">
+          <div class="metric-box" data-cat="ml">
+            <div class="metric-box-tag">Machine Learning · per fold</div>
+            <div class="metric-box-title">Prediction quality</div>
+            <ul>
+              <li><strong>Accuracy &amp; F1 macro</strong> · sample-weighted. F1 macro is the unweighted average of
+                per-class F1 scores; robust to class imbalance.</li>
+              <li><strong>AUC-ROC</strong> · how well the classifier ranks positive cases above negatives, independent
+                of where the threshold is set.</li>
+              <li><strong>Log loss</strong> · penalizes overconfident wrong predictions.</li>
+              <li><strong>Brier score</strong> · mean squared error of predicted probabilities.</li>
+              <li><strong>Confusion matrices</strong> · pooled across the 15 folds.</li>
+            </ul>
+          </div>
+          <div class="metric-box" data-cat="fin">
+            <div class="metric-box-tag">Financial · per path</div>
+            <div class="metric-box-title">Trading performance</div>
+            <ul>
+              <li><strong>Sharpe ratio</strong> per path · annualized. Five paths give a median and standard deviation.
+              </li>
+              <li><strong>Maximum drawdown</strong> · the worst peak-to-trough decline.</li>
+              <li><strong>Cumulative return</strong> · total return over the path.</li>
+              <li><strong>Win rate</strong> · fraction of winning trades.</li>
+              <li><strong>Profit factor</strong> · gross profit / gross loss.</li>
+              <li><strong>Bet-size diagnostics</strong> · abstention rate, mean absolute bet, share of capped bets.</li>
+            </ul>
+          </div>
+          <div class="metric-box" data-cat="afml">
+            <div class="metric-box-tag">AFML · statistical correction</div>
+            <div class="metric-box-title">Robustness</div>
+            <ul>
+              <li><strong>Deflated Sharpe Ratio (Ch. 14).</strong> Corrects observed Sharpe for selection bias from
+                running 6 trial models, plus skewness and kurtosis. Survives at DSR &gt; 0.95.</li>
+              <li><strong>Probability of Backtest Overfitting (Ch. 11).</strong> Across 15 path-model combinations,
+                what's the chance the in-sample best is the out-of-sample worst? Robust below 0.3.</li>
+              <li><strong>DeLong AUC test.</strong> Pairwise test for whether two models have statistically
+                distinguishable AUCs. 6 × 6 = 15 model pairs.</li>
+            </ul>
+          </div>
+        </div>
       </div>
-      <div class="metric-box" data-cat="afml">
-        <div class="metric-box-tag">AFML · statistical correction</div>
-        <div class="metric-box-title">Robustness</div>
-        <ul>
-          <li><strong>Deflated Sharpe Ratio (Ch. 14).</strong> Corrects observed Sharpe for selection bias from running 6 trial models, plus skewness and kurtosis. Survives at DSR &gt; 0.95.</li>
-          <li><strong>Probability of Backtest Overfitting (Ch. 11).</strong> Across 15 path-model combinations, what's the chance the in-sample best is the out-of-sample worst? Robust below 0.3.</li>
-          <li><strong>DeLong AUC test.</strong> Pairwise test for whether two models have statistically distinguishable AUCs. 6 × 6 = 15 model pairs.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 19 · SYMBOLIC EXTRACTION
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="green">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Phase III · Step 15</span>
-    <span class="slide-tag">19 / 23</span>
-  </div>
-  <h2 class="slide-title">Symbolic Extraction · from KAN to closed-form formula</h2>
-  <p class="slide-subtitle">The novel contribution. Algorithm 1 from the VIX-KAN paper (Wu et al., 2024), adapted to the financial weak-signal regime.</p>
-  <div class="slide-body">
-    <div class="two-col">
-      <div class="col-block">
-        <div class="col-block-heading">Five-step procedure</div>
-        <ol class="bullets">
-          <li><strong>Train.</strong> Two-stage. First gradient descent with noisy inputs as regularization, encouraging robust splines (600 steps). Then a quasi-Newton optimizer with sparsity penalties (L1 + entropy) drives uninformative edges toward zero.</li>
-          <li><strong>Prune.</strong> Remove edges below the importance threshold. Architecture compresses, e.g., from <code class="mono">[56, 12, 5, 2]</code> to <code class="mono">[5, 4, 2]</code>.</li>
-          <li><strong>Symbolic substitution.</strong> For each surviving edge, fit candidate primitives (polynomial, tanh, sin, cos, exp, log) and pick the one with highest R². Brute-force fallback if PyKAN's <code>suggest_symbolic</code> returns no match.</li>
-          <li><strong>Numerical fine-tuning.</strong> With primitive shapes locked, re-optimize the constants on the substituted model. Recovers some of the accuracy lost during substitution.</li>
-          <li><strong>Simplify.</strong> SymPy simplification pipeline (with 30s timeout) collapses redundant terms; final formula is human-readable.</li>
-        </ol>
+    <section class="slide" data-accent="green">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Phase III · Step 15</span>
+        <span class="slide-tag">19 / 23</span>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">Architectural simplifications &amp; output</div>
-        <div class="col-block-content">
-          <p><strong>Three deliberate simplifications.</strong> Single hidden layer (no width2 — two layers produce nested compositions that defeat SymPy). Coarse spline grid (3 instead of 5). Top 5 features only, ranked by selection frequency across all 15 KAN folds.</p>
-          <p><strong>Fold selected:</strong> <code class="mono">"last"</code> — the most recent CPCV fold. Justification: signal closer to today's regime is more interpretable for a defense audience and a likely deployment.</p>
-          <div class="formula" style="margin-top: 14px;">
-            <span class="formula-label">Output form</span>
-            P(Up | x) = 1 / (1 + exp( −f(x<sub>1</sub>, …, x<sub>5</sub>) ))<br/>
-            <span class="text-muted" style="font-size:0.8em;">where f is a sum of polynomial, tanh, and trigonometric terms in the 5 surviving features</span>
+      <h2 class="slide-title">Symbolic Extraction · from KAN to closed-form formula</h2>
+      <p class="slide-subtitle">The novel contribution. Algorithm 1 from the VIX-KAN paper (Wu et al., 2024), adapted to
+        the financial weak-signal regime.</p>
+      <div class="slide-body">
+        <div class="two-col">
+          <div class="col-block">
+            <div class="col-block-heading">Five-step procedure</div>
+            <ol class="bullets">
+              <li><strong>Train.</strong> Two-stage. First gradient descent with noisy inputs as regularization,
+                encouraging robust splines (600 steps). Then a quasi-Newton optimizer with sparsity penalties (L1 +
+                entropy) drives uninformative edges toward zero.</li>
+              <li><strong>Prune.</strong> Remove edges below the importance threshold. Architecture compresses, e.g.,
+                from <code class="mono">[56, 12, 5, 2]</code> to <code class="mono">[5, 4, 2]</code>.</li>
+              <li><strong>Symbolic substitution.</strong> For each surviving edge, fit candidate primitives (polynomial,
+                tanh, sin, cos, exp, log) and pick the one with highest R². Brute-force fallback if PyKAN's
+                <code>suggest_symbolic</code> returns no match.</li>
+              <li><strong>Numerical fine-tuning.</strong> With primitive shapes locked, re-optimize the constants on the
+                substituted model. Recovers some of the accuracy lost during substitution.</li>
+              <li><strong>Simplify.</strong> SymPy simplification pipeline (with 30s timeout) collapses redundant terms;
+                final formula is human-readable.</li>
+            </ol>
           </div>
-          <p><strong>What is reported.</strong> Pruned architecture, surviving features, the closed-form expression, pre-symbolic vs post-symbolic accuracy, and the symbolification rate (% of edges successfully replaced).</p>
+          <div class="col-block">
+            <div class="col-block-heading">Architectural simplifications &amp; output</div>
+            <div class="col-block-content">
+              <p><strong>Three deliberate simplifications.</strong> Single hidden layer (no width2 — two layers produce
+                nested compositions that defeat SymPy). Coarse spline grid (3 instead of 5). Top 5 features only, ranked
+                by selection frequency across all 15 KAN folds.</p>
+              <p><strong>Fold selected:</strong> <code class="mono">"last"</code> — the most recent CPCV fold.
+                Justification: signal closer to today's regime is more interpretable for a defense audience and a likely
+                deployment.</p>
+              <div class="formula" style="margin-top: 14px;">
+                <span class="formula-label">Output form</span>
+                P(Up | x) = 1 / (1 + exp( −f(x<sub>1</sub>, …, x<sub>5</sub>) ))<br />
+                <span class="text-muted" style="font-size:0.8em;">where f is a sum of polynomial, tanh, and
+                  trigonometric terms in the 5 surviving features</span>
+              </div>
+              <p><strong>What is reported.</strong> Pruned architecture, surviving features, the closed-form expression,
+                pre-symbolic vs post-symbolic accuracy, and the symbolification rate (% of edges successfully replaced).
+              </p>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 20 · RESULTS · MODEL COMPARISON (TEMPLATE)
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="purple">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Part 04 · Results</span>
-    <span class="slide-tag">20 / 23</span>
-  </div>
-  <h2 class="slide-title">Model Comparison · KAN vs. five baselines</h2>
-  <p class="slide-subtitle">Median across 5 reconstructed CPCV paths. AFML statistical correction applied.</p>
-  <div class="slide-body">
-    <div class="result-table-wrap">
-      <table class="result-table">
-        <thead>
-          <tr>
-            <th>Model</th>
-            <th>Median Sharpe</th>
-            <th>Std Sharpe</th>
-            <th>DSR</th>
-            <th>F1 macro</th>
-            <th>AUC-ROC</th>
-            <th>Accuracy</th>
-            <th>Max DD</th>
-            <th>Cum Return</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>AR Logistic</td>
-            <td class="placeholder">— · —</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-          </tr>
-          <tr>
-            <td>Logistic Regression</td>
-            <td class="placeholder">— · —</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-          </tr>
-          <tr>
-            <td>Random Forest</td>
-            <td class="placeholder">— · —</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-          </tr>
-          <tr>
-            <td>XGBoost</td>
-            <td class="placeholder">— · —</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-          </tr>
-          <tr>
-            <td>LSTM</td>
-            <td class="placeholder">— · —</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-          </tr>
-          <tr class="kan-row">
-            <td>KAN</td>
-            <td class="placeholder">— · —</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-            <td class="placeholder">—</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="text-muted" style="font-size: 0.85rem; margin-top: 14px; text-align: center;">
-      <strong style="color: var(--purple);">Headline finding:</strong> <span class="text-dim">[ to fill in once experiments complete ]</span> · DeLong AUC pairwise: <span class="text-dim">[ N of 15 pairs significant at α = 0.05 ]</span> · PBO: <span class="text-dim">[ value ]</span>
-    </p>
-  </div>
-</section>
+    <section class="slide" data-accent="purple">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Part 04 · Results</span>
+        <span class="slide-tag">20 / 23</span>
+      </div>
+      <h2 class="slide-title">Model Comparison · KAN vs. five baselines</h2>
+      <p class="slide-subtitle">Median across 5 reconstructed CPCV paths. AFML statistical correction applied.</p>
+      <div class="slide-body">
+        <div class="result-table-wrap">
+          <table class="result-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Median Sharpe</th>
+                <th>Std Sharpe</th>
+                <th>DSR</th>
+                <th>F1 macro</th>
+                <th>AUC-ROC</th>
+                <th>Accuracy</th>
+                <th>Max DD</th>
+                <th>Cum Return</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>AR Logistic</td>
+                <td class="placeholder">— · —</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+              </tr>
+              <tr>
+                <td>Logistic Regression</td>
+                <td class="placeholder">— · —</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+              </tr>
+              <tr>
+                <td>Random Forest</td>
+                <td class="placeholder">— · —</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+              </tr>
+              <tr>
+                <td>XGBoost</td>
+                <td class="placeholder">— · —</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+              </tr>
+              <tr>
+                <td>LSTM</td>
+                <td class="placeholder">— · —</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+              </tr>
+              <tr class="kan-row">
+                <td>KAN</td>
+                <td class="placeholder">— · —</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+                <td class="placeholder">—</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-muted" style="font-size: 0.85rem; margin-top: 14px; text-align: center;">
+          <strong style="color: var(--purple);">Headline finding:</strong> <span class="text-dim">[ to fill in once
+            experiments complete ]</span> · DeLong AUC pairwise: <span class="text-dim">[ N of 15 pairs significant at α
+            = 0.05 ]</span> · PBO: <span class="text-dim">[ value ]</span>
+        </p>
+      </div>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 21 · RESULTS · SYMBOLIC EXPRESSION (TEMPLATE)
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="purple">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Part 04 · Results</span>
-    <span class="slide-tag">21 / 23</span>
-  </div>
-  <h2 class="slide-title">Symbolic Expression · the closed-form formula</h2>
-  <p class="slide-subtitle">Extracted from the KAN trained on the most recent CPCV fold. Pruned, substituted, fine-tuned, simplified.</p>
-  <div class="slide-body">
-    <div class="two-col">
-      <div class="col-block">
-        <div class="col-block-heading">Architecture &amp; surviving features</div>
-        <div class="col-block-content">
-          <p><strong>Pruned architecture:</strong> <code class="mono"><span class="text-dim">[ before ]</span> → <span class="text-dim">[ after ]</span></code></p>
-          <p><strong>Symbolification rate:</strong> <span class="text-dim">[ X% of edges ]</span></p>
-          <p><strong>Top 5 surviving features:</strong></p>
-          <ul style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
-            <li><span class="text-dim">[ feature 1 ]</span></li>
-            <li><span class="text-dim">[ feature 2 ]</span></li>
-            <li><span class="text-dim">[ feature 3 ]</span></li>
-            <li><span class="text-dim">[ feature 4 ]</span></li>
-            <li><span class="text-dim">[ feature 5 ]</span></li>
-          </ul>
-          <p style="margin-top: 14px;"><strong>Pre-symbolic accuracy:</strong> <span class="text-dim">[ X.X% ]</span></p>
-          <p><strong>Post-symbolic accuracy:</strong> <span class="text-dim">[ X.X% ]</span></p>
-          <p><strong>Substitution gap:</strong> <span class="text-dim">[ Δ pp ]</span></p>
+    <section class="slide" data-accent="purple">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Part 04 · Results</span>
+        <span class="slide-tag">21 / 23</span>
+      </div>
+      <h2 class="slide-title">Symbolic Expression · the closed-form formula</h2>
+      <p class="slide-subtitle">Extracted from the KAN trained on the most recent CPCV fold. Pruned, substituted,
+        fine-tuned, simplified.</p>
+      <div class="slide-body">
+        <div class="two-col">
+          <div class="col-block">
+            <div class="col-block-heading">Architecture &amp; surviving features</div>
+            <div class="col-block-content">
+              <p><strong>Pruned architecture:</strong> <code
+                  class="mono"><span class="text-dim">[ before ]</span> → <span class="text-dim">[ after ]</span></code>
+              </p>
+              <p><strong>Symbolification rate:</strong> <span class="text-dim">[ X% of edges ]</span></p>
+              <p><strong>Top 5 surviving features:</strong></p>
+              <ul style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
+                <li><span class="text-dim">[ feature 1 ]</span></li>
+                <li><span class="text-dim">[ feature 2 ]</span></li>
+                <li><span class="text-dim">[ feature 3 ]</span></li>
+                <li><span class="text-dim">[ feature 4 ]</span></li>
+                <li><span class="text-dim">[ feature 5 ]</span></li>
+              </ul>
+              <p style="margin-top: 14px;"><strong>Pre-symbolic accuracy:</strong> <span class="text-dim">[ X.X%
+                  ]</span></p>
+              <p><strong>Post-symbolic accuracy:</strong> <span class="text-dim">[ X.X% ]</span></p>
+              <p><strong>Substitution gap:</strong> <span class="text-dim">[ Δ pp ]</span></p>
+            </div>
+          </div>
+          <div class="col-block">
+            <div class="col-block-heading">P(Up | features)</div>
+            <div class="formula-block">
+              <span class="formula-placeholder">P(Up | x) = 1 / (1 + exp( −f(x) ))
+
+                where f(x) = a₁ · tanh(b₁ · x₁ + c₁)
+                + a₂ · (x₂)²
+                + a₃ · sin(b₃ · x₃)
+                + a₄ · x₄
+                + a₅ · exp(b₅ · x₅)
+                + …
+
+                [ closed-form expression with numerical
+                constants to be substituted from
+                the trained model on the last fold ]</span>
+            </div>
+            <p class="text-muted" style="font-size: 0.85rem;">The formula evaluates in microseconds; no neural-network
+              inference engine required at deployment time.</p>
+          </div>
         </div>
       </div>
-      <div class="col-block">
-        <div class="col-block-heading">P(Up | features)</div>
-        <div class="formula-block">
-          <span class="formula-placeholder">P(Up | x) = 1 / (1 + exp( −f(x) ))
+    </section>
 
-where  f(x) = a₁ · tanh(b₁ · x₁ + c₁)
-            + a₂ · (x₂)²
-            + a₃ · sin(b₃ · x₃)
-            + a₄ · x₄
-            + a₅ · exp(b₅ · x₅)
-            + …
-
-[ closed-form expression with numerical
-  constants to be substituted from
-  the trained model on the last fold ]</span>
-        </div>
-        <p class="text-muted" style="font-size: 0.85rem;">The formula evaluates in microseconds; no neural-network inference engine required at deployment time.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 22 · DISCUSSION & NEXT STEPS
      ═══════════════════════════════════════════════════════ -->
-<section class="slide" data-accent="rose">
-  <div class="slide-eyebrow-row">
-    <span class="eyebrow">Part 05 · Discussion &amp; Next Steps</span>
-    <span class="slide-tag">22 / 23</span>
-  </div>
-  <h2 class="slide-title">Five honest limitations</h2>
-  <p class="slide-subtitle">Two from compute and data constraints; three from deliberate trade-offs in the protocol. Each frames a future-work direction.</p>
-  <div class="slide-body">
-    <div class="item-grid" style="grid-template-columns: repeat(3, 1fr); gap: 12px;">
-      <div class="item-card">
-        <span class="item-tag">L1</span>
-        <h3 class="item-title">Computational power</h3>
-        <div class="item-body">
-          <p>Currently 2–3 seeds per model and 30 Optuna trials per fold; KAN width capped at 12. With more compute: more seeds, more trials, wider hyperparameter ranges.</p>
+    <section class="slide" data-accent="rose">
+      <div class="slide-eyebrow-row">
+        <span class="eyebrow">Part 05 · Discussion &amp; Next Steps</span>
+        <span class="slide-tag">22 / 23</span>
+      </div>
+      <h2 class="slide-title">Five honest limitations</h2>
+      <p class="slide-subtitle">Two from compute and data constraints; three from deliberate trade-offs in the protocol.
+        Each frames a future-work direction.</p>
+      <div class="slide-body">
+        <div class="item-grid" style="grid-template-columns: repeat(3, 1fr); gap: 12px;">
+          <div class="item-card">
+            <span class="item-tag">L1</span>
+            <h3 class="item-title">Computational power</h3>
+            <div class="item-body">
+              <p>Currently 2–3 seeds per model and 30 Optuna trials per fold; KAN width capped at 12. With more compute:
+                more seeds, more trials, wider hyperparameter ranges.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">L2</span>
+            <h3 class="item-title">Daily OHLCV data only</h3>
+            <div class="item-body">
+              <p>Daily resolution discards intraday microstructure. Pipeline is timeframe-agnostic; an hourly extension
+                would multiply the event count and unlock microstructure features.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">L3</span>
+            <h3 class="item-title">Symbolic extraction is fold-specific</h3>
+            <div class="item-body">
+              <p>Formula extracted from one CPCV fold (the last). Per-fold extraction would let us count which features
+                and primitives recur — that's structural signal vs. one-off noise.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">L4</span>
+            <h3 class="item-title">Architectural simplifications</h3>
+            <div class="item-body">
+              <p>The symbolic-extraction model uses single hidden layer, grid = 3, top 5 features. Post-symbolic
+                accuracy is therefore a <em>lower bound</em> on what a full-architecture KAN learns.</p>
+            </div>
+          </div>
+          <div class="item-card">
+            <span class="item-tag">L5</span>
+            <h3 class="item-title">No regime-conditional analysis</h3>
+            <div class="item-body">
+              <p>BTC has had ~5 distinct regimes over 2014–2026. Full-sample Sharpe averages over them. A
+                regime-conditional analysis is left for future work, especially if DSR is near zero.</p>
+            </div>
+          </div>
+          <div class="item-card" style="border-color: var(--rose); background: rgba(244, 63, 94, 0.04);">
+            <span class="item-tag" style="border-color: var(--silver); color: var(--silver);">Next steps</span>
+            <h3 class="item-title">Before defense</h3>
+            <div class="item-body">
+              <p><strong>Pending:</strong> MultKAN comparison on the last fold (KAN 2.0, multiplicative edges).
+                Symbolic-extraction chapter write-up. Final defense polish.</p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="item-card">
-        <span class="item-tag">L2</span>
-        <h3 class="item-title">Daily OHLCV data only</h3>
-        <div class="item-body">
-          <p>Daily resolution discards intraday microstructure. Pipeline is timeframe-agnostic; an hourly extension would multiply the event count and unlock microstructure features.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">L3</span>
-        <h3 class="item-title">Symbolic extraction is fold-specific</h3>
-        <div class="item-body">
-          <p>Formula extracted from one CPCV fold (the last). Per-fold extraction would let us count which features and primitives recur — that's structural signal vs. one-off noise.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">L4</span>
-        <h3 class="item-title">Architectural simplifications</h3>
-        <div class="item-body">
-          <p>The symbolic-extraction model uses single hidden layer, grid = 3, top 5 features. Post-symbolic accuracy is therefore a <em>lower bound</em> on what a full-architecture KAN learns.</p>
-        </div>
-      </div>
-      <div class="item-card">
-        <span class="item-tag">L5</span>
-        <h3 class="item-title">No regime-conditional analysis</h3>
-        <div class="item-body">
-          <p>BTC has had ~5 distinct regimes over 2014–2026. Full-sample Sharpe averages over them. A regime-conditional analysis is left for future work, especially if DSR is near zero.</p>
-        </div>
-      </div>
-      <div class="item-card" style="border-color: var(--rose); background: rgba(244, 63, 94, 0.04);">
-        <span class="item-tag" style="border-color: var(--silver); color: var(--silver);">Next steps</span>
-        <h3 class="item-title">Before defense</h3>
-        <div class="item-body">
-          <p><strong>Pending:</strong> MultKAN comparison on the last fold (KAN 2.0, multiplicative edges). Symbolic-extraction chapter write-up. Final defense polish.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ═══════════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════════════
      SLIDE 23 · COUNTER COVER
      ═══════════════════════════════════════════════════════ -->
-<section class="slide countercover" data-accent="silver">
-  <div class="cover-eyebrow">Master's Thesis · Petr Terletskiy · ISEG 2024 / 2026</div>
-  <h1 class="countercover-title">Thank you.</h1>
-  <p class="countercover-sub">Questions, comments, and discussion welcome.</p>
-  <div class="cover-divider"></div>
-  <div class="cover-meta">
-    <div><strong>Petr Terletskiy</strong> · l63023</div>
-    <div>Master's in Mathematical Finance · ISEG · Universidade de Lisboa</div>
+    <section class="slide countercover" data-accent="silver">
+      <div class="cover-eyebrow">Master's Thesis · Petr Terletskiy · ISEG 2024 / 2026</div>
+      <h1 class="countercover-title">Thank you.</h1>
+      <p class="countercover-sub">Questions, comments, and discussion welcome.</p>
+      <div class="cover-divider"></div>
+      <div class="cover-meta">
+        <div><strong>Petr Terletskiy</strong> · l63023</div>
+        <div>Master's in Mathematical Finance · ISEG · Universidade de Lisboa</div>
+      </div>
+    </section>
+
   </div>
-</section>
 
-</div>
-
-<!-- ─── HUD ─── -->
-<div class="progress-bar" id="progressBar"></div>
-<div class="hud-hint" id="hudHint">← → arrow keys · F for fullscreen</div>
-<div class="hud">
-  <button class="hud-btn" id="prevBtn" aria-label="Previous slide">←</button>
-  <div class="hud-counter">
-    <strong id="counterCurrent">1</strong>
-    <span> / </span>
-    <span id="counterTotal">23</span>
+  <!-- ─── HUD ─── -->
+  <div class="progress-bar" id="progressBar"></div>
+  <div class="hud-hint" id="hudHint">← → arrow keys · F for fullscreen</div>
+  <div class="hud">
+    <button class="hud-btn" id="prevBtn" aria-label="Previous slide">←</button>
+    <div class="hud-counter">
+      <strong id="counterCurrent">1</strong>
+      <span> / </span>
+      <span id="counterTotal">23</span>
+    </div>
+    <button class="hud-btn" id="nextBtn" aria-label="Next slide">→</button>
   </div>
-  <button class="hud-btn" id="nextBtn" aria-label="Next slide">→</button>
-</div>
 
-<script>
-  const slides = document.querySelectorAll('.slide');
-  const total = slides.length;
-  let current = 0;
+  <script>
+    const slides = document.querySelectorAll('.slide');
+    const total = slides.length;
+    let current = 0;
 
-  document.getElementById('counterTotal').textContent = total;
+    document.getElementById('counterTotal').textContent = total;
 
-  function show(i) {
-    i = (i + total) % total;
-    slides.forEach((s, idx) => s.classList.toggle('active', idx === i));
-    document.getElementById('counterCurrent').textContent = i + 1;
-    document.getElementById('progressBar').style.width = `${((i + 1) / total) * 100}%`;
-    current = i;
-    history.replaceState(null, '', `#slide=${i + 1}`);
-    document.getElementById('prevBtn').disabled = (i === 0);
-    document.getElementById('nextBtn').disabled = (i === total - 1);
-  }
-
-  document.getElementById('prevBtn').onclick = () => show(current - 1);
-  document.getElementById('nextBtn').onclick = () => show(current + 1);
-
-  document.addEventListener('keydown', e => {
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
-      e.preventDefault(); show(current + 1);
-    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') {
-      e.preventDefault(); show(current - 1);
-    } else if (e.key === 'Home') {
-      e.preventDefault(); show(0);
-    } else if (e.key === 'End') {
-      e.preventDefault(); show(total - 1);
-    } else if (e.key === 'f' || e.key === 'F') {
-      e.preventDefault();
-      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-      else document.exitFullscreen();
+    function show(i) {
+      i = (i + total) % total;
+      slides.forEach((s, idx) => s.classList.toggle('active', idx === i));
+      document.getElementById('counterCurrent').textContent = i + 1;
+      document.getElementById('progressBar').style.width = `${((i + 1) / total) * 100}%`;
+      current = i;
+      history.replaceState(null, '', `#slide=${i + 1}`);
+      document.getElementById('prevBtn').disabled = (i === 0);
+      document.getElementById('nextBtn').disabled = (i === total - 1);
     }
-  });
 
-  // Click anywhere on a slide (not on HUD) to advance
-  document.getElementById('deck').addEventListener('click', e => {
-    if (e.target.closest('.hud') || e.target.closest('.hud-btn')) return;
-    show(current + 1);
-  });
+    document.getElementById('prevBtn').onclick = () => show(current - 1);
+    document.getElementById('nextBtn').onclick = () => show(current + 1);
 
-  // Init from hash if present
-  const hashMatch = location.hash.match(/slide=(\d+)/);
-  if (hashMatch) show(parseInt(hashMatch[1], 10) - 1);
-  else show(0);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
+        e.preventDefault(); show(current + 1);
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') {
+        e.preventDefault(); show(current - 1);
+      } else if (e.key === 'Home') {
+        e.preventDefault(); show(0);
+      } else if (e.key === 'End') {
+        e.preventDefault(); show(total - 1);
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+        else document.exitFullscreen();
+      }
+    });
 
-  // Hide hint after first navigation
-  let hintFaded = false;
-  function fadeHint() {
-    if (hintFaded) return;
-    hintFaded = true;
-    document.getElementById('hudHint').classList.add('fade');
-  }
-  document.addEventListener('keydown', fadeHint, { once: true });
-  document.getElementById('prevBtn').addEventListener('click', fadeHint, { once: true });
-  document.getElementById('nextBtn').addEventListener('click', fadeHint, { once: true });
-  setTimeout(fadeHint, 8000);
-</script>
+    // Click anywhere on a slide (not on HUD) to advance
+    document.getElementById('deck').addEventListener('click', e => {
+      if (e.target.closest('.hud') || e.target.closest('.hud-btn')) return;
+      show(current + 1);
+    });
+
+    // Init from hash if present
+    const hashMatch = location.hash.match(/slide=(\d+)/);
+    if (hashMatch) show(parseInt(hashMatch[1], 10) - 1);
+    else show(0);
+
+    // Hide hint after first navigation
+    let hintFaded = false;
+    function fadeHint() {
+      if (hintFaded) return;
+      hintFaded = true;
+      document.getElementById('hudHint').classList.add('fade');
+    }
+    document.addEventListener('keydown', fadeHint, { once: true });
+    document.getElementById('prevBtn').addEventListener('click', fadeHint, { once: true });
+    document.getElementById('nextBtn').addEventListener('click', fadeHint, { once: true });
+    setTimeout(fadeHint, 8000);
+  </script>
 
 </body>
+
 </html>
