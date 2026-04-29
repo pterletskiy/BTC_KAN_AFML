@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BTC Direction Prediction · Thesis Structure Brief</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
 <style>
   :root {
     --bg: #0a0e17;
@@ -537,6 +539,175 @@
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+
+  /* ════════════════════════════════════════════
+     PRINT-MODE CLASS (for html2pdf direct download)
+     Activated by the downloadPDF() function on the
+     cloned DOM via html2canvas.onclone, so that
+     html2pdf renders against a clean light theme.
+     ════════════════════════════════════════════ */
+  body.print-mode {
+    background: #ffffff !important;
+    color: #1a1a1a !important;
+  }
+  body.print-mode::before { display: none !important; }
+  body.print-mode .toc { display: none !important; }
+  body.print-mode .modal-overlay { display: none !important; }
+  body.print-mode .pdf-button { display: none !important; }
+
+  body.print-mode .layout {
+    display: block !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    gap: 0 !important;
+  }
+  body.print-mode main { display: block !important; }
+
+  body.print-mode .header {
+    background: transparent !important;
+    border: none !important;
+    border-bottom: 1px solid #d4d4d8 !important;
+    padding: 0 0 16px !important;
+    margin-bottom: 18px !important;
+  }
+  body.print-mode .header h1 { color: #000 !important; }
+  body.print-mode .header-eyebrow { color: #555 !important; }
+  body.print-mode .header-meta { color: #555 !important; }
+  body.print-mode .tag {
+    background: #f1f5f9 !important;
+    color: #1a1a1a !important;
+    border: 1px solid #e5e7eb !important;
+  }
+
+  body.print-mode .section { background: transparent !important; }
+  body.print-mode .section-num { color: #555 !important; }
+  body.print-mode .section-title { color: #000 !important; }
+  body.print-mode .section-line { background: #d4d4d8 !important; }
+  body.print-mode .section-lede { color: #333 !important; }
+
+  body.print-mode .exec-summary {
+    background: #fafbfc !important;
+    border: 1px solid #e5e7eb !important;
+    color: #1a1a1a !important;
+  }
+  body.print-mode .exec-summary p { color: #1a1a1a !important; }
+
+  body.print-mode .item,
+  body.print-mode .step-card,
+  body.print-mode .step {
+    background: #fafbfc !important;
+    border: 1px solid #e5e7eb !important;
+  }
+  body.print-mode .item-title,
+  body.print-mode .step-title,
+  body.print-mode .step-name { color: #111 !important; }
+  body.print-mode .item-body,
+  body.print-mode .item-body p,
+  body.print-mode .step-body,
+  body.print-mode .step-body p,
+  body.print-mode .step-sub { color: #333 !important; }
+  body.print-mode .item-body strong,
+  body.print-mode .step-body strong { color: #111 !important; }
+  body.print-mode .item-body ul li,
+  body.print-mode .step-body ul li { color: #333 !important; }
+
+  body.print-mode .step-idx { color: #555 !important; }
+  body.print-mode .step-click-hint { display: none !important; }
+
+  body.print-mode .item-label,
+  body.print-mode .step-label { background: rgba(0,0,0,0.02) !important; }
+
+  body.print-mode .schema { background: transparent !important; }
+  body.print-mode .schema-phase { background: #fafbfc !important; border: 1px solid #e5e7eb !important; }
+  body.print-mode .schema-phase-num,
+  body.print-mode .schema-phase-name { color: #111 !important; }
+  body.print-mode .schema-steps li { color: #333 !important; }
+  body.print-mode .schema-arrow { color: #555 !important; }
+
+  body.print-mode .phase-block-tag,
+  body.print-mode .phase-block-name { color: #111 !important; }
+  body.print-mode .phase-block-line { background: #d4d4d8 !important; }
+
+  body.print-mode code {
+    background: #f1f5f9 !important;
+    color: #111 !important;
+  }
+
+  /* Single-column layout for cards in print-mode (more readable on A4) */
+  body.print-mode .items {
+    display: block !important;
+    grid-template-columns: none !important;
+  }
+  body.print-mode .items > .item {
+    width: 100% !important;
+    margin: 0 0 0 0 !important;
+  }
+  body.print-mode .steps {
+    display: block !important;
+    grid-template-columns: none !important;
+    gap: 0 !important;
+  }
+  body.print-mode .steps > .step {
+    width: 100% !important;
+    margin: 0 !important;
+    cursor: default !important;
+    display: block !important;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  body.print-mode .step .step-content {
+    margin-top: 4px;
+  }
+
+  /* Methodology step descriptions for the PDF.
+     Hidden on screen; shown only while print-mode is active.
+     Populated dynamically by downloadPDF() from the data-desc attribute. */
+  .step-pdf-expanded { display: none; }
+  body.print-mode .step-pdf-expanded {
+    display: block !important;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e7eb;
+    color: #333;
+    font-size: 0.85rem;
+    line-height: 1.55;
+  }
+  body.print-mode .step-pdf-expanded p {
+    margin: 0 0 8px 0;
+    color: #333;
+  }
+  body.print-mode .step-pdf-expanded ul {
+    margin: 6px 0 8px 0;
+    padding-left: 18px;
+    list-style: disc;
+  }
+  body.print-mode .step-pdf-expanded ol {
+    margin: 6px 0 8px 0;
+    padding-left: 22px;
+  }
+  body.print-mode .step-pdf-expanded li {
+    margin-bottom: 4px;
+    color: #333;
+  }
+  body.print-mode .step-pdf-expanded h4 {
+    font-size: 0.9rem;
+    margin: 10px 0 4px 0;
+    color: #111;
+    font-weight: 600;
+  }
+  body.print-mode .step-pdf-expanded strong { color: #111; }
+  body.print-mode .step-pdf-expanded em {
+    color: #444;
+    font-style: italic;
+  }
+  body.print-mode .step-pdf-expanded code {
+    background: #f1f5f9;
+    padding: 1px 4px;
+    border-radius: 2px;
+    font-size: 0.85em;
+    color: #111;
   }
 
   /* ════════════════════════════════════════════
@@ -1287,15 +1458,259 @@ function closeModal(event) {
   document.body.style.overflow = '';
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// ───── Direct PDF download (per-block capture, sticky headers) ─────
+//
+// The previous version captured the entire layout into a single canvas, then
+// sliced it. With the methodology section's expanded step descriptions, the
+// total height exceeds the browser's max canvas size (~16384px on most
+// browsers), so the canvas was silently truncated and everything past the
+// truncation point came out blank. The Phase II header was also getting
+// orphaned at the bottom of pages.
+//
+// This implementation does two passes:
+//   1. Render every block individually with html2canvas (each capture is small
+//      enough to fit the canvas size limit comfortably).
+//   2. Pack blocks into PDF pages, with three rules:
+//      a. Section headers force a fresh page (except the first section).
+//      b. Any block that doesn't fit on the current page goes to a new page.
+//      c. "Sticky-to-next" headers (section headers, phase headers) move with
+//         their following block if both don't fit together.
+
+async function downloadPDF() {
+  const button = document.querySelector('.pdf-button');
+  const label = button.querySelector('.pdf-button-label');
+  const originalLabel = label.textContent;
+
+  // Library availability check
+  if (typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined') {
+    console.warn('PDF libraries not loaded; falling back to window.print()');
+    window.print();
+    return;
+  }
+
+  // UI feedback
+  button.disabled = true;
+  button.style.opacity = '0.7';
+  button.style.cursor = 'wait';
+  label.textContent = 'Preparing…';
+
+  // Close modal if open
+  document.getElementById('modalOverlay').classList.remove('active');
+  document.body.style.overflow = '';
+
+  // Inject step descriptions and switch to light theme
+  expandStepsForPDF();
+  document.body.classList.add('print-mode');
+
+  // Wait for layout to settle (single-column, expanded steps)
+  await new Promise(r => setTimeout(r, 400));
+
+  try {
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({
+      unit: 'mm',
+      format: 'a4',
+      orientation: 'portrait',
+      compress: true
+    });
+    const pageWidthMm = pdf.internal.pageSize.getWidth();    // 210
+    const pageHeightMm = pdf.internal.pageSize.getHeight();  // 297
+    const marginMm = 12;
+    const contentWidthMm = pageWidthMm - 2 * marginMm;       // 186
+    const contentHeightMm = pageHeightMm - 2 * marginMm;     // 273
+    const blockGapMm = 3;
+
+    const blocks = collectPDFBlocks();
+
+    // ── Pass 1: render each block to its own canvas ──
+    const rendered = [];
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      label.textContent = `Rendering ${i + 1}/${blocks.length}…`;
+      // Yield so the browser can repaint the label
+      await new Promise(r => setTimeout(r, 0));
+
+      const canvas = await html2canvas(block.element, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false
+      });
+
+      // Each block is placed at full content width in the PDF, height proportional
+      const heightMm = (canvas.height / canvas.width) * contentWidthMm;
+      rendered.push({
+        sectionStart: block.sectionStart,
+        stickyToNext: block.stickyToNext,
+        heightMm: heightMm,
+        imgData: canvas.toDataURL('image/jpeg', 0.92)
+      });
+    }
+
+    label.textContent = 'Laying out pages…';
+    await new Promise(r => setTimeout(r, 0));
+
+    // ── Pass 2: pack blocks into PDF pages ──
+    let cursorY = marginMm;
+    let pageHasContent = false;
+
+    for (let i = 0; i < rendered.length; i++) {
+      const block = rendered[i];
+      let needPageBreak = false;
+
+      // Rule (a): force new page on section start
+      if (block.sectionStart && pageHasContent) {
+        needPageBreak = true;
+      }
+
+      // Rule (b): block doesn't fit on current page
+      if (!needPageBreak &&
+          cursorY + block.heightMm > pageHeightMm - marginMm &&
+          pageHasContent) {
+        needPageBreak = true;
+      }
+
+      // Rule (c): sticky-to-next — if THIS fits but NEXT does not,
+      // break before THIS so they end up together on the next page
+      if (!needPageBreak &&
+          block.stickyToNext &&
+          i + 1 < rendered.length &&
+          pageHasContent) {
+        const next = rendered[i + 1];
+        const totalRequired = block.heightMm + blockGapMm + next.heightMm;
+        if (cursorY + totalRequired > pageHeightMm - marginMm) {
+          needPageBreak = true;
+        }
+      }
+
+      if (needPageBreak) {
+        pdf.addPage();
+        cursorY = marginMm;
+        pageHasContent = false;
+      }
+
+      // If a single block is taller than a full page, scale it down
+      let placedWidthMm = contentWidthMm;
+      let placedHeightMm = block.heightMm;
+      let offsetX = marginMm;
+      if (block.heightMm > contentHeightMm) {
+        const ratio = contentHeightMm / block.heightMm;
+        placedHeightMm = contentHeightMm * 0.99;
+        placedWidthMm = contentWidthMm * ratio * 0.99;
+        offsetX = marginMm + (contentWidthMm - placedWidthMm) / 2;
+      }
+
+      pdf.addImage(block.imgData, 'JPEG', offsetX, cursorY, placedWidthMm, placedHeightMm);
+      cursorY += placedHeightMm + blockGapMm;
+      pageHasContent = true;
+    }
+
+    label.textContent = 'Saving…';
+    pdf.save('thesis_structure_brief.pdf');
+  } catch (err) {
+    console.error('PDF generation failed:', err);
+    alert('PDF generation failed (see console). Falling back to the print dialog.');
+    window.print();
+  } finally {
+    document.body.classList.remove('print-mode');
+    collapseStepsAfterPDF();
+    button.disabled = false;
+    button.style.opacity = '';
+    button.style.cursor = '';
+    label.textContent = originalLabel;
+  }
+}
+
+// Collect the ordered list of atomic blocks to place in the PDF.
+// Each block is an element that must not split across pages.
+// Headers are marked stickyToNext so they cannot be orphaned at the
+// bottom of a page when their following content moves to the next page.
+function collectPDFBlocks() {
+  const blocks = [];
+
+  // Page header (eyebrow, title, meta tags)
+  const header = document.querySelector('header.header');
+  if (header) blocks.push({ element: header, sectionStart: false, stickyToNext: true });
+
+  // Each section
+  document.querySelectorAll('main.main > section.section').forEach(section => {
+    const isFirstSection = (section.id === 'sec-1');
+
+    // Section header — forces a fresh page (except for Section 01),
+    // and is sticky-to-next so its lede or first item never gets separated
+    const sectionHeader = section.querySelector(':scope > .section-header');
+    if (sectionHeader) {
+      blocks.push({
+        element: sectionHeader,
+        sectionStart: !isFirstSection,
+        stickyToNext: true
+      });
+    }
+
+    // Section lede (if present), also sticky so it pulls the first item along
+    const lede = section.querySelector(':scope > .section-lede');
+    if (lede) blocks.push({ element: lede, sectionStart: false, stickyToNext: true });
+
+    // Section 01 — exec summary
+    const execSummary = section.querySelector(':scope > .exec-summary');
+    if (execSummary) blocks.push({ element: execSummary, sectionStart: false });
+
+    // Sections 02, 03, 05, 06 — items grid
+    section.querySelectorAll(':scope > .items > .item').forEach(item => {
+      blocks.push({ element: item, sectionStart: false });
+    });
+
+    // Section 04 — schema diagram
+    const schema = section.querySelector(':scope > .schema');
+    if (schema) blocks.push({ element: schema, sectionStart: false });
+
+    // Section 04 — phase blocks (each contains its own header and step grid)
+    section.querySelectorAll(':scope > .phase-block').forEach(phaseBlock => {
+      const phHeader = phaseBlock.querySelector(':scope > .phase-block-header');
+      // Phase header is sticky-to-next so it can never be orphaned at the
+      // bottom of a page when the first step would not fit below it
+      if (phHeader) blocks.push({
+        element: phHeader,
+        sectionStart: false,
+        stickyToNext: true
+      });
+      phaseBlock.querySelectorAll(':scope > .steps > .step').forEach(step => {
+        blocks.push({ element: step, sectionStart: false });
+      });
+    });
+  });
+
+  return blocks;
+}
+
+// Inject each step's data-desc content as visible HTML inside the step card,
+// so the methodology details appear in the PDF capture.
+function expandStepsForPDF() {
+  document.querySelectorAll('.step').forEach(step => {
+    if (step.querySelector('.step-pdf-expanded')) return;
+    const desc = step.dataset.desc;
+    if (!desc) return;
+    const expanded = document.createElement('div');
+    expanded.className = 'step-pdf-expanded';
+    expanded.innerHTML = desc;
+    step.appendChild(expanded);
+  });
+}
+
+// Remove the injected step descriptions after the PDF is generated.
+function collapseStepsAfterPDF() {
+  document.querySelectorAll('.step-pdf-expanded').forEach(el => el.remove());
+}
 </script>
 
-<button class="pdf-button" onclick="window.print()" aria-label="Download as PDF" title="Open the print dialog and choose &quot;Save as PDF&quot;">
+<button class="pdf-button" onclick="downloadPDF()" aria-label="Download as PDF" title="Download this document as a PDF file">
   <svg viewBox="0 0 24 24">
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
     <polyline points="7 10 12 15 17 10"/>
     <line x1="12" y1="15" x2="12" y2="3"/>
   </svg>
-  Download PDF
+  <span class="pdf-button-label">Download PDF</span>
 </button>
 
 </body>
