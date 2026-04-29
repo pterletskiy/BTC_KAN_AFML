@@ -335,7 +335,7 @@ The LSTM tuning loop deliberately runs fewer epochs and a shorter patience windo
 
 ### Default trial counts
 
-`N_TRIALS_CLASSICAL = 60` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 40` (LSTM, KAN). The `run_cpcv_pipeline()` function accepts an `n_trials` override, and the notebook currently passes `n_trials=30` for every tuned model.
+`N_TRIALS_CLASSICAL = 30` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 30` (LSTM, KAN). The `run_cpcv_pipeline()` function accepts an `n_trials` override, and the notebook currently passes `n_trials=30` for every tuned model.
 
 ### Key function: `tune_all_models`
 

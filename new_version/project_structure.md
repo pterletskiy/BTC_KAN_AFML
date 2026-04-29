@@ -94,7 +94,7 @@ Fetches daily OHLCV from yfinance and returns a validated DataFrame with columns
 | Volume < 0 | Logs warning, keeps row |
 | NaN Close | Drops row + logs warning |
 
-**Parameters used in notebook:** `ticker="BTC-USD"`, `start="2014-09-17"`, `end="2026-04-16"`
+**Parameters used in notebook:** `ticker="BTC-USD"`, `start="2014-09-17"`, `end="2026-04-28"`
 
 **Internal helpers:** `_fill_small_gaps(df)` handles gap detection and forward-filling with the 3-day limit. `_check_ohlcv_consistency(df)` validates OHLCV relationships row-by-row.
 
