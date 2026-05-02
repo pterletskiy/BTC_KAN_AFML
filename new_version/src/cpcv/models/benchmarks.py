@@ -10,8 +10,10 @@ must beat to justify their additional complexity.
 
 AR Logistic consumes precomputed lag columns from
 ``pre_cpcv.features.compute_lag_features``. Lag features sit alongside
-TA / math / external features in X but are excluded from MDA selection
-in preprocessing, so only AR Logistic sees them. 
+TA / math / external features in X and are eligible for MDA selection
+for the other models; AR Logistic itself selects its six lag columns
+by name from the pre-MDA feature matrix via the pipeline's
+``X_tr_full`` route, independently of MDA's choices.
 """
 
 import logging
@@ -49,10 +51,12 @@ class ARLogistic(BaseModel):
     -----------------
     X must contain the lag columns produced by
     ``pre_cpcv.features.compute_lag_features``
-    (``log_returns_lag1``, ..., ``log_returns_lag21``). The CPCV
+    (``log_returns_lag1``, ..., ``log_returns_lag30``). The CPCV
     pipeline routes ``X_tr_full`` (all pre-selection columns) to AR
-    Logistic, so the lag columns are present alongside the engineered
-    features even though MDA selection drops them from ``selected``.
+    Logistic so the lag columns are present even when MDA selection
+    drops them from ``selected``. Other models receive the MDA-selected
+    subset, which may or may not include lag columns depending on
+    permutation importance for that fold.
     """
 
     def __init__(self, n_features: int, n_classes: int = 2, seed: int = 42):

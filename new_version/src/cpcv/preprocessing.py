@@ -16,10 +16,13 @@ This prevents selection bias toward any single model architecture.
 A feature is selected if its averaged MDA > 0 and it ranks in the
 top K by averaged MDA value.
 
-Lag features are routed only to AR Logistic. 
-They are excluded from the MDA pool by name prefix in
-``select_features``: a separate feature category that does not compete
-with TA / math / external features for the top-k cap.
+Lag features are part of the global feature universe alongside TA,
+mathematical, and external features. All non-AR models receive lag
+features through the standard MDA selection step (lags compete on
+equal footing with engineered features for the top-k cap). AR
+Logistic continues to consume the six precomputed lag columns by
+name from the pre-MDA feature matrix, preserving its role as the
+pure-autoregressive baseline.
 """
 
 import logging
@@ -30,8 +33,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import RobustScaler
 from statsmodels.tsa.stattools import adfuller
-
-from src.pre_cpcv.features import LAG_COLUMN_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +53,6 @@ MDA_TOP_K_FRAC = 0.4                 # cap at top 40% of total features
 
 # Minimum features to keep (hard floor)
 MIN_FEATURES = 5
-
-
-def _is_lag_column(name: str) -> bool:
-    """Return True if a column is a precomputed lag feature.
-
-    Lag features are routed only to AR Logistic and excluded from the
-    MDA pool. Including them in MDA would let pure autoregressive
-    signal compete with engineered TA / math / external features for
-    the top-K cap and bias the comparison.
-    """
-    return str(name).startswith(LAG_COLUMN_PREFIX)
 
 
 # =====================================================================
@@ -463,9 +453,13 @@ def select_features(
     prevents selection bias toward any single architecture. Features
     must demonstrate value across model families to rank high.
 
-    Lag features (``log_returns_lag*``) are excluded from the MDA pool
-    by name prefix: they form a separate category that is routed only
-    to AR Logistic, not the ML models.
+    All columns of ``X_train`` enter the MDA pool, including lag
+    features. Lag and engineered features compete on equal footing
+    for the top-k cap; whether a given fold selects lags depends on
+    their permutation importance relative to TA, math, and external
+    features. AR Logistic still consumes its six lag columns by name
+    from the pre-MDA matrix routed through ``X_tr_full`` in the
+    pipeline, so its behaviour is unaffected by what MDA selects.
 
     Parameters
     ----------
@@ -481,15 +475,10 @@ def select_features(
     if top_k_frac is None:
         top_k_frac = MDA_TOP_K_FRAC
 
-    # Restrict the MDA pool to engineered features. Lag columns are a
-    # separate category, routed only to AR Logistic.
-    mda_eligible = [c for c in X_train.columns if not _is_lag_column(c)]
-    n_excluded_lags = X_train.shape[1] - len(mda_eligible)
-    X_train_mda = X_train[mda_eligible]
-    n_total = X_train_mda.shape[1]
+    n_total = X_train.shape[1]
 
-    # ── Compute multi-model MDA ───────────────────────────────────────
-    mda_results = compute_multi_model_mda(X_train_mda, y_train, w_train, t1_train)
+    # ── Compute multi-model MDA on the full feature universe ──────────
+    mda_results = compute_multi_model_mda(X_train, y_train, w_train, t1_train)
 
     # ── Select: all features with averaged MDA > 0 ────────────────────
     mda_positive = mda_results[mda_results["MDA"] > 0]
@@ -530,15 +519,10 @@ def select_features(
         f"[preprocessing] Multi-model MDA: {n_passed}/{n_total} passed "
         f"(MDA > 0), {n_eliminated} eliminated"
     )
-    if n_excluded_lags:
-        print(
-            f"  ({n_excluded_lags} lag features excluded from MDA pool, "
-            "routed only to AR Logistic)"
-        )
     if n_passed > len(selected):
         print(f"  Capped at {len(selected)} features (top_k_frac={top_k_frac})")
     print(f"  Selected ({len(selected)}): {selected}")
-    dropped = sorted(set(mda_eligible) - set(selected))
+    dropped = sorted(set(X_train.columns) - set(selected))
     if dropped:
         print(f"  Dropped  ({len(dropped)}): {dropped}")
 
@@ -566,9 +550,11 @@ def preprocess_fold(
     feature list is returned separately for the pipeline to apply.
 
     Lag columns sit alongside engineered features in the returned
-    DataFrames but never appear in ``selected`` because ``select_features``
-    excludes them from the MDA pool. AR Logistic reaches them via the
-    pipeline's existing ``X_tr_full`` (pre-selection) route.
+    DataFrames and are now eligible for MDA selection on equal footing
+    with TA, math, and external features. AR Logistic continues to
+    consume its six lag columns by name from the pre-selection matrix
+    via the pipeline's ``X_tr_full`` route, independently of whether
+    MDA happens to select any lag columns for the other models.
 
     Parameters
     ----------

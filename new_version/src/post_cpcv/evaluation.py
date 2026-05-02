@@ -655,21 +655,29 @@ def compute_auc_significance(
     predictions: dict,
     models: list[str],
     n_splits: int,
-    seed: int = 0,
+    n_seeds: int = 1,
     alpha: float = 0.05,
 ) -> pd.DataFrame:
     """Run pairwise DeLong AUC tests across all model pairs.
 
-    Pools predictions from all CPCV splits (for a given seed) so that
-    the test operates on the full sample. Since CPCV splits have
-    non-overlapping test sets, pooling is valid.
+    For each model and split, predicted probabilities are averaged
+    across all available seeds before the predictions are pooled
+    across splits for the DeLong test. This is the same convention
+    used by ``stitch_paths`` for path-level financial metrics, so
+    the AUC test reflects the same averaged predictions that the
+    Sharpe/DSR/PBO results are computed from.
+
+    Pooling across splits is valid because CPCV splits have
+    non-overlapping test sets.
 
     Parameters
     ----------
     predictions : dict from CPCV pipeline
+        Keyed by ``(model_name, split_idx, seed)``.
     models : list of model names to compare
     n_splits : number of CPCV splits
-    seed : which seed to use (default 0)
+    n_seeds : number of seeds per model (default 1). Probabilities
+        are averaged across the available seeds for each split.
     alpha : significance level (default 0.05)
 
     Returns
@@ -677,21 +685,38 @@ def compute_auc_significance(
     DataFrame with columns: model_a, model_b, auc_a, auc_b, delta_auc,
                             z_stat, p_value, significant
     """
-    # pool predictions per model across splits
+    # pool predictions per model across splits, averaging across seeds
     pooled = {}
     for model_name in models:
         y_trues, y_probas = [], []
         for split_idx in range(n_splits):
-            key = (model_name, split_idx, seed)
-            if key not in predictions:
+            seed_probas = []
+            seed_y_true = None
+            for seed in range(n_seeds):
+                key = (model_name, split_idx, seed)
+                if key not in predictions:
+                    continue
+                pred = predictions[key]
+                seed_probas.append(pred["cal_proba"][:, 1])
+                if seed_y_true is None:
+                    seed_y_true = pred["y_true"]
+
+            if not seed_probas:
                 logger.warning(
-                    "Missing predictions for %s, split=%d, seed=%d. Skipping.",
-                    model_name, split_idx, seed,
+                    "Missing predictions for %s, split=%d (all seeds). Skipping.",
+                    model_name, split_idx,
                 )
                 continue
-            pred = predictions[key]
-            y_trues.append(pred["y_true"])
-            y_probas.append(pred["cal_proba"][:, 1])
+
+            # align to shortest length across seeds (LSTM may drop a
+            # different number of obs per seed if windowing edge-cases
+            # differ; in practice all seeds produce identical lengths)
+            min_len = min(len(p) for p in seed_probas)
+            seed_probas_aligned = np.stack([p[:min_len] for p in seed_probas])
+            avg_proba = seed_probas_aligned.mean(axis=0)
+
+            y_trues.append(seed_y_true[:min_len])
+            y_probas.append(avg_proba)
 
         if y_trues:
             pooled[model_name] = {
@@ -834,8 +859,10 @@ def compare_models(all_summaries: list[dict]) -> pd.DataFrame:
 def compute_feature_stability(predictions: dict, models: list[str]) -> dict:
     """Compute how consistently each feature is selected across folds.
 
-    Uses the first model in ``models`` that performs feature selection
-    (i.e., not AR Logistic, which constructs its own lagged features).
+    Counts selection across all (split, seed) pairs for the first
+    non-AR model in ``models``. With ``n_seeds`` > 1, this denser
+    count reduces the seed-induced noise in selection frequencies
+    relative to using only ``seed=0``.
     """
     # Find a model that uses feature selection. AR Logistic skips selection.
     reference_model = None
@@ -852,12 +879,11 @@ def compute_feature_stability(predictions: dict, models: list[str]) -> dict:
                 "stable_features": [], "n_splits": 0}
 
     feature_counts = {}
-    n_splits = 0
+    n_splits_seen = set()
+    n_observations = 0  # (split, seed) pairs counted
 
     for key, pred in predictions.items():
         model_name, split_idx, seed = key
-        if seed != 0:
-            continue
         if model_name != reference_model:
             continue
 
@@ -866,19 +892,20 @@ def compute_feature_stability(predictions: dict, models: list[str]) -> dict:
 
         for f in selected:
             feature_counts[f] = feature_counts.get(f, 0) + 1
-        n_splits += 1
+        n_observations += 1
+        n_splits_seen.add(split_idx)
 
-    if n_splits == 0:
+    if n_observations == 0:
         return {"feature_frequency": pd.Series(dtype=float),
                 "stable_features": [], "n_splits": 0}
 
-    freq = pd.Series(feature_counts).sort_values(ascending=False) / n_splits
+    freq = pd.Series(feature_counts).sort_values(ascending=False) / n_observations
     stable = freq[freq > 0.80].index.tolist()
 
     return {
         "feature_frequency": freq,
         "stable_features": stable,
-        "n_splits": n_splits,
+        "n_splits": len(n_splits_seen),
     }
 
 
@@ -886,14 +913,18 @@ def compute_feature_stability(predictions: dict, models: list[str]) -> dict:
 # FFD stability
 # =====================================================================
 def compute_ffd_stability(predictions: dict) -> dict:
-    """Compute how stable FFD d* values are across folds."""
+    """Compute how stable FFD d* values are across folds.
+
+    Collects d* from every (model, split, seed) entry in
+    ``predictions``. FFD is shared across models within a fold and
+    deterministic given the training fold, so the only source of
+    spread in d* comes from training-fold differences across splits.
+    Including all seeds gives a denser histogram without changing
+    the qualitative result.
+    """
     d_stars = {}
 
     for key, pred in predictions.items():
-        _, _, seed = key
-        if seed != 0:
-            continue
-
         prep = pred.get("prep_info", {})
         ffd = prep.get("ffd", {})
 
@@ -1005,11 +1036,14 @@ def analyze_results(cpcv_results: dict) -> dict:
 
     # ── AUC significance (DeLong pairwise tests) ─────────────────────
     auc_significance = compute_auc_significance(
-        predictions, models, cpcv_results["n_splits"], seed=0
+        predictions, models, cpcv_results["n_splits"], n_seeds=n_seeds,
     )
     if len(auc_significance):
         print("\n" + "=" * 80)
-        print("AUC Significance Tests (DeLong, pooled across splits, seed=0)")
+        print(
+            "AUC Significance Tests (DeLong, pooled across splits, "
+            f"averaged across {n_seeds} seed{'s' if n_seeds != 1 else ''})"
+        )
         print("=" * 80)
         print(auc_significance.to_string(index=False, float_format="{:.4f}".format))
         n_sig = auc_significance["significant"].sum()
