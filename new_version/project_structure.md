@@ -11,7 +11,7 @@
 The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Networks (KANs), benchmarked against AR Logistic, Logistic Regression, Random Forest, XGBoost, and LSTM models, evaluated under López de Prado's *Advances in Financial Machine Learning* (2018) framework. The pipeline is organized into three phases with strict leakage boundaries between them.
 
 **Data:** BTC-USD daily OHLCV, September 2014 – April 2026 (~4,200 bars).
-**Features:** 62 columns total. 56 reach MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 22 external: 13 macro, 1 crypto-macro, 8 on-chain from CoinMetrics). 6 lag features (`log_returns_lag1` … `log_returns_lag30`) are precomputed in a separate category and routed only to AR Logistic; they are excluded from MDA by name prefix.
+**Features:** 62 columns total, all eligible for MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 22 external: 13 macro, 1 crypto-macro, 8 on-chain from CoinMetrics, 6 autoregressive lags). The 6 lag features (`log_returns_lag1` … `log_returns_lag30`) compete with engineered features for the MDA top-k cap. AR Logistic continues to consume the 6 lag columns by name from the pre-MDA matrix as its pure-autoregressive baseline, independently of MDA's choices.
 **Calendar:** All rolling windows use the BTC trading calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year).
 **Evaluation:** CPCV (N=6, k=2) producing 15 splits and 5 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
 **Tuning:** Nested Optuna TPE + Purged K-Fold, per-split, inside each CPCV training fold (AFML Ch. 7 compliant).
@@ -198,8 +198,8 @@ Orchestration function. Chains: concurrent labels → uniqueness → return attr
 | Technical (TA) | 25 | MDA pool |
 | Mathematical (AFML Part 4) | 9 | MDA pool |
 | External (macro / crypto-macro / on-chain) | 22 | MDA pool |
-| Lag (autoregressive) | 6 | AR Logistic only (excluded from MDA by name prefix) |
-| **Total** | **62** | **56 MDA-eligible + 6 AR-only** |
+| Lag (autoregressive) | 6 | MDA pool + AR Logistic (by name, from pre-MDA matrix) |
+| **Total** | **62** | **All 62 eligible for MDA; AR Logistic restricts itself to its 6 lag columns** |
 
 **Module-level constants (all feature parameters defined at top of each file):**
 
@@ -282,14 +282,14 @@ The `which` parameter accepts `"all"` or a list of specific feature names for pa
 
 Precomputes lagged log-return features on the full daily series. Columns are named `log_returns_lag1`, `log_returns_lag2`, `log_returns_lag3`, `log_returns_lag7`, `log_returns_lag14`, `log_returns_lag30`.
 
-**Why a separate category.** Lag features are consumed only by the AR Logistic baseline. Computing them once on the full daily series instead of inline inside `ARLogistic.fit` / `ARLogistic.predict` removes a look-ahead artefact that the inline version had: previously, NaN lags at the head of each test fold were imputed with `bfill()`, which used later test observations to fill earlier ones. Precomputing on the global series gives every aligned event valid lookback values that respect chronological order.
+**Why a separate category.** Lag features are precomputed once on the full daily series rather than inline inside `ARLogistic.fit` / `ARLogistic.predict`. The inline version had a look-ahead artefact: NaN lags at the head of each test fold were imputed with `bfill()`, which used later test observations to fill earlier ones. Precomputing on the global series gives every aligned event valid lookback values that respect chronological order.
 
 **Why these lags.** The set `[1, 2, 3, 7, 14, 30]` follows a calendar-day convention rather than the trading-day convention `[1, 2, 3, 5, 10, 21]` common in equity ML literature. BTC trades 24/7 with no weekend or holiday gaps, so trading-day arithmetic has no natural meaning for this asset. The chosen lags correspond to one to three days of short-term autocorrelation, one and two calendar weeks, and one calendar month, anchoring autoregressive structure to the calendar cycles that drive BTC dynamics. The 14-day lag additionally aligns with the BTC mining-difficulty adjustment cycle (~2,016 blocks ≈ 14 days), a BTC-native cycle the equity convention does not capture.
 
 **Helpers:**
 - `lag_column_names(lags=None)`: returns the canonical column names in the order matching `lags` (defaulting to `AR_LAGS`).
 
-**MDA exclusion.** `select_features` in `preprocessing.py` filters out columns whose names start with `LAG_COLUMN_PREFIX` before running multi-model MDA. The lag columns sit alongside TA / math / external features in `X_tr_proc` (so AR Logistic can select them via the pipeline's pre-selection `X_tr_full` route) but never enter `selected`.
+**MDA inclusion (advisor-driven change).** Lag features now enter the multi-model MDA pool alongside TA, math, and external features. An earlier version excluded them from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received six features the ML and neural models did not. The current pipeline lets all 62 features compete for the top-k cap; whether MDA selects any lag columns for the other models depends on their permutation importance for that fold. AR Logistic still selects its six lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, so its behaviour is unchanged.
 
 #### Step 6.d — Macro Features (`external_features.py`)
 
@@ -441,7 +441,7 @@ The X passed to CPCV may therefore contain partial-NaN rows. This is intentional
 
 | Object | Shape | Description |
 |--------|-------|-------------|
-| `X` | 1,245 × 62 | Feature matrix (25 TA + 9 math + 22 external + 6 lag, post log-transform). 56 reach MDA; 6 lag columns route only to AR Logistic. |
+| `X` | 1,245 × 62 | Feature matrix (25 TA + 9 math + 22 external + 6 lag, post log-transform). All 62 columns are eligible for MDA selection; AR Logistic restricts itself to the 6 lag columns by name from the pre-MDA matrix. |
 | `y` | 1,245 | Binary labels {-1, +1}. Class balance: {+1: 697, -1: 548}. The 0 class is removed by `drop_rare_labels(min_pct=0.085)` after triple-barrier labeling. |
 | `w` | 1,245 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
 | `t1` | 1,245 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
@@ -543,9 +543,9 @@ The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
 2. Cap at `top_k_frac` of total features (default 40%, overridable from notebook)
 3. Hard floor of 5 features minimum
 
-**Lag features excluded from MDA.** `select_features` filters out any column whose name starts with `LAG_COLUMN_PREFIX` before running MDA. Lag features are routed only to AR Logistic; including them in MDA would let pure autoregressive signal compete with engineered TA / math / external features for the top-k cap and bias the comparison. The print line reports the excluded count, and the "Dropped" set is computed against the MDA-eligible columns only.
+**Lag features in the MDA pool.** `select_features` runs MDA over all 62 features, including the six `log_returns_lagN` columns. An earlier version of the pipeline excluded lag features from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received six features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing; lag columns appear in `selected` for a given fold only if their averaged MDA (RF + Logistic Regression permutation importance) is positive and ranks within the top-k cap. AR Logistic continues to consume the six lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, independently of MDA's choices.
 
-**Typical result:** ~18–22 features selected per fold from the 56 MDA-eligible columns. The 6 lag columns sit alongside the engineered features in `X_tr_proc` (so AR Logistic can select them via the pipeline's pre-selection `X_tr_full` route) but never appear in `selected`.
+**Typical result:** ~22–26 features selected per fold from the 62 candidates. The 6 lag columns sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
 
 #### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, ffd_columns, top_k_frac, skip_selection=False)`
 
@@ -650,7 +650,7 @@ The model registry in `models/__init__.py` provides `create_model(name, n_featur
 
 | Model | Class | Key Behavior |
 |-------|-------|-------------|
-| **AR Logistic** | `ARLogistic` | Selects the 6 precomputed lag columns (`log_returns_lag1` … `log_returns_lag30`) from the pre-selection feature matrix and ignores everything else. The lag columns are produced once on the full daily series by `pre_cpcv.features.compute_lag_features` and routed only to AR Logistic via the pipeline's `X_tr_full`. `predict_logits` returns log-odds via `log(p₁/p₀)` with a symmetric `np.clip(proba, 1e-10, 1 − 1e-10)` matching the tree-model convention. NaN lag columns at predict time raise (the previous inline-build path silently `bfill()`-imputed and is gone). Not tuned (deterministic baseline). |
+| **AR Logistic** | `ARLogistic` | Selects the 6 precomputed lag columns (`log_returns_lag1` … `log_returns_lag30`) from the pre-MDA feature matrix by name and ignores everything else. The lag columns are produced once on the full daily series by `pre_cpcv.features.compute_lag_features`. AR Logistic receives the pre-MDA matrix via the pipeline's `X_tr_full` route, so it always sees its lag columns regardless of whether MDA happens to select them for the other models. `predict_logits` returns log-odds via `log(p₁/p₀)` with a symmetric `np.clip(proba, 1e-10, 1 − 1e-10)` matching the tree-model convention. NaN lag columns at predict time raise (the previous inline-build path silently `bfill()`-imputed and is gone). Not tuned (deterministic baseline). |
 | **Logistic Regression** | `LogisticRegressionModel` | Standard sklearn LogisticRegression, `class_weight='balanced'`, solver chosen based on penalty (lbfgs for L2, liblinear for L1). Tuned per split. `predict_logits` returns `decision_function` (raw log-odds). |
 
 AR Logistic uses `LOGISTIC_MAX_ITER=1000` and L2 penalty as hardcoded defaults. Logistic Regression's `C` and `penalty` are tuned per split.
@@ -867,13 +867,16 @@ PBO < 0.3 → robust selection. PBO > 0.5 → anti-predictive (in-sample winner 
 
 #### Step 16.h — DeLong pairwise AUC tests (`compute_auc_significance`)
 
-New in the current pipeline. For each pair of models, tests the null hypothesis that their AUCs are equal using the DeLong (1988) method:
+For each pair of models, tests the null hypothesis that their AUCs are equal using the DeLong (1988) method:
 
-1. Pools predicted probabilities and true labels across all 15 CPCV splits (seed=0)
-2. Computes AUC for each model on the pooled data
-3. Uses the non-parametric covariance estimator (`_delong_covariance`) via placement values (midranks)
-4. Computes z-statistic: `z = (AUC_a − AUC_b) / sqrt(Var(AUC_a) + Var(AUC_b) − 2·Cov(AUC_a, AUC_b))`
-5. Two-sided p-value from standard normal
+1. For each (model, split), averages predicted probabilities across all available seeds (3 for the sklearn-compatible models, 2 for LSTM and KAN). This matches what `stitch_paths` already does for path-level financial metrics, so the AUC test reflects the same averaged predictions that the Sharpe/DSR/PBO results are computed from.
+2. Pools the seed-averaged predictions across all 15 CPCV splits per model. Pooling is valid because CPCV test sets are non-overlapping.
+3. Computes AUC for each model on the pooled data.
+4. Uses the non-parametric covariance estimator (`_delong_covariance`) via placement values (midranks).
+5. Computes z-statistic: `z = (AUC_a − AUC_b) / sqrt(Var(AUC_a) + Var(AUC_b) − 2·Cov(AUC_a, AUC_b))`.
+6. Two-sided p-value from standard normal.
+
+An earlier version of `compute_auc_significance` used only `seed=0` predictions, which made the AUC values and z-statistics depend on which initialisation happened to be labelled seed 0. Averaging across seeds before pooling removes this arbitrary dependence and uses the full available signal.
 
 Returns a DataFrame with columns: `model_a`, `model_b`, `auc_a`, `auc_b`, `delta_auc`, `z_stat`, `p_value`, `significant` (at α=0.05). The notebook reports "X/Y pairs significantly different" as a top-line robustness statistic.
 
@@ -891,9 +894,9 @@ Per model: pools path-level metrics (median/mean/std Sharpe, median drawdown, wi
 
 #### Diagnostics
 
-**Feature stability** (`compute_feature_stability`): Counts how often each feature is selected across 15 folds (seed=0, first model). Features selected in > 80% of folds are flagged as "stable." The notebook plots this as a horizontal bar chart.
+**Feature stability** (`compute_feature_stability`): counts how often each feature is selected across all `(split, seed)` pairs for the first non-AR reference model. Because `prep_info` is computed once per split and stored under every `(model, split, seed)` key, all seeds for a given split contribute the same selection list — the seed loop scales numerator and denominator equally, leaving the per-feature frequency identical to a seed=0-only count but more symmetric with the AUC and FFD-stability diagnostics. Features selected in > 80% of folds are flagged as "stable." The notebook plots this as a horizontal bar chart.
 
-**FFD stability** (`compute_ffd_stability`): Collects d* values per FFD column across all folds (seed=0). Reports mean and std. Warns if std > 0.1 (heterogeneous stationarity structure across time periods).
+**FFD stability** (`compute_ffd_stability`): collects d* values across all `(model, split, seed)` entries. FFD is shared across models within a fold and deterministic given the training fold, so the only meaningful source of dispersion is across-split training-fold variation. Including all seeds yields a denser histogram without changing the qualitative result; mean and population std are unaffected by the per-fold replication. Warns if std > 0.1 (heterogeneous stationarity structure across time periods).
 
 #### Top-level orchestration (`analyze_results`)
 
