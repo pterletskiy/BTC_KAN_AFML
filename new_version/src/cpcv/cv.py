@@ -6,6 +6,10 @@ apply purging (Chapter 7.4.1) and embargoing (Chapter 7.4.2) to prevent
 information leakage from overlapping triple-barrier labels, and compute
 the path-assignment matrix that maps each (group, split) pair to one of
 the φ[N,k] backtest paths.
+
+The notebook decides N and k by passing them explicitly. The module
+constants ``N_GROUPS`` and ``K_TEST_GROUPS`` exist only as fallback
+defaults for legacy callers; new code should pass values directly.
 """
 
 import logging
@@ -18,9 +22,9 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level constants
+# Module-level constants (defaults only; pass explicitly from the notebook)
 # ---------------------------------------------------------------------------
-N_GROUPS = 6
+N_GROUPS = 8
 K_TEST_GROUPS = 2
 EMBARGO_PCT = 0.01  # fraction of T to embargo after each test boundary
 
@@ -155,8 +159,33 @@ def get_split_info(
     n_groups: int = N_GROUPS,
     k: int = K_TEST_GROUPS,
     embargo_pct: float = EMBARGO_PCT,
+    splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    path_map: dict | None = None,
+    n_paths: int | None = None,
+    print_summary: bool = True,
 ) -> dict:
-    """Compute and print a summary of the CPCV split configuration.
+    """Compute (or accept) and optionally print a CPCV split-configuration
+    summary.
+
+    The function originally computed splits and paths every time it was
+    called, which led to duplicate work and duplicate log lines when the
+    notebook also called ``generate_cpcv_splits`` and
+    ``build_path_matrix`` separately. The current signature lets the
+    caller pass already-computed values via ``splits`` / ``path_map`` /
+    ``n_paths``, in which case no recomputation occurs.
+
+    The recommended notebook pattern is now::
+
+        splits = generate_cpcv_splits(X, t1, n_groups=N, k=k)
+        n_paths, path_map = build_path_matrix(n_groups=N, k=k)
+        info = get_split_info(
+            X, t1, n_groups=N, k=k,
+            splits=splits, path_map=path_map, n_paths=n_paths,
+        )
+
+    which computes splits and paths once, then summarises without
+    re-running anything. Passing only ``X`` and ``t1`` (the legacy
+    pattern) still works but recomputes splits and paths internally.
 
     Parameters
     ----------
@@ -165,19 +194,112 @@ def get_split_info(
     t1 : pd.Series
         Barrier touch timestamps.
     n_groups, k, embargo_pct
-        CPCV parameters.
+        CPCV parameters. Defaults come from the module constants.
+    splits : list, optional
+        Pre-computed splits from ``generate_cpcv_splits``. If None,
+        will be computed. If passed, ``n_groups`` / ``k`` /
+        ``embargo_pct`` must match the values used to compute it.
+    path_map, n_paths : dict and int, optional
+        Pre-computed path matrix from ``build_path_matrix``. If None,
+        will be computed.
+    print_summary : bool, default True
+        Whether to print the human-readable summary block.
 
     Returns
     -------
     dict
-        Summary statistics for logging and sanity checking.
+        Summary statistics. The dict also includes the ``splits`` and
+        ``path_map`` if they were computed inside the function, so the
+        caller can avoid a second round of computation.
     """
     T = len(X)
     embargo_len = int(embargo_pct * T)
     group_bounds = _compute_group_bounds(T, n_groups)
 
-    splits = generate_cpcv_splits(X, t1, n_groups, k, embargo_pct)
-    n_paths, _ = build_path_matrix(n_groups, k)
+    # compute splits and paths only if not provided
+    if splits is None:
+        splits = generate_cpcv_splits(X, t1, n_groups, k, embargo_pct)
+    if path_map is None or n_paths is None:
+        n_paths, path_map = build_path_matrix(n_groups, k)
+
+    info = _compute_split_info(
+        X=X, splits=splits,
+        n_groups=n_groups, k=k,
+        embargo_len=embargo_len, embargo_pct=embargo_pct,
+        n_paths=n_paths, group_bounds=group_bounds,
+    )
+
+    if print_summary:
+        print_split_summary(info)
+
+    return info
+
+
+def print_split_summary(info: dict) -> None:
+    """Print the human-readable CPCV split-configuration summary.
+
+    Pure presentation: takes the dict returned by
+    ``_compute_split_info`` and writes the formatted table to stdout.
+    Separated from computation so the caller can recompute or render
+    without redundant work.
+
+    Parameters
+    ----------
+    info : dict
+        Output of ``_compute_split_info`` (or of ``get_split_info``).
+        Must contain: ``T``, ``n_groups``, ``k``, ``n_splits``,
+        ``n_paths``, ``embargo_len``, ``embargo_pct``,
+        ``group_boundaries``, ``avg_train_size``, ``train_pct``,
+        ``avg_test_size``, ``avg_purged_count``, ``avg_embargoed_count``.
+    """
+    print("=" * 60)
+    print("CPCV Split Summary")
+    print("=" * 60)
+    print(f"  Total observations (T):  {info['T']}")
+    print(f"  Groups (N):              {info['n_groups']}")
+    print(f"  Test groups per split:   {info['k']}")
+    print(f"  Splits C(N,k):           {info['n_splits']}")
+    print(f"  Backtest paths φ[N,k]:   {info['n_paths']}")
+    print(
+        f"  Embargo length:          {info['embargo_len']} obs "
+        f"({info['embargo_pct'] * 100:.1f}%)"
+    )
+    print()
+    print("  Group boundaries:")
+    for g, (s, e, d0, d1) in enumerate(info["group_boundaries"]):
+        print(f"    G{g}: idx [{s:>5d}, {e:>5d}]  ({d0} → {d1})")
+    print()
+    print(
+        f"  Avg train size:          {info['avg_train_size']:.0f} "
+        f"({info['train_pct'] * 100:.1f}%)"
+    )
+    print(f"  Avg test size:           {info['avg_test_size']:.0f}")
+    print(f"  Avg purged per split:    {info['avg_purged_count']:.1f}")
+    print(f"  Avg embargoed per split: {info['avg_embargoed_count']:.1f}")
+    print("=" * 60)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+def _compute_split_info(
+    X: pd.DataFrame,
+    splits: list[tuple[np.ndarray, np.ndarray]],
+    n_groups: int,
+    k: int,
+    embargo_len: int,
+    embargo_pct: float,
+    n_paths: int,
+    group_bounds: list[tuple[int, int]],
+) -> dict:
+    """Compute the summary statistics dict from already-generated splits.
+
+    Pure data assembly with no logging or printing. Separated from the
+    public-facing ``get_split_info`` so unit tests can call it
+    independently and so a notebook can re-render the summary without
+    re-generating splits.
+    """
+    T = len(X)
 
     # group boundary info
     group_boundaries = []
@@ -189,67 +311,45 @@ def get_split_info(
         ))
 
     # per-split statistics
-    train_sizes = []
-    test_sizes = []
-    for train_idx, test_idx in splits:
-        train_sizes.append(len(train_idx))
-        test_sizes.append(len(test_idx))
+    train_sizes = [len(tr) for tr, _ in splits]
+    test_sizes = [len(te) for _, te in splits]
 
-    # compute purge/embargo counts by comparing to unpurged sizes
+    # estimate purge/embargo counts per split by comparing to unpurged sizes
     all_combos = list(combinations(range(n_groups), k))
     purge_counts = []
     embargo_counts = []
     for i, test_groups in enumerate(all_combos):
-        test_size = sum(group_bounds[g][1] - group_bounds[g][0] for g in test_groups)
+        test_size = sum(
+            group_bounds[g][1] - group_bounds[g][0] for g in test_groups
+        )
         unpurged_train = T - test_size
         actual_train = len(splits[i][0])
         total_removed = unpurged_train - actual_train
 
-        # estimate embargo portion
+        # estimate embargo portion: at most embargo_len per test group
         est_embargo = min(embargo_len * len(test_groups), total_removed)
         est_purged = total_removed - est_embargo
 
         purge_counts.append(max(0, est_purged))
         embargo_counts.append(max(0, est_embargo))
 
-    info = {
+    return {
+        "T": T,
+        "n_groups": n_groups,
+        "k": k,
         "n_splits": len(splits),
         "n_paths": n_paths,
+        "embargo_len": embargo_len,
+        "embargo_pct": embargo_pct,
         "group_boundaries": group_boundaries,
-        "avg_train_size": np.mean(train_sizes),
-        "avg_test_size": np.mean(test_sizes),
-        "avg_purged_count": np.mean(purge_counts),
-        "avg_embargoed_count": np.mean(embargo_counts),
-        "train_pct": np.mean(train_sizes) / T,
+        "avg_train_size": float(np.mean(train_sizes)),
+        "avg_test_size": float(np.mean(test_sizes)),
+        "avg_purged_count": float(np.mean(purge_counts)),
+        "avg_embargoed_count": float(np.mean(embargo_counts)),
+        "train_pct": float(np.mean(train_sizes)) / T,
     }
 
-    # print summary
-    print("=" * 60)
-    print("CPCV Split Summary")
-    print("=" * 60)
-    print(f"  Total observations (T):  {T}")
-    print(f"  Groups (N):              {n_groups}")
-    print(f"  Test groups per split:   {k}")
-    print(f"  Splits C(N,k):           {info['n_splits']}")
-    print(f"  Backtest paths φ[N,k]:   {info['n_paths']}")
-    print(f"  Embargo length:          {embargo_len} obs ({embargo_pct*100:.1f}%)")
-    print()
-    print("  Group boundaries:")
-    for g, (s, e, d0, d1) in enumerate(group_boundaries):
-        print(f"    G{g}: idx [{s:>5d}, {e:>5d}]  ({d0} → {d1})")
-    print()
-    print(f"  Avg train size:          {info['avg_train_size']:.0f} ({info['train_pct']*100:.1f}%)")
-    print(f"  Avg test size:           {info['avg_test_size']:.0f}")
-    print(f"  Avg purged per split:    {info['avg_purged_count']:.1f}")
-    print(f"  Avg embargoed per split: {info['avg_embargoed_count']:.1f}")
-    print("=" * 60)
 
-    return info
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 def _compute_group_bounds(T: int, n_groups: int) -> list[tuple[int, int]]:
     """Return (start, end) positional index pairs for each group.
 

@@ -243,8 +243,8 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
     """Tune Random Forest via Optuna TPE + Purged K-Fold.
 
     Search space:
-        n_estimators:     int [100, 300] step 50
-        max_depth:        int [3, 20]
+        n_estimators:     int [100, 250] step 50
+        max_depth:        int [3, 15]
         min_samples_leaf: int [1, 30]
         max_features:     categorical {sqrt, log2}
     """
@@ -260,8 +260,8 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
     all_results = []
 
     def objective(trial):
-        n_estimators = trial.suggest_int("n_estimators", 100, 300, step=50)
-        max_depth = trial.suggest_int("max_depth", 3, 20)
+        n_estimators = trial.suggest_int("n_estimators", 100, 250, step=50)
+        max_depth = trial.suggest_int("max_depth", 3, 15)
         min_samples_leaf = trial.suggest_int("min_samples_leaf", 1, 30)
         max_features = trial.suggest_categorical("max_features", ["sqrt", "log2"])
 
@@ -450,15 +450,19 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
     Search space:
         hidden_size:   int [16, 32] step 16
-        num_layers:    int [1, 3]
+        num_layers:    int [1, 2]
         dropout:       uniform [0.1, 0.5]
         learning_rate: log-uniform [1e-4, 5e-2]
 
     The hidden_size cap of 32 (vs an earlier 128 ceiling) was tightened
-    to prevent memorisation on ~700-sample purged folds. Tuning runs
-    fewer epochs and a shorter patience window than production
-    (epochs=50, patience=7) to keep the per-trial cost bounded; the
-    production fit re-runs at epochs=100, patience=15.
+    to prevent memorisation on ~700-sample purged folds. The num_layers
+    range was further tightened from [1, 3] to [1, 2] in the final
+    configuration: three-layer LSTMs on ~1,250 events are deep-overfit
+    territory, and the additional layer added variance to path-Sharpes
+    without improving accuracy. Tuning runs fewer epochs and a shorter
+    patience window than production (epochs=50, patience=7) to keep the
+    per-trial cost bounded; the production fit re-runs at epochs=100,
+    patience=15.
     """
     from torch.utils.data import TensorDataset, DataLoader
     from src.cpcv.models.lstm_model import LSTMClassifier, create_sequences
@@ -519,7 +523,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
         # to a 6-lag AR baseline at higher capacities — smaller models are
         # the right direction.
         hidden_size = trial.suggest_int("hidden_size", 16, 32, step=16)
-        num_layers = trial.suggest_int("num_layers", 1, 3)
+        num_layers = trial.suggest_int("num_layers", 1, 2)
         dropout = trial.suggest_float("dropout", 0.1, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
 
