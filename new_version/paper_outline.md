@@ -115,7 +115,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 #### 2.1.1 Mathematical foundation
 
-- Kolmogorov-Arnold representation theorem (Kolmogorov 1957; Arnold 1958): any continuous multivariate function `f(x_1, ..., x_n)` decomposes as a finite sum of continuous univariate functions.
+- Kolmogorov-Arnold representation theorem (Kolmogorov 1957; Arnold 1958): any continuous multivariate function `f(x_1, ..., x_n)` decomposes as a finite sum of continuous univariate functions. **Cite:** `kolmogorov_1957`, `arnold_1958`.
 - The theorem was historically considered impractical because the inner functions can be highly non-smooth.
 - Liu et al. (2024) made it practical by parameterizing those functions with learnable B-splines.
 
@@ -139,6 +139,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 - **VIX KAN paper (Cho, Lee, and Kim 2025).** Applies KAN to VIX forecasting (regression). Introduces Algorithm 1: Train (Adam → grid extend → LBFGS) → Prune → Symbolify → Affine fine-tune. Direct methodological ancestor of this thesis's symbolic extraction pipeline. Key difference: VIX is mean-reverting and predictable; BTC daily direction is binary classification in a weak-signal regime, which makes symbolic extraction substantially harder. **Cite:** `cho_lee_kim_2025`.
 - **KASPER (Oad 2025).** KAN combined with regime detection (Gumbel-Softmax mechanism) for stock prediction. Reports R² = 0.89 and Sharpe = 12.02 on individual stocks. Closest related work in terms of KAN + finance + interpretability. Differences: regression not classification; regime detection layer absent here; Shapley-based rule extraction vs. direct formula; no AFML evaluation. **Cite:** `oad_kasper_2025`.
+- **DecoKAN (Gao et al. 2025).** Applies KAN with an interpretable decomposition (trend, seasonality, residual) to cryptocurrency forecasting. Closest to this thesis on the asset-class axis (crypto), but uses a regression target with naive train-test splits and no AFML correction layer. Reinforces the gap statement: KAN-on-crypto exists, but KAN + AFML + symbolic distillation does not. **Cite:** `gao_decokan_2025`.
 
 #### 2.1.5 Training best practices
 
@@ -146,13 +147,14 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - L1 + entropy regularization aids pruning and symbolification.
 - Adam to L-BFGS staging: Adam escapes local minima, L-BFGS exploits curvature.
 - Tanh input normalization to `[-1, 1]` matches default `grid_range`.
-- **Cite:** `practitioner_kan_2025`.
+- **Cite:** `noorizadegan_2026`.
 
 #### 2.1.6 Broader landscape
 
 - Catch-all citation for KAN time-series variants (TKAN, ChebyKAN, DecoKAN), to avoid citing 40 individual variants.
+- TKAN (Genet and Inzirillo 2024) is the canonical recurrent-KAN variant: replaces LSTM gates with KAN edges, demonstrating that the KAN substrate composes with classical sequence-modelling primitives. Cited here as representative of the architectural-variant literature this thesis chose not to pursue (sequence variants are incompatible with PyKAN's symbolic-extraction pipeline).
 - The comprehensive review notes that symbolic distillation in financial time series is underexplored.
-- **Cite:** `kan_ts_review_2025`.
+- **Cite:** `yamak_et_al_2025`, `genet_inzirillo_2024`.
 
 #### 2.1.7 Gap statement
 
@@ -173,20 +175,20 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 - Confluence of TA and ML for BTC prediction. Identifies ROC as a top predictor (justifies inclusion of `roc_14` in this thesis's feature set). Demonstrates multi-indicator strategies outperform single-indicator.
 - **Limitation.** Standard split, no purging, no overlap accounting.
-- **Cite:** `mate_confluence_2023`.
+- **Cite:** `mate_confluence_2024`.
 
 #### 2.2.3 Deep learning for BTC direction
 
 - Same problem as this thesis (BTC daily direction with DL models). Reports competitive LSTM accuracy.
 - **Limitation.** Fixed-horizon labels, no CUSUM, no sample weights, no purging or embargo. Comparing conclusions illustrates how methodology shapes reported performance.
-- **Cite:** `dl_btc_direction_2024`.
+- **Cite:** `omole_enke_2024`.
 
 #### 2.2.4 Broader crypto-DL landscape
 
 - Catch-all citation for the broader landscape; avoids citing 20+ individual papers.
 - Documents LSTM, GRU, and attention-based dominance.
 - Documents recurring issues: small datasets, overfitting, no transaction costs, no risk-adjusted metrics, inconsistent evaluation.
-- **Cite:** `crypto_dl_review_2024`.
+- **Cite:** `bourday_crypto_dl_2024`, `wu_crypto_dl_review_2024`.
 
 #### 2.2.5 Conservative prediction in noisy financial regimes
 
@@ -226,7 +228,8 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - Three barriers per event: upper (take-profit), lower (stop-loss), vertical (time limit).
 - Label = first barrier touched. Carries `t1` (resolution timestamp) for downstream purging.
 - Reflects real trading outcomes, not arbitrary fixed-horizon snapshots.
-- **Cite:** `lopez_de_prado_2018`, Ch. 3.
+- **Empirical validation outside crypto.** Kang and Kim (2025) apply TBL to Korean equities and report that TBL on raw OHLCV inputs outperforms fixed-horizon labels for short-term direction prediction. The TBL machinery transfers across asset classes; this thesis applies the same labelling logic to BTC.
+- **Cite:** `lopez_de_prado_2018`, Ch. 3; `kang_kim_2025`.
 
 #### 2.3.4 Fractional differentiation
 
@@ -261,9 +264,10 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 #### 2.3.8 AFML applied to crypto
 
 - Slepaczuk and Bieganowski (2024) combine FFD and TBL with supervised autoencoders on BTC, ETH, and LTC. Walk-forward `d*` estimation. Validates that FFD + TBL transfer to crypto with improved risk-adjusted returns.
-- **Limitation.** Uses walk-forward instead of CPCV; does not compute DSR or PBO.
-- This thesis fills that gap with full CPCV + DSR + PBO.
-- **Cite:** `slepaczuk_bieganowski_2024`.
+- Fu et al. (2024) extend the AFML toolkit further: a genetic-algorithm-driven TBL that searches over barrier widths and time horizons jointly with model hyperparameters, applied to a pair-trading strategy on cryptocurrencies. Demonstrates that TBL parameters themselves are tunable rather than dogmatic, but the search adds compute and is bounded by the same overfitting concerns AFML's CPCV is meant to address.
+- **Limitation.** Both papers use walk-forward (or its equivalents) instead of CPCV; neither computes DSR or PBO.
+- This thesis fills the evaluation gap with full CPCV + DSR + PBO and keeps the TBL parameters fixed at AFML defaults to avoid the joint-search overfitting risk.
+- **Cite:** `slepaczuk_bieganowski_2024`, `fu_et_al_2024`.
 
 #### 2.3.9 The fitting scheme matters more than model choice (HARd to Beat)
 
@@ -274,7 +278,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - When the fitting scheme is optimized (daily re-estimation, 2.5 to 4 year training window), the simpler model wins.
 - Directly relevant to this thesis: the negative results (DSR=0) align with this finding. Properly evaluated baselines are hard to beat, especially in a weak-signal regime like BTC.
 - Reinforces Problem 1 framing: methodology dominates model choice in financial ML.
-- **Cite:** `audrino_chassot_2024`.
+- **Cite:** `chassot_audrino_2026`.
 
 #### 2.3.10 Gap statement
 
@@ -379,12 +383,12 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 #### 3.4.1 TA features (25)
 
 - Returns and volatility (6): `log_returns`, realized vol (annualized × √365), Garman-Klass (1980), Yang-Zhang (2000), ATR (EWMA, span=14, log-transformed), Bollinger Band width.
-- Momentum and trend (9): RSI(14, Wilder), MACD/MACD-signal/MACD-hist (12/26/9), `roc_14` (top BTC predictor in `mate_confluence_2023`), Stoch %K/%D, Williams %R, CCI(14).
+- Momentum and trend (9): RSI(14, Wilder), MACD/MACD-signal/MACD-hist (12/26/9), `roc_14` (top BTC predictor in `mate_confluence_2024`), Stoch %K/%D, Williams %R, CCI(14).
 - Volume (3): OBV (sign-preserving log-transformed), Chaikin oscillator (3/10), MFI(14).
 - Distribution shape (2): rolling skew/kurt (window=21).
 - Trend ratios (3): EMA ratios 20/50, 50/200; VWMA ratio 20/50.
 - Window convention: 21-day rolling for shape features; standard TA periods kept for named indicators (RSI=14, MACD=12/26/9). No optimization of indicator periods (avoids another layer of overfitting risk).
-- **Cite:** `garman_klass_1980`, `yang_zhang_2000`, `mate_confluence_2023`.
+- **Cite:** `garman_klass_1980`, `yang_zhang_2000`, `mate_confluence_2024`.
 
 #### 3.4.2 Mathematical features (9, AFML Part 4)
 
@@ -830,7 +834,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 - R² threshold sensitivity (lowered to 0.30 to admit symbolic fits in weak-signal regime).
 - Post-symbolic accuracy may be lower than pre-symbolic accuracy.
 - Brute-force fallback depends on PyKAN's stdout format.
-- **Cite:** `cho_lee_kim_2025`, `liu_kan_2024`, `practitioner_kan_2025`.
+- **Cite:** `cho_lee_kim_2025`, `liu_kan_2024`, `noorizadegan_2026`.
 
 ### 3.13 Diagnostics
 
@@ -982,7 +986,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 - **Higher-frequency data.** Hourly bars would multiply CUSUM events approximately 24 times and unlock microstructure features. Pipeline timeframe-agnostic.
 - **Per-fold symbolic extraction.** Count which features and primitives recur across all 28 folds to distinguish structural signal from one-off noise.
 - **Regime-conditional analysis.** Decompose Sharpe by regime (approximately 5 distinct regimes 2014 to 2026).
-- **Meta-labeling layer.** A second classifier on the best primary classifier's output, trained to predict whether to take the trade (AFML Ch. 3).
+- **Meta-labeling layer.** A second classifier on the best primary classifier's output, trained to predict whether to take the trade (AFML Ch. 3). Singh and Joubert (2019, `singh_joubert_2019`) provide empirical evidence that meta-labeling improves signal efficacy across asset classes; applying it on top of this thesis's calibrated probabilities is the natural next layer.
 - **Alternative assets.** ETH, gold for symbolic-formula comparison (different on-chain availability).
 - **Walk-forward vs. CPCV.** Compare conclusions under both protocols.
 
@@ -1001,30 +1005,46 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 ## Reference list to populate (`mfw_references.bib`)
 
+> Organized to match the four sections of `mfw_references.bib`. All keys here match the .bib exactly; any divergence breaks the build.
+
+**I. AFML methodology and core framework**
 - `lopez_de_prado_2018`, AFML book (root reference).
+- `chassot_audrino_2026`, HARd to Beat: rolling windows in ML-era forecasting.
+- `slepaczuk_bieganowski_2024`, Supervised Autoencoders with FFD and TBL on crypto.
+- `kang_kim_2025`, TBL on Korean equities (TBL transferability outside crypto).
+- `singh_joubert_2019`, meta-labeling efficacy (cited in Section 7 Future Work).
+- `fu_et_al_2024`, GA-driven TBL with ML for crypto pair trading.
+- `nabar_shroff_2023`, Conservative Predictions on noisy financial data.
+
+**II. KAN architecture and interpretability**
 - `liu_kan_2024`, original KAN paper.
 - `liu_kan2_2024`, KAN 2.0 / MultKAN.
 - `cho_lee_kim_2025`, VIX KAN paper (Algorithm 1 source).
 - `oad_kasper_2025`, KASPER.
-- `practitioner_kan_2025`, Practitioner Guide to KANs.
-- `kan_ts_review_2025`, comprehensive KAN time-series review.
-- `mate_confluence_2023`, TA + ML for BTC.
-- `dl_btc_direction_2024`, DL for BTC direction prediction.
-- `crypto_dl_review_2024`, crypto DL review.
-- `slepaczuk_bieganowski_2024`, Supervised Autoencoders with FFD/TBL.
-- `audrino_chassot_2024`, HARd to Beat.
-- `nabar_shroff_2023`, Conservative Predictions.
-- `garman_klass_1980`, GK volatility estimator.
-- `yang_zhang_2000`, YZ volatility estimator.
-- `lo_mackinlay_1988`, Variance Ratio.
+- `noorizadegan_2026`, Practitioner Guide to KANs.
+- `yamak_et_al_2025`, comprehensive KAN time-series review.
+
+**III. BTC / crypto prediction and DL**
+- `mate_confluence_2024`, TA + ML for BTC.
+- `omole_enke_2024`, DL for BTC direction prediction.
+- `bourday_crypto_dl_2024`, Cryptocurrency Forecasting with DL: comparative analysis.
+- `gao_decokan_2025`, DecoKAN: interpretable decomposition for crypto forecasting.
+- `genet_inzirillo_2024`, TKAN: Temporal Kolmogorov-Arnold Networks.
+- `wu_crypto_dl_review_2024`, review of DL models for crypto price prediction.
+
+**IV. Foundational baselines, metrics, and methods**
 - `breiman_2001`, Random Forest.
 - `chen_guestrin_2016`, XGBoost.
 - `hochreiter_schmidhuber_1997`, LSTM.
-- `akiba_optuna_2019`, Optuna.
 - `platt_1999`, Platt scaling.
-- `guo_temperature_2017`, temperature/vector scaling.
-- `delong_1988`, DeLong test.
+- `guo_temperature_2017`, temperature / vector scaling.
+- `akiba_optuna_2019`, Optuna.
+- `delong_1988`, DeLong AUC test.
 - `sharpe_1966`, original Sharpe ratio.
+- `kolmogorov_1957`, Kolmogorov representation theorem.
+- `arnold_1958`, Arnold's variant of the representation theorem.
+
+> **Still needed in the .bib (cited in body, not yet listed here):** `garman_klass_1980`, `yang_zhang_2000`, `lo_mackinlay_1988`. Add these to the .bib before final compile or remove the citations from Sections 3.4.1 and 3.4.2.
 
 ---
 
