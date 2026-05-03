@@ -222,11 +222,11 @@ This phase handles everything that must be fitted on training data only, inside 
 
 ### What it does
 
-Generates the 15 train/test splits used to evaluate the models, applies purging and embargo to prevent label leakage, and computes the path-assignment matrix that maps splits back to backtest paths.
+Generates the 28 train/test splits used to evaluate the models, applies purging and embargo to prevent label leakage, and computes the path-assignment matrix that maps splits back to backtest paths.
 
 ### Core concepts
 
-**Combinatorial splits.** With N=6 contiguous groups and k=2 test groups per split, the function generates all C(6,2) = 15 combinations. Each split holds out 2 groups as test and uses the remaining 4 as training. This produces more out-of-sample evaluations than standard k-fold, at no additional data cost.
+**Combinatorial splits.** With N=8 contiguous groups and k=2 test groups per split, the function generates all C(8,2) = 28 combinations. Each split holds out 2 groups as test and uses the remaining 6 as training. This produces more out-of-sample evaluations than standard k-fold, at no additional data cost. The N=8 configuration was chosen over an earlier N=6 setup to give 7 backtest paths (more PBO partitions, denser equity-curve grids) while still keeping ~156 events per group, comfortably above the rough lower bound for daily-bar AFML pipelines.
 
 **Purging (AFML Snippet 7.1).** Removes training observations whose triple-barrier labels overlap with any test group. Three sufficient conditions are checked for each training observation i against each test group:
 
@@ -238,15 +238,19 @@ If any condition holds, the observation is purged. Without purging, a training l
 
 **Embargo (AFML Section 7.4.2).** Removes a buffer of `embargo_pct × T` training observations immediately after each test group. This prevents serial correlation from carrying signal across the train-test boundary. Embargo is applied only after the test set, not before, because training labels resolving before test begins contain no future information.
 
-**Path matrix.** For N=6, k=2 there are φ[6,2] = C(5,1) = 5 backtest paths. Each path is a full chronological reconstruction of the dataset, assembled from test predictions across multiple splits. The path matrix tells you which split's predictions to use for each group when assembling each path. Each group appears in exactly 5 test sets, so the assignment is unambiguous.
+**Path matrix.** For N=8, k=2 there are φ[8,2] = C(7,1) = 7 backtest paths. Each path is a full chronological reconstruction of the dataset, assembled from test predictions across multiple splits. The path matrix tells you which split's predictions to use for each group when assembling each path. Each group appears in exactly 7 test sets, so the assignment is unambiguous.
 
 ### Key function: `generate_cpcv_splits`
 
-Returns a list of 15 `(train_idx, test_idx)` tuples with positional integer indices into X. Each tuple already has purging and embargo applied.
+Returns a list of 28 `(train_idx, test_idx)` tuples with positional integer indices into X. Each tuple already has purging and embargo applied.
 
 ### Key function: `build_path_matrix`
 
-Returns `(n_paths=5, path_map)` where `path_map[p]` is a list of `(group_id, split_id)` tuples. Each path covers all N groups exactly once.
+Returns `(n_paths=7, path_map)` where `path_map[p]` is a list of `(group_id, split_id)` tuples. Each path covers all N groups exactly once.
+
+### Key function: `get_split_info` and helper `print_split_summary`
+
+`get_split_info` originally recomputed splits and paths every time it was called, which led to duplicate work and duplicate log lines when the notebook also called `generate_cpcv_splits` and `build_path_matrix` separately. The current signature accepts pre-computed `splits`, `path_map`, and `n_paths` arguments so the notebook can compute each exactly once and pass them in. The new helper `print_split_summary(info)` is exposed for callers that want to render an existing info dict (e.g., during config exploration without rerunning the splitter); `get_split_info(..., print_summary=False)` returns the dict silently for the same purpose.
 
 ---
 
@@ -313,19 +317,19 @@ For each CPCV training fold, runs Bayesian hyperparameter optimization (Optuna's
 
 **TPE (Tree-structured Parzen Estimator).** Bergstra et al. (2011). A Bayesian optimizer that maintains two probability distributions over the hyperparameter space: one for "good" trials (low loss) and one for "bad" trials. New trials are sampled from regions where the ratio of good to bad density is highest. Concentrates compute in promising regions instead of grid-search exhaustiveness.
 
-**Purged K-Fold inner CV.** Three chronological inner folds with a 10-observation embargo around each fold's boundaries. The embargo length matches the triple-barrier horizon (`num_days=10`), ensuring overlapping labels cannot leak between inner train and inner validation. Three folds (rather than five) increase inner validation size to ~270 observations per fold (vs ~160 with five folds), giving more reliable log-loss estimates in a low-signal environment.
+**Purged K-Fold inner CV.** Three chronological inner folds with a 10-observation embargo around each fold's boundaries. The embargo length matches the triple-barrier horizon (`num_days=10`), ensuring overlapping labels cannot leak between inner train and inner validation. Three folds (rather than five) increase inner validation size to ~300 observations per fold (vs ~180 with five folds), giving more reliable log-loss estimates in a low-signal environment. With outer-train sizes around 900 events at N=8, the three inner folds give the tuner enough samples per validation block to detect overfitting without the variance penalty of a five-fold split.
 
 **Median pruner.** After each inner fold, Optuna can terminate underperforming trials whose intermediate log loss is worse than the median of completed trials. Saves compute on clearly bad regions of the search space.
 
 ### Search spaces (capped to match the regularization stance)
 
 - **Logistic Regression**: `C` ∈ log-uniform [1e-4, 1e2], `penalty` ∈ {l1, l2}.
-- **Random Forest**: `n_estimators` ∈ [100, 300], `max_depth` ∈ [3, 20], `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
+- **Random Forest**: `n_estimators` ∈ [100, 250], `max_depth` ∈ [3, 15], `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
 - **XGBoost**: `max_depth` ∈ [2, 6], `learning_rate` ∈ log [0.01, 0.3], `min_child_weight` ∈ [1, 30], plus subsample, colsample_bytree, gamma, reg_alpha, reg_lambda. Fixed `n_estimators=500` with early stopping at 20 rounds.
-- **LSTM**: `hidden_size` ∈ [16, 32], `num_layers` ∈ [1, 3], `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=14 (matches production).
+- **LSTM**: `hidden_size` ∈ [16, 32], `num_layers` ∈ [1, 2], `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=14 (matches production).
 - **KAN**: `width1` ∈ [3, 12], `width2` ∈ [0, 10], `lr` ∈ log [5e-4, 5e-2], `weight_decay` ∈ log [1e-5, 5e-3], `grid` ∈ {3, 5}.
 
-The caps are deliberately tighter than common defaults. With ~810 training samples per fold, overly flexible architectures guarantee overfitting. Each cap is justified by the samples-to-parameters ratio.
+The caps were deliberately tightened in the final configuration relative to common defaults. RF `n_estimators` capped at 250 (down from an earlier 300) and `max_depth` capped at 15 (down from 20): trees in a noisy regime do not benefit from more than 250 estimators, and depths beyond 15 overfit BTC daily features. LSTM `num_layers` tightened from [1, 3] to [1, 2]: three-layer LSTMs on ~1,250 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy. With ~900 training samples per outer fold (at N=8) and ~300 inner-validation samples, overly flexible architectures guarantee overfitting; each cap is justified by the samples-to-parameters ratio.
 
 ### Production consistency
 
@@ -506,7 +510,7 @@ A PyTorch LSTM with last-hidden-state pooling that consumes windowed sequences a
 
 **Architecture.** Multi-layer LSTM (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier.
 
-**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer is used as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~810-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
+**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer is used as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~900-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
 
 **Window length matched to labeling horizon.** The 14-day window (~2 BTC weeks) is intentionally close to the 10-day triple-barrier horizon. Longer windows (30+ days) caused two problems: gradient signal attenuation across many recurrent steps, and a parameter-to-sample ratio that encouraged overfitting on small training folds.
 
@@ -548,7 +552,7 @@ A KAN classifier using the `efficient-kan` library, trained as a standard PyTorc
 
 **Training stack.** AdamW (lr and weight_decay tuned), label smoothing (0.1), gradient clipping (max norm 1.0), cosine annealing warm restarts (T_0=30), early stopping (patience 20) with best-state restoration. The same regularization stack as LSTM, with no neural-net-specific tricks like SWA or entropy regularization (both tested and removed for being either redundant or non-coherent with early stopping).
 
-**Single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~810 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
+**Single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~900 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
 
 **No state passed to symbolic extraction.** The fitted KAN holds only its standard PyTorch state (parameters, normalization buffers). It does not store the training dataset on the instance — an earlier version cached a `_dataset` dict on the model so symbolic extraction could read its training tensors directly, but the symbolic pipeline now reconstructs everything it needs from `prep_info` (the FFD d* values, the fitted scaler, the selected feature list stored alongside predictions). Removing the cached dataset cuts a ~10 MB redundancy per fold and makes the prediction-vs-extraction handoff a clean data interface rather than a stateful coupling.
 
@@ -589,7 +593,7 @@ The abstention mechanism is the crucial AFML innovation: predictions with probab
 
 **Strategy returns.** `gross_return = bet_size × label_return`, `turnover = |Δbet_size|`, `tx_cost = 0.1% × turnover`, `net_return = gross - tx_cost`. Transaction cost of 10 bps round-trip is reasonable for BTC on major exchanges.
 
-**Path stitching.** Assembles 5 full-span backtest paths from the 15 splits using the path-assignment matrix from `cv.py`. For each `(group_id, split_id)` pair in `path_map[path_id]`, the function looks up that split's stored predictions and **filters down to the events whose positional index falls within `group_bounds[group_id]`** before concatenation. This filter is essential: each split's stored test set covers `k=2` chronological groups concatenated, so without the filter, events from co-tested groups get pulled into the path multiple times. With multiple seeds, calibrated probabilities are averaged across seeds before bet sizing (ensemble averaging reduces prediction variance by ~1/√n_seeds). After concatenation the function asserts no duplicate timestamps and emits a warning if any are detected, so future regressions in path-map construction surface immediately.
+**Path stitching.** Assembles 7 full-span backtest paths from the 28 splits using the path-assignment matrix from `cv.py`. For each `(group_id, split_id)` pair in `path_map[path_id]`, the function looks up that split's stored predictions and **filters down to the events whose positional index falls within `group_bounds[group_id]`** before concatenation. This filter is essential: each split's stored test set covers `k=2` chronological groups concatenated, so without the filter, events from co-tested groups get pulled into the path multiple times. With multiple seeds, calibrated probabilities are averaged across seeds before bet sizing (ensemble averaging reduces prediction variance by ~1/√n_seeds). After concatenation the function asserts no duplicate timestamps and emits a warning if any are detected, so future regressions in path-map construction surface immediately.
 
 `stitch_paths` accepts `event_index` and `group_bounds` as optional inputs; when not supplied, both are derived from `predictions` via `_derive_event_index` (union of all stored timestamp slices) and `_compute_group_bounds` (mirroring the helper in `cv.py`). The orchestrator computes them once and passes them to every per-model stitch call.
 
@@ -620,12 +624,12 @@ DSR > 0.95 indicates a result that survives multiple-testing correction. DSR < 0
 2. For each partition, identifies the IS-best model and checks whether it underperforms the OOS median.
 3. PBO = fraction of partitions where the IS-best model is OOS-poor.
 
-PBO < 0.3 indicates robust selection. PBO > 0.5 indicates anti-predictive behavior (the in-sample winner systematically loses out-of-sample). With 5 paths, the partition count is small (C(5,2) = 10), so the estimate has high variance — a structural limitation of CPCV with N=6, k=2 rather than a code issue.
+PBO < 0.3 indicates robust selection. PBO > 0.5 indicates anti-predictive behavior (the in-sample winner systematically loses out-of-sample). With 7 paths under N=8, k=2, the partition count is C(7, 3) = 35 — substantially more than the 10 partitions an N=6, k=2 setup would yield. The denser partition coverage reduces the standard error on the PBO estimate, so the reported point estimate is more trustworthy at this configuration than under the earlier N=6 setup.
 
-**DeLong pairwise AUC tests.** Tests whether two models have significantly different AUC on the pooled predictions across all 15 splits, using the placement-value (midrank) approach of DeLong et al. (1988) with the closed-form covariance estimator. For each pair of models:
+**DeLong pairwise AUC tests.** Tests whether two models have significantly different AUC on the pooled predictions across all 28 splits, using the placement-value (midrank) approach of DeLong et al. (1988) with the closed-form covariance estimator. For each pair of models:
 
 1. For each (model, split), average predicted probabilities across all available seeds (3 for the sklearn-compatible models, 2 for LSTM and KAN). This matches the seed-averaging that `stitch_paths` already performs for path-level financial metrics, so the AUC test reflects the same averaged predictions used by the Sharpe / DSR / PBO results.
-2. Pool the seed-averaged predictions across all 15 CPCV splits. Pooling is valid because CPCV test sets are non-overlapping.
+2. Pool the seed-averaged predictions across all 28 CPCV splits. Pooling is valid because CPCV test sets are non-overlapping.
 3. Compute AUC for each model on the pooled data.
 4. Compute the variance of each AUC and the covariance between them.
 5. z-statistic: `(AUC_a - AUC_b) / sqrt(Var_a + Var_b - 2 × Cov_ab)`.
@@ -670,7 +674,7 @@ Provides standalone diagnostic and rendering helpers for the notebook's results 
 5. **Calibration mean audit.** `calibration_mean_audit(results, y, tolerance=0.03)` computes each model's mean calibrated P(Up) across all (split, seed) entries and compares to the empirical base rate. Models whose mean P(Up) deviates from the empirical base rate by more than `tolerance` are flagged with a warning glyph in the printed table. The function auto-handles both `{0, 1}` and `{-1, +1}` label spaces and returns the audit as a DataFrame for downstream use. This is the cheapest calibration check — a one-line numerical summary per model that frames the deeper per-bin diagnostic produced by `compute_reliability_curve` / `render_reliability_diagrams`.
 6. **Confusion-matrix renderer.** `render_confusion_matrices(results, seed_mode="average", n_cols=3, save_path=None)` produces a grid of confusion matrices, one per model. The default `seed_mode="average"` averages calibrated probabilities across all available seeds and thresholds at 0.5, matching what `stitch_paths` and `compute_auc_significance` do for the financial and AUC metrics. The `seed_mode="seed_0"` / `"seed_1"` / `"seed_2"` modes use the per-seed `y_pred` directly for diagnostic inspection of single initialisations. Label space is auto-detected.
 7. **Feature-stability bar chart and table.** `render_feature_stability(feat_stab, threshold_stable=0.80, threshold_moderate=0.50, save_path=None)` renders the colour-banded bar chart (green ≥ 80%, blue ≥ 50%, grey otherwise). `print_feature_stability_table(feat_stab, all_features, threshold_pct=50)` prints a categorised text table of features above the threshold (separated into stable and moderate tiers), then a four-tier summary (stable / moderate / low / never-selected) plus a list of never-selected features grouped by category (TA / Math / External / Lag). Reindexing against `all_features` recovers the never-selected set, which is absent from `feat_stab["feature_frequency"]`. Returns the full ranking DataFrame for downstream use.
-8. **Sharpe-distribution boxplot.** `render_sharpe_distribution(analysis, models=None, figsize=(10, 5), save_path=None)` renders a per-model boxplot of path-level annualised Sharpe ratios. Each box summarises the 5 backtest paths produced by CPCV, so the spread of the box reflects sensitivity to the path subsampling.
+8. **Sharpe-distribution boxplot.** `render_sharpe_distribution(analysis, models=None, figsize=(10, 5), save_path=None)` renders a per-model boxplot of path-level annualised Sharpe ratios. Each box summarises the 7 backtest paths produced by CPCV under N=8, so the spread of the box reflects sensitivity to the path subsampling.
 9. **Reliability-diagram grid.** `render_reliability_diagrams(results, analysis, n_cols=3, n_bins=10, min_count=10, save_path=None)` renders a grid of per-bin reliability curves with marker size proportional to bin sample count. Pulls `n_seeds` from `results` and silently skips missing keys, so the same call works for models trained with different seed counts.
 10. **Bet-size histogram grid.** `render_bet_size_histograms(analysis, bins=None, n_cols=3, save_path=None)` renders a grid of histograms over the four-step bet discretisation (default bin edges target ±0.25, ±0.50, ±0.75 with abstention straddling zero). Custom `bins` can be passed to match alternative discretisation schemes.
 11. **Regime-concentration scatter.** `render_regime_concentration_scatter(dispersion, k=5, concentration_threshold=0.5, save_path=None)` renders top-K share against path Sharpe with one point per (model, path). The vertical reference at `concentration_threshold` flags the regime-fluke risk band. Consumes the DataFrame produced by `build_path_dispersion_table`.
@@ -699,7 +703,7 @@ The thesis's novel methodological contribution. Re-trains a PyKAN model on a sel
 
 ### Core concepts
 
-**Why a separate symbolic extraction.** The CPCV KAN uses `efficient-kan` for fast and reliable training across all 15 folds. PyKAN is the canonical library that supports symbolic operations (`prune`, `suggest_symbolic`, `fix_symbolic`, `symbolic_formula`) but is fragile and slow. Extracting symbolic formulas from `efficient-kan` is not supported. The solution: use `efficient-kan` for benchmarking, retrain with PyKAN on a single fold for symbolic extraction, ensure both share the same input normalization and architecture template.
+**Why a separate symbolic extraction.** The CPCV KAN uses `efficient-kan` for fast and reliable training across all 28 folds. PyKAN is the canonical library that supports symbolic operations (`prune`, `suggest_symbolic`, `fix_symbolic`, `symbolic_formula`) but is fragile and slow. Extracting symbolic formulas from `efficient-kan` is not supported. The solution: use `efficient-kan` for benchmarking, retrain with PyKAN on a single fold for symbolic extraction, ensure both share the same input normalization and architecture template.
 
 **Algorithm 1 from the VIX KAN paper.** Four steps:
 

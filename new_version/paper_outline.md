@@ -22,7 +22,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
   - R2 Narrative Hooks: open with "despite A, we observe B".
   - R3 Lead with the Contribution: every section and paragraph opens with a claim, not background.
   - R4 One Construct, One Paragraph.
-  - R5 Thread the Construct Across the Paper. Specific threads to keep consistent here: "event" (CUSUM-triggered timestamp), "label" (TBL output), "observation" (final aligned sample); "model" (one of the six benchmarked architectures); "path" (one of the five CPCV backtest paths); "fold" (one of the fifteen CPCV splits).
+  - R5 Thread the Construct Across the Paper. Specific threads to keep consistent here: "event" (CUSUM-triggered timestamp), "label" (TBL output), "observation" (final aligned sample); "model" (one of the six benchmarked architectures); "path" (one of the seven CPCV backtest paths); "fold" (one of the twenty-eight CPCV splits).
   - R6 Parallel Logic: Q1↔C1, Q2↔C2, Q3↔C3, Q4↔C4 across Introduction, Methodology, Results, Discussion.
   - R7 Link Back to Mechanisms: Discussion connects every empirical result to the methodological mechanism that produced it.
   - R13 Compress Without Hollowing: every sentence advances the argument; no hedging.
@@ -440,11 +440,11 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 #### 3.5.2 CPCV configuration
 
-- `N_GROUPS = 6`, `K_TEST_GROUPS = 2`, `EMBARGO_PCT = 0.01`.
-- Groups 0 to 4 of size `⌊T/N⌋`, group 5 absorbs remainder.
-- Total splits: `C(6, 2) = 15`; backtest paths: `C(N-1, k-1) = C(5, 1) = 5`.
-- Each group appears in 5 test sets. Per-group sample size approximately 207.
-- **Justification for N=6, k=2.** Yields approximately 207 test obs per group; train-test ratio approximately 67/33; 15 splits + 5 paths give sufficient combinatorial diversity for PBO without excessive compute.
+- `N_GROUPS = 8`, `K_TEST_GROUPS = 2`, `EMBARGO_PCT = 0.01`.
+- Groups 0 to 6 of size `⌊T/N⌋`, group 7 absorbs remainder.
+- Total splits: `C(8, 2) = 28`; backtest paths: `C(N-1, k-1) = C(7, 1) = 7`.
+- Each group appears in 7 test sets. Per-group sample size approximately 156.
+- **Justification for N=8, k=2.** Yields approximately 156 events per group while keeping the training fold above 900 events; 28 splits and 7 paths give denser combinatorial diversity for PBO than the earlier N=6 configuration (which produced 15 splits and 5 paths) without dropping per-group sample size below the rough lower bound for daily-bar AFML pipelines. The choice trades a smaller test fold per split against a larger Sharpe-matrix cross-section for PBO and DSR.
 - **Table.** Group boundaries (group ID, positional index range, date range, count). Self-contained caption.
 
 #### 3.5.3 Purging (AFML Snippet 7.1)
@@ -463,15 +463,15 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 #### 3.5.5 Path matrix (AFML 12.4.1)
 
-- 5 backtest paths, each covering all 6 groups exactly once.
+- 7 backtest paths, each covering all 8 groups exactly once.
 - For group `g`, path `p` uses the `p`-th split that includes `g` in its test set.
 - Enables distribution-level Sharpe analysis instead of single-point estimates.
-- **Figure.** CPCV split visualization for representative splits (0, 6, 14) with train, test, purged, and embargo regions.
+- **Figure.** CPCV split visualization for representative splits (0, 13, 27) with train, test, purged, and embargo regions.
 
 #### 3.5.6 Leakage verification [T-R15: write for reviewers]
 
-- Empirical audit across all 15 splits: zero training observations whose `t1` falls within the assigned test group's date range.
-- **Table.** Leakage audit (15 rows, columns: split, test groups, train count, test count, leaks, status). Self-contained caption.
+- Empirical audit across all 28 splits: zero training observations whose `t1` falls within the assigned test group's date range.
+- **Table.** Leakage audit (28 rows, columns: split, test groups, train count, test count, leaks, status). Self-contained caption.
 
 ### 3.6 Per-Fold Preprocessing
 
@@ -530,7 +530,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 #### 3.7.3 Random Forest
 
 - 500-tree ensemble, `class_weight='balanced_subsample'`, `n_jobs=-1`.
-- Tuned per split: `n_estimators` ∈ [100, 300] step 50, `max_depth` ∈ [3, 20], `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
+- Tuned per split: `n_estimators` ∈ [100, 250] step 50 (capped from an earlier 300 ceiling; trees in a noisy regime do not benefit from more than 250), `max_depth` ∈ [3, 15] (capped from an earlier 20; deep trees overfit BTC daily features), `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
 - 3 seeds, 30 trials per split.
 - **Cite:** `breiman_2001`.
 
@@ -538,7 +538,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 - 500-tree gradient-boosted ensemble with early stopping at 20 rounds.
 - Objective `binary:logistic`; `scale_pos_weight` from class balance.
-- Tuned per split: `max_depth` ∈ [2, 6] (capped from 10 to prevent memorization on approximately 810-sample folds), `learning_rate` log-uniform [0.01, 0.3], `min_child_weight` ∈ [1, 30], `subsample` and `colsample_bytree` ∈ [0.6, 1.0], `gamma` log-uniform [1e-8, 1.0], `reg_alpha`, `reg_lambda` log-uniform [1e-8, 10.0].
+- Tuned per split: `max_depth` ∈ [2, 6] (capped from 10 to prevent memorization on approximately 900-sample folds), `learning_rate` log-uniform [0.01, 0.3], `min_child_weight` ∈ [1, 30], `subsample` and `colsample_bytree` ∈ [0.6, 1.0], `gamma` log-uniform [1e-8, 1.0], `reg_alpha`, `reg_lambda` log-uniform [1e-8, 10.0].
 - **Calibration set dual role.** Calibration set acts as eval set for early stopping AND as Platt-fit data. Acknowledged as a mild dependency: only ensemble size affected, no individual tree decisions.
 - 3 seeds, 30 trials per split.
 - **Cite:** `chen_guestrin_2016`.
@@ -549,11 +549,11 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 - **Architecture.** Multi-layer `nn.LSTM` → last hidden state from final layer → LayerNorm → dropout → linear classifier.
 - **Sliding window.** `LSTM_WINDOW = 14` (deliberately close to TBL `num_days = 10`; longer windows attenuate gradient signal and inflate parameter-to-sample ratio). Reduces effective training count from `N` to `N - 13` sequences. `last_valid_indices` stored for re-alignment.
-- **Last-hidden-state pooling.** Earlier learned-attention pooling was removed: with window=14 and approximately 810-sample folds, additional attention parameters did not improve performance.
+- **Last-hidden-state pooling.** Earlier learned-attention pooling was removed: with window=14 and approximately 900-sample folds, additional attention parameters did not improve performance.
 - **Tanh input normalization.** `z = tanh((x - μ) / σ)`, mean and std fitted on training data only.
 - **Training stack.** AdamW (lr tuned, `weight_decay=1e-4`), CrossEntropyLoss with class weights and AFML sample weights, label smoothing 0.1, gradient clipping (max norm 1.0), cosine annealing warm restarts (`T_0=25`, `T_mult=2`), batch size 64, max 100 epochs, early stopping patience 15, best-state restoration.
 - **Tuning consistency.** `LSTMClassifier.__init__` reads module-level constants at call time (not as default args), so tuning overrides actually reach the model. Tuning runs at epochs=50, patience=7; production refits at epochs=100, patience=15. This is the only axis where tuning and production diverge; documented as a deliberate compute-vs-fidelity trade-off.
-- Tuned per split: `hidden_size` ∈ [16, 32] step 16, `num_layers` ∈ [1, 3], `dropout` ∈ [0.1, 0.5] (floor raised from 0.0), `lr` log-uniform [1e-4, 5e-2].
+- Tuned per split: `hidden_size` ∈ [16, 32] step 16, `num_layers` ∈ [1, 2] (tightened from earlier [1, 3]; three-layer LSTMs on approximately 1,250 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy), `dropout` ∈ [0.1, 0.5] (floor raised from 0.0), `lr` log-uniform [1e-4, 5e-2].
 - 2 seeds, 30 trials per split.
 - **Cite:** `hochreiter_schmidhuber_1997`.
 
@@ -564,9 +564,9 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - **Library.** `efficient_kan.KAN([n_features, width1, (width2,) 2], grid_size=grid, spline_order=3, grid_range=[-1, 1])`.
 - **Tanh input normalization** matching grid range.
 - **Training stack.** AdamW (lr and weight_decay tuned), CrossEntropyLoss with class weights and AFML sample weights, label smoothing 0.1, gradient clipping (max norm 1.0), cosine annealing warm restarts (`T_0=30`, `T_mult=2`), early stopping patience 20, best-state restoration. Max 200 epochs.
-- **Single-grid training (no coarse-to-fine).** With approximately 810 training samples, grid refinement adds parameters faster than the data can support.
+- **Single-grid training (no coarse-to-fine).** With approximately 900 training samples, grid refinement adds parameters faster than the data can support.
 - **No SWA, no entropy regularization.** SWA conflicted with early stopping; entropy regularization was redundant with `label_smoothing=0.1`. Removed for coherence.
-- **Dual-library strategy.** efficient-kan for all 15 CPCV splits (fast, stable, standard PyTorch). PyKAN re-trained independently for symbolic extraction (Section 3.12), where only PyKAN exposes `prune()`, `suggest_symbolic()`, `fix_symbolic()`, `symbolic_formula()`. Both share the B-spline basis and tanh normalization.
+- **Dual-library strategy.** efficient-kan for all 28 CPCV splits (fast, stable, standard PyTorch). PyKAN re-trained independently for symbolic extraction (Section 3.12), where only PyKAN exposes `prune()`, `suggest_symbolic()`, `fix_symbolic()`, `symbolic_formula()`. Both share the B-spline basis and tanh normalization.
 - Tuned per split: `width1` ∈ [3, 12] (capped from 16), `width2` ∈ [0, 10] (0 = single hidden layer), `lr` log-uniform [5e-4, 5e-2], `weight_decay` log-uniform [1e-5, 5e-3], `grid` ∈ {3, 5} (dropped grid=8 to prevent memorization).
 - 2 seeds, 30 trials per split.
 - **Cite:** `liu_kan_2024`.
@@ -574,28 +574,28 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 #### 3.7.7 Shared neural design
 
 - LSTM and KAN both use dual weighting in CrossEntropyLoss: class weights (inversely proportional to class frequency) AND AFML sample weights as per-sample multipliers.
-- **Seed asymmetry justification.** Neural models use 2 seeds; classical models use 3. Neural training is 5 to 10 times more expensive per seed; 2 seeds provide enough variance estimation while keeping total runtime manageable. Split-level metrics are averaged across available seeds; the evaluation code handles the asymmetry by skipping missing entries.
+- **Seed asymmetry justification.** Neural models use 2 seeds; classical models use 3. Neural training is 5 to 10 times more expensive per seed; 2 seeds provide enough variance estimation while keeping total runtime manageable across 28 splits. Split-level metrics are averaged across available seeds; the evaluation code handles the asymmetry by skipping missing entries.
 - All models share the BaseModel interface: `fit`, `predict_proba`, `predict_logits`, `get_name`. Identical training/evaluation conditions across architectures.
 
 #### 3.7.8 Summary table [T-R17: easy to teach]
 
-> **Self-contained caption (Cochrane).** "Summary of the six models evaluated under CPCV. All models receive AFML sample weights and balanced class weights. Hyperparameters listed under 'Tuned' are optimized per fold via Optuna TPE (Section 3.8); 'Fixed' parameters are held constant across all folds. Role describes what hypothesis each model tests relative to the research questions."
+> **Self-contained caption (Cochrane).** "Summary of the six models evaluated under CPCV (N=8, k=2, 28 splits, 7 backtest paths). All models receive AFML sample weights and balanced class weights. Hyperparameters listed under 'Tuned' are optimized per fold via Optuna TPE (Section 3.8); 'Fixed' parameters are held constant across all folds. Role describes what hypothesis each model tests relative to the research questions."
 
-| Model | Family | Architecture | Fixed params | Tuned params | Seeds | Role |
-|-------|--------|--------------|--------------|--------------|-------|------|
-| AR Logistic | Econometric | LR on lags [1,2,3,7,14,30] | C=1.0, L2, max_iter=1000 | (none) | 3 | Pure momentum (Q1, Q2) |
-| Logistic Regression | Linear ML | LR on selected features | max_iter=1000 | C, penalty | 3 | Linear baseline (Q3) |
-| Random Forest | Ensemble | 500 trees, balanced_subsample | n_estimators=500 | max_depth, min_leaf, max_features | 3 | Nonlinear ensemble (Q3) |
-| XGBoost | Ensemble | 500 trees + early stop@20 | binary:logistic | max_depth ≤ 6, lr, subsample, etc. (8) | 3 | Gradient boosting (Q3) |
-| LSTM | Neural | window=14, last-hidden pooling | T_0=25, batch=64 | hidden, layers, dropout, lr | 2 | Temporal dependencies (Q3) |
-| KAN | Neural | [n, w1, (w2), 2], grid ∈ {3,5}, k=3 | T_0=30, label_smooth=0.1 | width1, width2, grid, lr, weight_decay | 2 | Interpretable architecture (Q3, Q4) |
+| Model | Family | Architecture | Fixed params | Tuned params | Seeds | Trials | Role |
+|-------|--------|--------------|--------------|--------------|-------|--------|------|
+| AR Logistic | Econometric | LR on lags [1,2,3,7,14,30] | C=1.0, L2, max_iter=1000 | (none) | 3 | 0 | Pure momentum (Q1, Q2) |
+| Logistic Regression | Linear ML | LR on selected features | max_iter=1000 | C, penalty | 3 | 30 | Linear baseline (Q3) |
+| Random Forest | Ensemble | balanced_subsample | n_jobs=-1 | n_estimators ≤ 250, max_depth ≤ 15, min_leaf, max_features | 3 | 30 | Nonlinear ensemble (Q3) |
+| XGBoost | Ensemble | 500 trees + early stop@20 | binary:logistic | max_depth ≤ 6, lr, subsample, etc. (8) | 3 | 30 | Gradient boosting (Q3) |
+| LSTM | Neural | window=14, last-hidden pooling | T_0=25, batch=64 | hidden ∈ {16, 32}, layers ∈ {1, 2}, dropout, lr | 2 | 30 | Temporal dependencies (Q3) |
+| KAN | Neural | [n, w1, (w2), 2], grid ∈ {3,5}, k=3 | T_0=30, label_smooth=0.1 | width1 ≤ 12, width2 ≤ 10, grid, lr, weight_decay | 2 | 30 | Interpretable architecture (Q3, Q4) |
 
 ### 3.8 Hyperparameter Tuning
 
 - **Architecture.** Nested per-split Optuna study inside each CPCV training fold. AFML Ch. 7 compliant: outer CPCV provides unbiased test folds; inner tuning operates entirely within the training fold. Test fold never seen during tuning.
 - **Inner CV.** Purged 3-fold (`N_INNER_FOLDS=3`), 10-observation embargo around inner-fold boundaries (matches TBL `num_days=10`).
 - **Optuna config.** TPE sampler, `seed=42`. MedianPruner with `n_startup_trials=5` (classical) or 3 (neural), `n_warmup_steps=1`. Pruner kills trials whose intermediate log loss falls below the median of completed trials.
-- **Trial budget.** `n_trials=30` per model per split (notebook setting, applies to all tuned models for parity).
+- **Trial budget.** `n_trials=30` per tuned model per split, applied uniformly across LR, RF, XGBoost, LSTM, and KAN. The notebook passes a single `n_trials=30` parameter so every tuned model competes on the same budget; AR Logistic is not tuned. The wider module defaults (`N_TRIALS_CLASSICAL=60`, `N_TRIALS_NEURAL=40`) are reserved for sensitivity experiments outside the headline run.
 - **Per-split tuned params application.** `_apply_tuned_params` writes the best params to module-level constants (e.g., `kan_model.KAN_HIDDEN`) before the model training loop for that split. `_reset_module_defaults` snapshots pristine values on first invocation and restores them on subsequent runs to prevent contamination across calls.
 - **DSR/PBO validity.** `n_trials` in DSR counts the number of compared models (6), NOT the Optuna trials per split. Optuna trials happen inside the training fold and do not affect test-fold Sharpe estimates.
 - **Cite:** `akiba_optuna_2019`, `lopez_de_prado_2018` Ch. 7.
@@ -604,7 +604,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 > **Opening claim (T-R3).** "Bet sizing depends on calibrated probabilities; miscalibrated probabilities produce systematically wrong position sizes."
 
-- **Calibration set.** 80/20 chronological split of the training fold; calibrator fitted on the held-out 20% (approximately 160 obs). Never touches test data.
+- **Calibration set.** 80/20 chronological split of the training fold; calibrator fitted on the held-out 20% (approximately 180 obs at N=8). Never touches test data.
 - **Two methods, auto-selected by model type.**
 
 | Method | Models | Input | Mechanism |
@@ -620,7 +620,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 - Single entry point: `run_cpcv_pipeline(X, y, w, t1, bins_ret, ..., tune=False, n_trials=None)`.
 - Module-default reset on every invocation prevents tuned-value contamination across runs.
-- **Per-split execution.**
+- **Per-split execution (28 splits total).**
   1. Extract fold data via positional indices.
   2. `preprocess_fold()` (FFD → scale → MDA select).
   3. Re-align `y, w, t1` after FFD may drop rows.
@@ -657,6 +657,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 #### 3.11.3 Path stitching (AFML 12.4.1)
 
+- 7 backtest paths assembled from the 28 splits.
 - Collects `(group_id, split_id)` from `path_map[path_id]`.
 - For each pair: retrieves the split's stored predictions AND filters to events whose positional index falls within `group_bounds[group_id]`. Critical: without the filter, events from co-tested groups get duplicated.
 - Multi-seed: averages calibrated probabilities across seeds before bet sizing (variance reduction by approximately 1/√n_seeds).
@@ -696,30 +697,31 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 #### 3.11.6 PBO via CSCV (AFML Chapter 11)
 
-- Path Sharpe matrix shape (6 models × 5 paths).
-- All `C(5, 2) = 10` IS/OOS partitions of the 5 paths.
+- Path Sharpe matrix shape (6 models × 7 paths).
+- All `C(7, 3) = 35` IS/OOS partitions of the 7 paths (IS=3 paths, OOS=4 paths; with 7 paths the split is asymmetric by construction).
 - For each partition: identify IS-best, check if it underperforms OOS median.
 - PBO = fraction of partitions where IS-best underperforms.
 - PBO < 0.3 → robust selection; PBO > 0.5 → anti-predictive (IS winner is OOS loser).
+- The N=8 configuration delivers 35 IS/OOS partitions vs. 10 under N=6, increasing PBO resolution from 0.10 to roughly 0.029 per partition.
 
 #### 3.11.7 DeLong pairwise AUC (DeLong et al. 1988)
 
 - Per `(model, split)`: average predicted probas across available seeds (3 sklearn, 2 LSTM/KAN). Matches what `stitch_paths` does for path-level metrics.
-- Pool seed-averaged predictions across all 15 splits per model (valid because CPCV test sets are non-overlapping).
+- Pool seed-averaged predictions across all 28 splits per model (valid because CPCV test sets are non-overlapping).
 - Z-statistic: `z = (AUC_a - AUC_b) / sqrt(Var(AUC_a) + Var(AUC_b) - 2·Cov(AUC_a, AUC_b))`.
 - Two-sided p-value from standard normal.
-- 15 pairwise comparisons total. No Bonferroni correction applied; acknowledged as a limitation in 5.4.
+- 15 pairwise comparisons total (C(6, 2) = 15 model pairs). No Bonferroni correction applied; acknowledged as a limitation in 5.4.
 - **Earlier issue disclosure [T-R15].** A prior version used only `seed=0`, making AUC and z-statistics depend on which initialization happened to be labelled seed 0. Averaging across seeds before pooling removes this dependence.
 - **Cite:** `delong_1988`.
 
 #### 3.11.8 Stability diagnostics
 
-- **Feature stability.** Per-feature selection frequency across 15 folds. Frequency > 0.80 → "stable". Flat profile → diffuse signal across many features (a finding, not a bug).
-- **FFD stability.** Mean and std of `d*` for ATR across 15 folds. `std(d*) < 0.1` → consistent stationarity structure across periods; `> 0.1` → time-varying persistence.
+- **Feature stability.** Per-feature selection frequency across 28 folds. Frequency > 0.80 → "stable". Flat profile → diffuse signal across many features (a finding, not a bug).
+- **FFD stability.** Mean and std of `d*` for ATR across 28 folds. `std(d*) < 0.1` → consistent stationarity structure across periods; `> 0.1` → time-varying persistence.
 
 #### 3.11.9 Model comparison and ranking
 
-- **Primary criterion:** median path Sharpe (descending).
+- **Primary criterion:** median path Sharpe across 7 paths (descending).
 - **Tiebreaker:** std Sharpe (ascending; prefer consistency).
 - Columns: rank, model, median_sharpe, std_sharpe, DSR, mean_F1, mean_acc, mean_log_loss, mean_AUC, median_max_dd, median_cum_ret, median_win_rate, median_profit_factor.
 - Self-contained caption (Cochrane).
@@ -730,13 +732,13 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 #### 3.12.1 Purpose and architecture
 
-- Operates after all 15 CPCV splits have been evaluated.
+- Operates after all 28 CPCV splits have been evaluated.
 - Reconstructs from `prep_info`: stored `d*`, fitted scaler, selected feature list. No per-instance state passed between efficient-kan and PyKAN.
 - Inherits architecture defaults from `kan_model.py`: `KAN_HIDDEN=5`, `KAN_GRID=5`, `KAN_K=3`. Applies data-aware safety floor (`PYKAN_MIN_SAMPLES_PER_PARAM=5`).
 
 #### 3.12.2 Fold selection
 
-- `fold_selection="last"` (split 14): test set covers most recent data; closest to deployment scenario.
+- `fold_selection="last"` (split 27): test set covers most recent data; closest to deployment scenario.
 - Justification: most recent data reflects current regime. Acknowledged limitation: formula is fold-specific.
 - Alternative `"best"` (highest KAN F1) maximizes meaningful symbolic output but biases toward best-performing fold.
 
@@ -757,7 +759,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 | 2a. LBFGS warmup | LBFGS (lr=0.01) | 20 | No regularization; light refinement |
 | 2b. LBFGS sparsity | LBFGS (lr=0.01) | 20 | L1 + entropy regularization (`lamb=0.002`); encourages sparse activations |
 
-- **Grid extension disabled** (`PYKAN_GRID_EXTEND=False`): with approximately 350 samples, refining grid 3 to 5 adds parameters faster than data supports.
+- **Grid extension disabled** (`PYKAN_GRID_EXTEND=False`): with approximately 350 samples (training fold of split 27 after 80/20), refining grid 3 to 5 adds parameters faster than data supports.
 - **Accuracy gate:** if val acc < 53% after Adam, log warning but continue. Symbolic extraction may yield constants.
 - **Architectural simplifications for sympy tractability.** Width capped at `PYKAN_SYMBOLIC_WIDTH_CAP=8`; second hidden layer dropped (`PYKAN_SYMBOLIC_DROP_WIDTH2=True`); grid forced to 3 (`PYKAN_SYMBOLIC_FORCE_GRID=3`). Necessary because width-12 produces approximately 24 summed terms and two hidden layers produce nested compositions sympy cannot simplify in reasonable time. The symbolic-extraction model therefore approximates a simplified version of the CPCV-benchmarked KAN.
 
@@ -823,7 +825,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 #### 3.12.12 Acknowledged limitations (also in 5.3)
 
 - Fold-specific (different folds → potentially different formulas).
-- Small sample (approximately 358 training observations after 80/20 split).
+- Small sample (approximately 350 training observations after 80/20 split on split 27).
 - Architectural simplifications (width cap 8, single hidden layer, grid=3) → formula approximates a simplified version of the benchmarked KAN.
 - R² threshold sensitivity (lowered to 0.30 to admit symbolic fits in weak-signal regime).
 - Post-symbolic accuracy may be lower than pre-symbolic accuracy.
@@ -870,7 +872,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 ### 4.2 Model Comparison (the main result, Cochrane)
 
 - **Table.** Model comparison ranked by median Sharpe descending; tiebreaker std Sharpe ascending. Self-contained caption.
-- Columns: model, median Sharpe, std Sharpe, DSR, F1 macro, AUC, accuracy, Brier, rank.
+- Columns: model, median Sharpe (over 7 paths), std Sharpe, DSR, F1 macro, AUC, accuracy, Brier, rank.
 - **Key observations (state facts here, save interpretation for 5.1).**
   - DSR result: all models DSR = [VALUE], below 0.95.
   - Ranking: best [BEST_MODEL] median Sharpe [VALUE]; KAN ranks [KAN_RANK]th.
@@ -879,16 +881,16 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 ### 4.3 Classification Metrics
 
-- **Per-split F1 distribution.** Mean, std, min, max across 15 splits per model. High variability indicates regime dependence.
-- **Pooled AUC.** Per model across all 15 splits.
+- **Per-split F1 distribution.** Mean, std, min, max across 28 splits per model. High variability indicates regime dependence.
+- **Pooled AUC.** Per model across all 28 splits.
 - **DeLong pairwise AUC.** Report `[NUMBER]/15` significant pairs at α=0.05. If few or none significant, state explicitly: "no pairwise AUC difference reaches significance".
 - **Confusion matrices (compact, Appendix D for full).** Aggregated TP/FP/TN/FN per model. Note any model with strong class bias.
 
 ### 4.4 Financial Performance
 
-- **Path-level Sharpe distribution.** Per-model row × 5 paths + median + std.
+- **Path-level Sharpe distribution.** Per-model row × 7 paths + median + std.
 - **DSR computation detail.** For best model: observed median Sharpe, expected max Sharpe under null (`n=6`), pooled skew/kurt, SE(SR), DSR.
-- **PBO result.** PBO = [VALUE] / 10. Interpret in context of DSR=0:
+- **PBO result.** PBO = [VALUE] / 35. Interpret in context of DSR=0:
   - PBO ≈ 0 + DSR=0 → reliable selection of a model that does not work (good methodology, no signal). Most intellectually honest outcome.
   - PBO ≈ 0.5 → random model selection.
   - PBO > 0.5 → adversarial (IS winner is OOS loser).
@@ -897,20 +899,20 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 ### 4.5 Feature Selection Stability and FFD Stability
 
-- **Feature selection frequency.** Per-feature count/15. State headline:
+- **Feature selection frequency.** Per-feature count/28. State headline:
   - If flat: "no compact feature subset consistently dominates across time periods" (this is itself a finding).
-  - If concentrated: "[NUMBER] features are selected in ≥ 12 of 15 folds: [LIST]; this is the stable signal core".
+  - If concentrated: "[NUMBER] features are selected in ≥ 22 of 28 folds: [LIST]; this is the stable signal core".
 - **Group breakdown.** Stable counts within TA, math, macro, crypto-macro, on-chain, lag.
 - **On-chain question (Q2).** Comment specifically on whether any on-chain feature shows high stability (relevant to "is on-chain the free lunch?").
 - **Figure.** Horizontal bar chart of selection frequency, colored by feature group.
-- **FFD stability.** Mean, std, min, max, mode of `d*` across 15 folds for ATR. Std < 0.1 indicates stable structure; > 0.1 indicates time-varying persistence.
+- **FFD stability.** Mean, std, min, max, mode of `d*` across 28 folds for ATR. Std < 0.1 indicates stable structure; > 0.1 indicates time-varying persistence.
 
 ### 4.6 Symbolic Extraction Results (Q4 answer)
 
 - **Extraction summary.**
-  - Fold used: split [NUMBER], `fold_selection="last"`. Test date range [START] to [END].
+  - Fold used: split 27, `fold_selection="last"`. Test date range [START] to [END].
   - MDA features → top-5 stable subset: [FEATURE_1..FEATURE_5].
-  - Training sample size after 80/20: approximately 358 observations.
+  - Training sample size after 80/20: approximately 350 observations.
   - Architecture (data-aware sized, with simplifications): `[5, w, 2]`.
 - **Training diagnostics.** Phase 1 Adam: train loss / val loss / val acc. Phase 2a/2b val acc. 53% gate pass/fail. Pre-prune accuracy.
 - **Pruning results.** Pre-prune edge count → post-prune. Survival rate. Pruned architecture (e.g., `[5, 3, 2] → [5, 2, 2]`). Post-prune accuracy.
@@ -953,7 +955,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 ### 5.4 Limitations (five honest, from defense L1 to L5)
 
-- **L1. Computational power.** Currently 2 to 3 seeds, 30 trials, KAN width capped at 12. With more compute: more seeds, more trials, wider HP ranges.
+- **L1. Computational power.** Currently 2 to 3 seeds, 30 trials, KAN width capped at 12. With more compute: more seeds, more trials, wider HP ranges. The N=8 / 28-split configuration alone roughly doubles the per-experiment runtime relative to N=6 / 15 splits.
 - **L2. Daily OHLCV only.** Discards intraday microstructure. Pipeline is timeframe-agnostic; hourly extension would multiply event count and unlock microstructure features.
 - **L3. Symbolic extraction is fold-specific.** Per-fold extraction would let us count which features and primitives recur (structural signal vs. one-off noise).
 - **L4. Architectural simplifications in the symbolic-extraction KAN.** Single hidden layer, grid=3, top-5 features. Post-symbolic accuracy is therefore a *lower bound* on what a full-architecture KAN learns.
@@ -978,7 +980,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 - **MultKAN (KAN 2.0) on the last fold.** Multiplication nodes enable discovery of multiplicative interactions. Same symbolic pipeline.
 - **Higher-frequency data.** Hourly bars would multiply CUSUM events approximately 24 times and unlock microstructure features. Pipeline timeframe-agnostic.
-- **Per-fold symbolic extraction.** Count which features and primitives recur to distinguish structural signal from one-off noise.
+- **Per-fold symbolic extraction.** Count which features and primitives recur across all 28 folds to distinguish structural signal from one-off noise.
 - **Regime-conditional analysis.** Decompose Sharpe by regime (approximately 5 distinct regimes 2014 to 2026).
 - **Meta-labeling layer.** A second classifier on the best primary classifier's output, trained to predict whether to take the trade (AFML Ch. 3).
 - **Alternative assets.** ETH, gold for symbolic-formula comparison (different on-chain availability).
@@ -989,9 +991,9 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 ## Appendices (placeholders only)
 
 - **A. Pipeline architecture diagram** (full flowchart from raw OHLCV through symbolic formula).
-- **B. CPCV split details** (group boundaries, train/test timelines, leakage audit).
+- **B. CPCV split details** (group boundaries, train/test timelines for all 28 splits, leakage audit).
 - **C. Hyperparameter search spaces** (Optuna search spaces for all tuned models).
-- **D. Per-split classification reports.**
+- **D. Per-split classification reports** (28 splits × 6 models).
 - **E. Full feature list** (complete table of 62 features with descriptions, sources, parameters).
 - **F. Symbolic extraction detailed output** (PyKAN training logs, edge-by-edge R², pruned diagrams, unsimplified formulas).
 
@@ -1040,6 +1042,7 @@ Use this as a final pre-submission read-through. Tick each as you go.
 - [ ] No footnotes for parenthetical comments.
 - [ ] Q1↔C1, Q2↔C2, Q3↔C3, Q4↔C4 mapping holds across Introduction, Methodology, Results, Discussion.
 - [ ] Each construct (event, label, observation, fold, path) uses the same word throughout.
+- [ ] CPCV configuration referenced consistently as N=8, k=2, 28 splits, 7 paths everywhere it appears.
 - [ ] Conclusion ends with resonance, not a hedge.
 - [ ] Every robustness check alluded to in the text appears in a table or appendix.
 - [ ] Reproducibility: a fellow graduate student can reproduce every number from the paper plus the appendices.

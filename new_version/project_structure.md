@@ -13,7 +13,7 @@ The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Net
 **Data:** BTC-USD daily OHLCV, September 2014 – April 2026 (~4,200 bars).
 **Features:** 62 columns total, all eligible for MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 22 external: 13 macro, 1 crypto-macro, 8 on-chain from CoinMetrics, 6 autoregressive lags). The 6 lag features (`log_returns_lag1` … `log_returns_lag30`) compete with engineered features for the MDA top-k cap. AR Logistic continues to consume the 6 lag columns by name from the pre-MDA matrix as its pure-autoregressive baseline, independently of MDA's choices.
 **Calendar:** All rolling windows use the BTC trading calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year).
-**Evaluation:** CPCV (N=6, k=2) producing 15 splits and 5 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
+**Evaluation:** CPCV (N=8, k=2) producing 28 splits and 7 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
 **Tuning:** Nested Optuna TPE + Purged K-Fold, per-split, inside each CPCV training fold (AFML Ch. 7 compliant).
 **Interpretability contribution:** Symbolic formula extraction from KAN via PyKAN re-training, pruning, and symbolification.
 
@@ -460,13 +460,13 @@ Everything in this phase runs inside the CPCV loop. Every stateful transformatio
 
 ### Step 10 — CPCV Split Generation (`cv.py`)
 
-**Produces:** 15 train/test splits with purging and embargo, plus a 5-path assignment matrix.
+**Produces:** 28 train/test splits with purging and embargo, plus a 7-path assignment matrix.
 
-**Module-level constants:** `N_GROUPS=6`, `K_TEST_GROUPS=2`, `EMBARGO_PCT=0.01`
+**Module-level constants (defaults):** `N_GROUPS=8`, `K_TEST_GROUPS=2`, `EMBARGO_PCT=0.01`. The notebook passes `n_groups` and `k` explicitly per call so the configuration is visible at the top of the CV cell rather than buried in a module constant.
 
-#### `generate_cpcv_splits(X, t1, n_groups=6, k=2, embargo_pct=0.01) → list[tuple[np.ndarray, np.ndarray]]`
+#### `generate_cpcv_splits(X, t1, n_groups=8, k=2, embargo_pct=0.01) → list[tuple[np.ndarray, np.ndarray]]`
 
-Partitions T observations into N=6 contiguous groups (groups 0–4 of size ⌊T/N⌋, group 5 gets the remainder). Generates all C(6,2) = 15 combinations of 2 test groups.
+Partitions T observations into N=8 contiguous groups (groups 0–6 of size ⌊T/N⌋, group 7 gets the remainder, ~156 events per group at the current dataset size). Generates all C(8,2) = 28 combinations of 2 test groups.
 
 For each split, applies:
 
@@ -479,15 +479,28 @@ For each split, applies:
 
 Returns positional integer arrays into X for each split.
 
-#### `build_path_matrix(n_groups=6, k=2) → (n_paths, path_map)`
+#### `build_path_matrix(n_groups=8, k=2) → (n_paths, path_map)`
 
-Computes φ[N,k] = C(N-1, k-1) = C(5,1) = 5 backtest paths. For each group, collects all splits where it appears in the test set, then assigns each occurrence to a path so every path covers all N groups exactly once.
+Computes φ[N,k] = C(N-1, k-1) = C(7,1) = 7 backtest paths. For each group, collects all splits where it appears in the test set, then assigns each occurrence to a path so every path covers all N groups exactly once.
 
 Returns `path_map: {path_id: [(group_id, split_id), ...]}` with N entries per path.
 
-#### `get_split_info(X, t1) → dict`
+#### `get_split_info(X, t1, n_groups=8, k=2, embargo_pct=0.01, splits=None, path_map=None, n_paths=None, print_summary=True) → dict`
 
-Prints formatted summary: T, N, k, C(N,k), φ[N,k], embargo length, group boundaries with dates, average train/test sizes, average purged/embargoed counts. The notebook uses this for the CPCV EDA section (partition overlay on BTC price, train/test timeline visualization, purging/embargo boundary verification, full leakage audit).
+Computes (or accepts) and optionally prints a CPCV split-configuration summary. The function originally recomputed splits and paths every time it was called, which led to duplicate work and duplicate log lines when the notebook also called `generate_cpcv_splits` and `build_path_matrix` separately. The current signature lets the caller pass already-computed values via `splits` / `path_map` / `n_paths`, in which case no recomputation occurs.
+
+The recommended notebook pattern is now:
+
+```python
+splits = generate_cpcv_splits(X, t1, n_groups=N_GROUPS, k=K_TEST, embargo_pct=EMBARGO_PCT)
+n_paths, path_map = build_path_matrix(n_groups=N_GROUPS, k=K_TEST)
+split_info = get_split_info(
+    X, t1, n_groups=N_GROUPS, k=K_TEST, embargo_pct=EMBARGO_PCT,
+    splits=splits, path_map=path_map, n_paths=n_paths,
+)
+```
+
+Each function is called exactly once; the printed summary is rendered without redundant work. The accompanying helper `print_split_summary(info)` is also exposed for callers that want to render an existing info dict (e.g., when iterating on a configuration without rerunning the splitter).
 
 ---
 
@@ -577,7 +590,7 @@ The `run_cpcv_pipeline()` function accepts an `n_trials` parameter that override
 
 #### `_purged_kfold_splits(X, y, w) → list[(train_idx, val_idx)]`
 
-Creates 3 chronological inner folds with 10-observation embargo around boundaries (matches TBL num_days). Fewer folds (3 vs 5) improves runtime by ~40% and increases inner validation set size (~270 vs ~160 observations per fold), providing more reliable log loss estimates in a low-signal environment.
+Creates 3 chronological inner folds with 10-observation embargo around boundaries (matches TBL num_days). Fewer folds (3 vs 5) improves runtime by ~40% and increases inner validation set size (~300 vs ~180 observations per fold), providing more reliable log loss estimates in a low-signal environment.
 
 #### Per-model tuning functions
 
@@ -588,14 +601,14 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 - `penalty`: categorical {l1, l2}
 
 **`tune_random_forest(X, y, w, n_trials=None)`** — Search space:
-- `n_estimators`: int [100, 300] step 50 (capped from 500 to avoid wasteful trials on small data)
-- `max_depth`: int [3, 20]
+- `n_estimators`: int [100, 250] step 50 (capped from an earlier 300 ceiling; trees in a noisy regime do not benefit from more than 250)
+- `max_depth`: int [3, 15] (capped from an earlier 20; deep trees overfit BTC daily features)
 - `min_samples_leaf`: int [1, 30]
 - `max_features`: categorical {sqrt, log2}
 
 **`tune_xgboost(X, y, w, n_trials=None)`** — Search space:
-- `max_depth`: int [2, 6] (capped from 10 to prevent overfitting on ~810-sample folds)
-- `learning_rate`: log-uniform [0.01, 0.3]
+- `max_depth`: int [2, 6] (capped from 10 to prevent overfitting on ~900-sample folds)
+- `learning_rate`: log-uniform [0.01, 0.3] (floor at 0.01; below this, training takes forever and the model effectively underfits)
 - `min_child_weight`: int [1, 30]
 - `subsample`, `colsample_bytree`: uniform [0.6, 1.0]
 - `gamma`: log-uniform [1e-8, 1.0] (tightened upper bound; large gamma rarely helps on weak-signal financial data)
@@ -604,12 +617,12 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 
 **`tune_lstm(X, y, w, n_features, n_trials=None)`** — Search space:
 - `hidden_size`: int [16, 32] step 16 (capped further from 64 after empirical underperformance at higher capacities)
-- `num_layers`: int [1, 3]
+- `num_layers`: int [1, 2] (tightened from earlier [1, 3]; three-layer LSTMs on ~1,250 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy)
 - `dropout`: uniform [0.1, 0.5] (floor raised from 0.0 for regularization)
 - `learning_rate`: log-uniform [1e-4, 5e-2]
 
 **`tune_kan(X, y, w, n_features, n_trials=None)`** — Search space:
-- `width1`: int [3, 12] (capped from an earlier 16 to prevent memorisation on ~810-sample folds)
+- `width1`: int [3, 12] (capped from an earlier 16 to prevent memorisation on ~900-sample folds)
 - `width2`: int [0, 10], 0 = skip second hidden layer (capped from an earlier 15)
 - `lr`: log-uniform [5e-4, 5e-2]
 - `weight_decay`: log-uniform [1e-5, 5e-3]
@@ -668,7 +681,7 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 **Architecture:** Multi-layer `nn.LSTM` (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier. All architectural parameters are tuned per split.
 
-**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer serves as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~810-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
+**Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer serves as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~900-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
 
 **Tanh input normalization.** Features are tanh-normalized: `z = tanh((x - μ) / σ)`. Maps features to [-1, 1] regardless of original scale, stabilizing training on fat-tailed financial data. Mean and std are fitted on training data only and stored for inference.
 
@@ -690,9 +703,9 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 **Why no SWA or entropy regularization.** Earlier experimentation included Stochastic Weight Averaging and entropy-of-prediction regularization. SWA conflicted with early stopping (either early stopping terminates before SWA activates, or SWA overrides `best_state` with potentially worse weights). Entropy regularization was redundant with `label_smoothing=0.1` (both discourage confident predictions). Both were removed for coherence and to simplify the methodology defense.
 
-**Why a single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~810 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
+**Why a single grid level.** Unlike the literature's coarse-to-fine schedule (start at grid=3, refine to grid=5 mid-training), this implementation trains at a single grid level throughout. With ~900 training samples, grid refinement adds parameters faster than the data can support, causing memorization. Single-grid training is more stable.
 
-**Dual-library strategy.** efficient-kan is used for CPCV training/inference across all 15 splits (fast, reliable, integrates with standard PyTorch tooling). PyKAN is re-trained independently for symbolic extraction only (Phase 3). This avoids the PyKAN parameter and training fragility while leveraging its symbolic features. Both libraries share the same B-spline basis and tanh input normalization.
+**Dual-library strategy.** efficient-kan is used for CPCV training/inference across all 28 splits (fast, reliable, integrates with standard PyTorch tooling). PyKAN is re-trained independently for symbolic extraction only (Phase 3). This avoids the PyKAN parameter and training fragility while leveraging its symbolic features. Both libraries share the same B-spline basis and tanh input normalization.
 
 ---
 
@@ -713,7 +726,7 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 
 **Methodological note: why vector scaling rather than temperature scaling.** An earlier implementation used pure temperature scaling for PyTorch models. A calibration audit before final evaluation revealed that both LSTM and KAN exhibited systematic under-prediction of P(y=1) by 10-23 percentage points across the bulk of the predicted-probability distribution, while the empirical base rate of class 1 was approximately 0.55. Pure temperature scaling preserves the argmax of the raw logits by construction, so a single-parameter `T` cannot shift a "lean class 0" prediction to "lean class 1" no matter what value it takes. The bias propagated through bet sizing as systematic short bets in regimes where the market drifted upward, contributing to the negative path-level Sharpe ratio that an early version of the KAN equity curves displayed. Vector scaling adds a per-class bias `b` that lifts the directional constraint and is the natural extension recommended by Guo et al. (2017) for cases where temperature scaling alone is insufficient. The substitution was made before the final evaluation pass and constitutes a correction of methodological inadequacy rather than test-set-informed model selection.
 
-**Methodological note (calibration set dual role):** The 20% calibration subset serves a dual role: early-stopping monitor for XGBoost and input for Platt/vector scaling. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set), and each calibration method fits at most three parameters, this shared use introduces minimal information leakage. Splitting the already-small cal set (~160 observations) further would degrade both purposes.
+**Methodological note (calibration set dual role):** The 20% calibration subset serves a dual role: early-stopping monitor for XGBoost and input for Platt/vector scaling. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set), and each calibration method fits at most three parameters, this shared use introduces minimal information leakage. Splitting the already-small cal set (~180 observations at N=8) further would degrade both purposes.
 
 ---
 
@@ -805,7 +818,7 @@ For each observation: `gross_return = bet_size × label_return`, `turnover = |Δ
 
 #### Step 16.d — Path stitching (`stitch_paths`)
 
-Assembles 5 full-span backtest paths from the 15 splits using the path-assignment matrix. For each path:
+Assembles 7 full-span backtest paths from the 28 splits using the path-assignment matrix. For each path:
 1. Collects `(group_id, split_id)` pairs from `path_map[path_id]`.
 2. For each pair, retrieves the corresponding split's stored predictions (calibrated probabilities and returns) **and filters down to the events whose positional index falls within `group_bounds[group_id]`**. Each split's stored test set covers `k=2` chronological groups concatenated, so this filter is essential: without it, events from co-tested groups get pulled into the path multiple times.
 3. With multiple seeds, calibrated probabilities are averaged across seeds before bet sizing (ensemble averaging reduces prediction variance by ~1/√n_seeds).
@@ -815,7 +828,7 @@ Assembles 5 full-span backtest paths from the 15 splits using the path-assignmen
 
 `stitch_paths` accepts `event_index` and `group_bounds` as optional inputs. When not supplied, both are derived from `predictions` via `_derive_event_index` (union of all stored timestamp slices, sorted and de-duplicated) and `_compute_group_bounds` (mirroring the helper in `cv.py`). The orchestrator (`analyze_results`) computes them once and passes them to every per-model stitch call.
 
-**Bug-fix disclosure.** An earlier implementation pulled each split's full test set whenever the split was referenced, double- or quintuple-counting events from groups co-tested with the requested group. The bug surfaced as a 1/3/5 duplication pattern in the stitched series (groups appearing once, three times, or five times depending on how many splits referenced them in a given path), and was identified by direct timestamp inspection. The fix is the group filter described above. All path-level metrics in this thesis use the corrected stitching; the bug-fix history is preserved in the methodology chapter as a transparency disclosure.
+**Bug-fix disclosure.** An earlier implementation pulled each split's full test set whenever the split was referenced, double- or multiple-counting events from groups co-tested with the requested group. The bug surfaced as a duplication pattern in the stitched series (groups appearing more times than their CPCV path assignment intended) and was identified by direct timestamp inspection. The fix is the group filter described above. All path-level metrics in this thesis use the corrected stitching; the bug-fix history is preserved in the methodology chapter as a transparency disclosure.
 
 #### Step 16.e — Path performance (`compute_path_performance`)
 
@@ -858,8 +871,8 @@ DSR > 0.95 → result survives multiple-testing correction. DSR < 0.95 → may b
 
 #### Step 16.g — Probability of Backtest Overfitting (`compute_pbo`)
 
-Implements AFML Chapter 11 via CSCV. Takes `path_sharpes_matrix` of shape (6 models, 5 paths):
-1. Generates all C(5, 2) = 10 IS/OOS partitions of the 5 paths
+Implements AFML Chapter 11 via CSCV. Takes `path_sharpes_matrix` of shape (6 models, 7 paths):
+1. Generates all C(7, 3) = 35 IS/OOS partitions of the 7 paths
 2. For each partition: identifies the IS-best model, checks if it underperforms the OOS median
 3. PBO = fraction of partitions where IS-best underperforms OOS
 
@@ -870,7 +883,7 @@ PBO < 0.3 → robust selection. PBO > 0.5 → anti-predictive (in-sample winner 
 For each pair of models, tests the null hypothesis that their AUCs are equal using the DeLong (1988) method:
 
 1. For each (model, split), averages predicted probabilities across all available seeds (3 for the sklearn-compatible models, 2 for LSTM and KAN). This matches what `stitch_paths` already does for path-level financial metrics, so the AUC test reflects the same averaged predictions that the Sharpe/DSR/PBO results are computed from.
-2. Pools the seed-averaged predictions across all 15 CPCV splits per model. Pooling is valid because CPCV test sets are non-overlapping.
+2. Pools the seed-averaged predictions across all 28 CPCV splits per model. Pooling is valid because CPCV test sets are non-overlapping.
 3. Computes AUC for each model on the pooled data.
 4. Uses the non-parametric covariance estimator (`_delong_covariance`) via placement values (midranks).
 5. Computes z-statistic: `z = (AUC_a − AUC_b) / sqrt(Var(AUC_a) + Var(AUC_b) − 2·Cov(AUC_a, AUC_b))`.
