@@ -120,6 +120,134 @@ def _fetch_us2y(start: str, end: str) -> pd.Series:
     return pd.Series(dtype=float)
 
 
+def _fetch_coinmetrics_eth(start: str, end: str) -> pd.Series:
+    """Fetch daily ETH/USD prices from CoinMetrics.
+
+    CoinMetrics serves ETH/USD history back to 2015-08-07 (the day
+    of Ethereum's Frontier launch), substantially earlier than
+    yfinance's ``ETH-USD`` ticker which only begins around
+    2017-11-09. The earlier history is needed so that
+    ``eth_btc_ratio`` has valid values throughout the BTC dataset's
+    full span (2014 → present), preventing entire-test-partition NaN
+    in the early CPCV folds.
+
+    The Community tier gates which metrics are free per asset.
+    ``ReferenceRateUSD`` (the multi-source weighted reference rate)
+    is Pro-only for non-BTC assets at the time of writing, so this
+    function tries metrics in priority order:
+
+    1. ``ReferenceRateUSD`` — most curated, may be Pro-only for ETH.
+    2. ``PriceUSD`` — single-exchange price, typically free.
+    3. ``CapMrktCurUSD / SplyCur`` — derived market-cap / supply ratio.
+
+    The first one that returns >100 rows wins. Returns an empty Series
+    if all three fail; the caller then falls back to yfinance.
+
+    Uses the same ``coinmetrics-api-client`` Community-tier endpoint
+    already used for on-chain BTC metrics, so no additional
+    credentials or dependencies are required.
+    """
+    try:
+        from coinmetrics.api_client import CoinMetricsClient
+    except ImportError:
+        logger.warning(
+            "coinmetrics-api-client not installed; "
+            "cannot fetch ETH from CoinMetrics."
+        )
+        return pd.Series(dtype=float)
+
+    client = CoinMetricsClient()
+
+    # Try the curated reference rate first; fall back to price.
+    for metric in ("ReferenceRateUSD", "PriceUSD"):
+        try:
+            result = client.get_asset_metrics(
+                assets="eth",
+                metrics=[metric],
+                start_time=start,
+                end_time=end,
+                frequency="1d",
+            )
+            df = result.to_dataframe()
+        except Exception as e:
+            logger.warning(
+                "CoinMetrics ETH %s request failed: %s", metric, e,
+            )
+            continue
+
+        if df.empty or metric not in df.columns:
+            logger.info(
+                "CoinMetrics ETH %s returned no data; trying next metric.",
+                metric,
+            )
+            continue
+
+        df["time"] = pd.to_datetime(df["time"])
+        df["time"] = df["time"].dt.tz_localize(None).dt.normalize()
+        df = df.set_index("time").sort_index()
+
+        eth = pd.to_numeric(df[metric], errors="coerce").dropna()
+        eth.index.name = None
+        eth.name = None
+
+        if len(eth) > 100:
+            logger.info(
+                "CoinMetrics ETH %s returned %d daily rows.",
+                metric, len(eth),
+            )
+            return eth
+
+        logger.info(
+            "CoinMetrics ETH %s returned only %d rows; trying next metric.",
+            metric, len(eth),
+        )
+
+    # Last resort: derive price from market cap and supply.
+    try:
+        result = client.get_asset_metrics(
+            assets="eth",
+            metrics=["CapMrktCurUSD", "SplyCur"],
+            start_time=start,
+            end_time=end,
+            frequency="1d",
+        )
+        df = result.to_dataframe()
+    except Exception as e:
+        logger.warning("CoinMetrics ETH cap/supply request failed: %s", e)
+        return pd.Series(dtype=float)
+
+    if df.empty or "CapMrktCurUSD" not in df.columns or "SplyCur" not in df.columns:
+        logger.warning(
+            "CoinMetrics ETH cap/supply derivation: missing required metrics."
+        )
+        return pd.Series(dtype=float)
+
+    df["time"] = pd.to_datetime(df["time"])
+    df["time"] = df["time"].dt.tz_localize(None).dt.normalize()
+    df = df.set_index("time").sort_index()
+
+    cap = pd.to_numeric(df["CapMrktCurUSD"], errors="coerce")
+    sply = pd.to_numeric(df["SplyCur"], errors="coerce")
+    eth = (cap / sply).dropna()
+    eth.index.name = None
+    eth.name = None
+
+    if len(eth) > 100:
+        logger.info(
+            "CoinMetrics ETH derived from CapMrktCurUSD / SplyCur: "
+            "%d daily rows.",
+            len(eth),
+        )
+        return eth
+
+    logger.warning(
+        "CoinMetrics ETH cap/supply derivation: only %d rows; "
+        "falling back to yfinance.",
+        len(eth),
+    )
+    return pd.Series(dtype=float)
+
+
 def _align_to_btc(
     series: pd.Series, btc_index: pd.DatetimeIndex, name: str,
 ) -> pd.Series:
@@ -306,10 +434,39 @@ def compute_crypto_macro_features(
     print("[external] Fetching crypto-macro data...")
 
     # ETH/BTC ratio
+    # Source priority: CoinMetrics first (ETH price back to 2015-08-07,
+    # the Ethereum Frontier launch date), falling back to yfinance
+    # ETH-USD (history back to ~2017-11-09 only). The earlier
+    # CoinMetrics history is needed to avoid entire-test-partition NaN
+    # in eth_btc_ratio for the early CPCV folds. Both sources return
+    # daily-close-equivalent USD prices, so the ratio computation is
+    # source-agnostic once the series is aligned to btc_index.
+    # CoinMetrics' Community-tier API is already used elsewhere in
+    # this module for on-chain BTC metrics, so no new credentials
+    # are required. The CoinMetrics helper internally tries
+    # ReferenceRateUSD, then PriceUSD, then a CapMrktCurUSD/SplyCur
+    # derivation, before signalling the caller to fall back to
+    # yfinance.
     t0 = time.time()
     try:
-        eth = _fetch_yfinance("ETH-USD", start, end)
-        print(f"  {'ETH-USD':>10s}: {len(eth)} bars ({time.time()-t0:.1f}s)")
+        eth = _fetch_coinmetrics_eth(start, end)
+        if len(eth) > 100:
+            print(
+                f"  {'ETH-USD':>10s}: {len(eth)} bars from CoinMetrics "
+                f"(first valid: {eth.index[0].date()}) "
+                f"({time.time()-t0:.1f}s)"
+            )
+        else:
+            logger.warning(
+                "CoinMetrics ETH returned only %d rows; "
+                "falling back to yfinance.",
+                len(eth),
+            )
+            eth = _fetch_yfinance("ETH-USD", start, end)
+            print(
+                f"  {'ETH-USD':>10s}: {len(eth)} bars from yfinance "
+                f"(fallback) ({time.time()-t0:.1f}s)"
+            )
 
         eth_aligned = _align_to_btc(eth, btc_index, "eth_close")
         features["eth_btc_ratio"] = eth_aligned / btc_close.reindex(btc_index)
