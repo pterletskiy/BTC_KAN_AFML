@@ -43,7 +43,9 @@ Implements the AFML labeling pipeline: computes daily volatility, filters bars v
 
 **Daily volatility (AFML Snippet 3.1).** Exponentially weighted standard deviation of log returns with span 50. The span is calibrated for BTC's faster regime transitions — De Prado uses 100 for equities, but crypto's 24/7 trading and higher realized volatility call for a shorter-memory estimator that adapts quickly. This volatility series scales both the CUSUM threshold and the triple-barrier widths.
 
-**CUSUM filter (AFML Snippet 2.4).** Reduces ~4,200 bars to a smaller set of "meaningful" events by tracking cumulative deviation in log returns. Two accumulators: `s_pos = max(0, s_pos + r)` tracks upside runs, `s_neg = min(0, s_neg + r)` tracks downside runs. When either exceeds the threshold h, an event fires and the accumulator resets to zero. With h = 1.0 × mean(daily_vol), the filter produces approximately 1,356 events on the BTC dataset before rare-label dropping.
+**CUSUM filter (AFML Snippet 2.4).** Reduces ~4,200 bars to a smaller set of "meaningful" events by tracking cumulative deviation in log returns. Two accumulators: `s_pos = max(0, s_pos + r)` tracks upside runs, `s_neg = min(0, s_neg + r)` tracks downside runs. When either exceeds the threshold h, an event fires and the accumulator resets to zero. With h = 1.0 × mean(daily_vol), the filter produces roughly 1,300-1,400 events on the BTC dataset before the start-date truncation and rare-label dropping.
+
+The notebook applies an additional truncation step after the CUSUM filter runs, dropping events whose timestamp falls before a configured `CUSUM_START_DATE` (currently `"2015-08-08"`, the day Ethereum's Frontier launch went live and the first day with valid ETH/USD price data from CoinMetrics). The CUSUM accumulators themselves are computed on the full raw return series, so events that survive the truncation reflect the full pre-event cumulative drift; only the event index is filtered. Empirically the EWMA daily volatility used as the CUSUM threshold is fully converged by August 2015 (the mean over the truncation window matches the full-series mean to four decimal places), so the truncation drops events without distorting the threshold dynamics. The purpose of the truncation is to align the analysis window with the earliest date for which all features (including `eth_btc_ratio`) are available, which prevents asymmetric data-availability across CPCV folds.
 
 The zero floor is what makes CUSUM a structural-break detector rather than a volatility filter. Choppy sideways action keeps resetting the accumulator and produces few events, while small-but-persistent drifts can produce many. The threshold `h = 1.0 × mean(daily_vol)` balances event count against signal strength: smaller multipliers produce noisy events, larger multipliers produce too few for ML. The notebook uses 1.0 after empirical sweeps; an earlier version used 1.5 but the lower threshold gave a richer event set without compromising class balance.
 
@@ -160,7 +162,11 @@ Fetches and aligns 22 external features: 13 macro variables from Yahoo Finance a
 
 **2-year yield fallback chain.** FRED DGS2 is the primary source. If it returns insufficient data, the code falls back to fetching the T10Y2Y spread from FRED and back-deriving `us2y = us10y - spread`. This ensures the yield curve feature is always populated even when the preferred source fails.
 
-**Crypto-macro (1).** A single market-level cross-crypto signal, `eth_btc_ratio` (ETH close / BTC close), captures altcoin rotation. An earlier version added `btc_dominance` from CoinGecko's `/coins/bitcoin/market_chart` endpoint with a `100 / (1 + ETH/BTC)` proxy as fallback. Two problems forced the column out: the CoinGecko endpoint returns BTC market cap in USD rather than the bounded [0, 100] dominance percentage the column name implied, and the proxy fallback was a price-correlated approximation the methodology could not cleanly defend. `eth_btc_ratio` carries the alt-rotation signal alone.
+**Crypto-macro (1).** A single market-level cross-crypto signal, `eth_btc_ratio` (ETH close / BTC close), captures altcoin rotation. The ETH price is fetched from CoinMetrics' Community-tier API (the same source used for the on-chain BTC metrics, no additional credentials needed). The fetch tries metrics in priority order — `ReferenceRateUSD`, `PriceUSD`, then a `CapMrktCurUSD / SplyCur` derivation — and uses the first one that returns more than 100 daily rows. `ReferenceRateUSD` is currently Pro-gated for ETH on the Community tier and returns 1 row, so `PriceUSD` is the operative source in practice; it serves daily ETH/USD data back to August 8, 2015 (the day Ethereum's Frontier launch went live), giving roughly 3,917 daily rows over the ~4,200-day external dataset. yfinance's `ETH-USD` ticker remains as a final fallback if all three CoinMetrics attempts fail; the source actually used is logged at fetch time.
+
+The earlier implementation used yfinance as the sole source. yfinance's `ETH-USD` history begins around November 9, 2017 (3,092 daily rows), leaving roughly 27% of the calendar series as NaN at the head and producing entire-test-partition NaN in early CPCV folds under N=8. With CoinMetrics PriceUSD the residual `eth_btc_ratio` NaN rate over the full external dataframe drops to 7.7%, all of it concentrated in the November 2014 → August 2015 pre-ETH-trading window. That residual NaN window is fully truncated out by the CUSUM start-date filter (`CUSUM_START_DATE = "2015-08-08"` in the labeling cell), so every CUSUM event in the analysis window has a valid ETH/BTC ratio.
+
+An earlier version also included a second crypto-macro column, `btc_dominance`, fetched from CoinGecko's `/coins/bitcoin/market_chart` endpoint with a `100 / (1 + ETH/BTC)` proxy as fallback. Two problems forced the column out: the CoinGecko endpoint returns BTC market cap in USD rather than the bounded [0, 100] dominance percentage the column name implied, and the proxy fallback was a price-correlated approximation the methodology could not cleanly defend. `eth_btc_ratio` carries the alt-rotation signal alone. CoinGecko was also evaluated as a primary ETH source: as of 2024 the free public tier limits historical queries to the most recent 365 days only, so the 2015-2017 ETH history needed for full BTC-dataset coverage sits behind a paid tier. CoinMetrics' Community tier has no such restriction, which is why it is the chosen primary source.
 
 **On-chain (8).** Blockchain network activity from CoinMetrics Community API: 14-day RoC of active addresses and transaction count, 30-day RoC of hashrate, MVRV ratio, net exchange flow (inflows − outflows), fee per transaction, exchange supply percentage, and daily issuance. These are BTC-native signals that equity models cannot access.
 
@@ -182,22 +188,22 @@ The cache check verifies both the date-range endpoints and the column set. Chang
 
 ### What it does
 
-Aligns the feature matrix (covering all ~4,200 daily bars) with the labels and weights (covering only the 1,245 CUSUM events that survive rare-label dropping), producing the four objects (X, y, w, t1) that enter the CPCV loop.
+Aligns the feature matrix (covering all ~4,200 daily bars) with the labels and weights (covering only the CUSUM events that survive the start-date truncation and rare-label dropping, approximately 1,150 events), producing the four objects (X, y, w, t1) that enter the CPCV loop.
 
 ### Core concepts
 
 **Why alignment happens here.** Features are computed per-bar so that downstream Phase 2 can pull any bar's features for any reason (e.g., reconstructing preprocessing for symbolic extraction). Labels exist only at CUSUM event timestamps. Weights share the label index. The CPCV loop needs all four indexed on the same set of event timestamps.
 
-**Triple intersection.** `features.index ∩ bins.index ∩ weights.index`, producing the common set of 1,245 event timestamps. Class balance: {+1: 697, -1: 548}. Everything downstream operates on this aligned set.
+**Triple intersection.** `features.index ∩ bins.index ∩ weights.index`, producing the common set of approximately 1,150 event timestamps. Everything downstream operates on this aligned set.
 
 **Hard assertions.** The function raises on any structural problem: empty intersection, duplicate dates, non-monotonic index, shape mismatch across the four arrays, entire feature columns being NaN, or any NaN in `t1` (which would break CPCV purging). These are all conditions that would silently corrupt downstream results if allowed to pass.
 
-**Soft warnings.** Partial-NaN columns trigger a logger warning naming the column count and per-column NaN counts; the pipeline continues. Most warm-up NaNs from Phase 1 are eliminated naturally at this step because `bins.index` (the CUSUM event index) does not start firing until daily volatility itself has warmed up, by which time most TA features are valid. A handful of leading rows from slow-warming features (Hurst at 180 bars, SADF at 90) may still be NaN at alignment time, and external columns may have scattered NaN cells where macro releases have not yet happened or weekend-aligned tickers have not yet been carried forward by `merge_asof`. The X passed to CPCV may therefore contain partial-NaN rows. This is intentional: alignment cannot drop rows because dropping would create gaps in the CPCV chronological group structure. Resolution is the per-fold preprocessing step's responsibility, where it can be done with a partition-aware policy that respects the train-test boundary.
+**Soft warnings.** Partial-NaN columns trigger a logger warning naming the column count and per-column NaN counts; the pipeline continues. The buffer-and-truncate dataset structure (raw data starting November 2014, CUSUM events starting August 2015) eliminates the bulk of warm-up NaN at the head of the series: by the time the first CUSUM event fires, the longest-warmup engineered features (Hurst at 252 bars, EMA 50/200 ratio at 200, SADF at variable but bounded windows) have all completed their warmup. A handful of external columns may still have scattered NaN cells where macro releases have not yet happened or weekend-aligned tickers have not yet been carried forward by `merge_asof`. The X passed to CPCV may therefore contain a small number of partial-NaN rows. This is intentional: alignment cannot drop rows because dropping would create gaps in the CPCV chronological group structure. Resolution is the per-fold preprocessing step's responsibility, where it can be done with a partition-aware policy that respects the train-test boundary.
 
 ### Key function: `align_for_cv`
 
 Returns the four aligned objects:
-- **X**: feature matrix (1,245 × 62; 25 TA + 9 math + 22 external + 6 lag). All 62 columns are eligible for MDA selection. AR Logistic separately consumes its 6 lag columns by name from the pre-MDA matrix routed through the pipeline's `X_tr_full`.
+- **X**: feature matrix (~1,150 × 62; 25 TA + 9 math + 22 external + 6 lag). All 62 columns are eligible for MDA selection. AR Logistic separately consumes its 6 lag columns by name from the pre-MDA matrix routed through the pipeline's `X_tr_full`.
 - **y**: binary labels {-1, +1}.
 - **w**: AFML sample weights (uniqueness × return attribution × time decay, capped at 99th percentile).
 - **t1**: barrier touch timestamps (DatetimeIndex) for CPCV purging.
@@ -209,6 +215,36 @@ Standalone validator called by the CPCV loop before training. Checks everything 
 ### Why a separate validator
 
 The CPCV loop runs for hours. If an alignment problem exists, it should fail loudly and immediately at the start, not corrupt results after 20 minutes of training. `validate_alignment` is the pre-flight check.
+
+---
+
+## `pre_cpcv/pre_cpcv_plots.py` — Labelling Diagnostics and Feature EDA
+
+### What it does
+
+Produces the visual diagnostics and statistical tests that sit between the data-engineering steps and the CPCV cell: CUSUM filter visualisation, triple-barrier examples, label distribution donut, feature distribution histograms with kurtosis flagging, feature correlation heat-map, feature-vs-label mutual information, and the Augmented Dickey-Fuller stationarity test that informs the FFD column choice.
+
+### Core concepts
+
+**Single-responsibility plotting.** Each function takes the data it needs as parameters, returns a `Figure` (or `(Figure, DataFrame)` for the ADF test), and prints a short diagnostic summary. None of the functions call `plt.show()`; the notebook decides whether to display, save, or close each figure. This is what makes the helpers reusable for thesis-figure exports at different resolutions and aspect ratios.
+
+**Zoom windows are parameters.** The CUSUM filter plot and the TBL examples plot accept `zoom_start` and `zoom_end` parameters with notebook-overridable defaults. The defaults pick a recent window (Jan-Apr 2026); call with different ranges to inspect earlier regimes.
+
+**ADF test informs FFD selection.** The stationarity test is a diagnostic, not a decision: the function returns the per-feature ADF result table, and the notebook reads it to decide which columns to fractionally difference. The default cuts at `significance=0.05`, but the column flagged for FFD in the locked configuration (`atr`) was confirmed visually rather than auto-derived; some TA features (e.g., RSI, bounded between 0 and 100) can reject the unit-root null at small samples without actually needing FFD treatment, so the ADF result is informative rather than definitive.
+
+**MI handles binary labels directly.** The mutual information plot uses `sklearn.feature_selection.mutual_info_classif` against the binary `bin` column. Features with MI below `1e-6` are flagged as removal candidates. With 62 features and ~1,150 events the MI estimator is stable, but the function exposes `n_neighbors` and `seed` for sensitivity analysis.
+
+**ASCII portability.** Status flags use `OK` / `Flagged` rather than Unicode marks (`✓` / `✗`) so the diagnostic output renders consistently in Windows console, terminal pipes, PDF exports, and LaTeX appendices.
+
+### Key functions
+
+- `plot_cusum_filter(log_returns, t_events, h, zoom_start, zoom_end)`: two-panel zoom showing log returns coloured by sign with event markers, and CUSUM cumulative sums against the threshold band.
+- `plot_tbl_examples(bins, close, daily_vol, pt_sl, num_days, zoom_start, zoom_end)`: side-by-side panels showing one event per barrier-touch type (profit / stop loss / vertical) with annotated price paths.
+- `plot_label_distribution(bins)`: donut chart of class counts.
+- `plot_feature_distributions(feature_matrix, kurtosis_threshold)`: grid of histograms with kurtosis flagging.
+- `plot_feature_correlation(feature_matrix, corr_threshold, annotate)`: annotated heat-map of the correlation matrix.
+- `plot_feature_label_mutual_info(feature_matrix, bins, mi_threshold, n_neighbors, seed)`: horizontal bar chart of MI values.
+- `plot_adf_stationarity(feature_matrix, significance, maxlag, autolag)`: returns `(Figure, DataFrame)` with per-feature ADF p-values and the `stationary` boolean flag for downstream use.
 
 ---
 
@@ -226,7 +262,7 @@ Generates the 28 train/test splits used to evaluate the models, applies purging 
 
 ### Core concepts
 
-**Combinatorial splits.** With N=8 contiguous groups and k=2 test groups per split, the function generates all C(8,2) = 28 combinations. Each split holds out 2 groups as test and uses the remaining 6 as training. This produces more out-of-sample evaluations than standard k-fold, at no additional data cost. The N=8 configuration was chosen over an earlier N=6 setup to give 7 backtest paths (more PBO partitions, denser equity-curve grids) while still keeping ~156 events per group, comfortably above the rough lower bound for daily-bar AFML pipelines.
+**Combinatorial splits.** With N=8 contiguous groups and k=2 test groups per split, the function generates all C(8,2) = 28 combinations. Each split holds out 2 groups as test and uses the remaining 6 as training. This produces more out-of-sample evaluations than standard k-fold, at no additional data cost. The N=8 configuration was chosen over an earlier N=6 setup to give 7 backtest paths (more PBO partitions, denser equity-curve grids) while still keeping roughly 140 events per group at the locked event count of approximately 1,150, comfortably above the rough lower bound for daily-bar AFML pipelines.
 
 **Purging (AFML Snippet 7.1).** Removes training observations whose triple-barrier labels overlap with any test group. Three sufficient conditions are checked for each training observation i against each test group:
 
@@ -251,6 +287,36 @@ Returns `(n_paths=7, path_map)` where `path_map[p]` is a list of `(group_id, spl
 ### Key function: `get_split_info` and helper `print_split_summary`
 
 `get_split_info` originally recomputed splits and paths every time it was called, which led to duplicate work and duplicate log lines when the notebook also called `generate_cpcv_splits` and `build_path_matrix` separately. The current signature accepts pre-computed `splits`, `path_map`, and `n_paths` arguments so the notebook can compute each exactly once and pass them in. The new helper `print_split_summary(info)` is exposed for callers that want to render an existing info dict (e.g., during config exploration without rerunning the splitter); `get_split_info(..., print_summary=False)` returns the dict silently for the same purpose.
+
+---
+
+## `cpcv/cpcv_plots.py` — CPCV Visualisation and Leakage Audits
+
+### What it does
+
+Renders four CPCV diagnostics: a BTC-with-groups overview showing how the N CPCV groups partition the price series, a train/test timeline grid for representative splits, a text dump of the purge and embargo zones around each test group, and a full leakage audit across all 28 splits. Each function takes the CPCV inputs as parameters and is called after the CV cell has produced `splits`, `path_map`, `n_paths`, and `split_info`.
+
+### Core concepts
+
+**Date axis derived from `X.index`.** Every visual function pulls the date axis from `X.index` directly rather than from a separate date parameter. This means after the CUSUM start-date truncation, the plots automatically span the analysis window (August 2015 onward) without needing date-related arguments to be threaded through. The BTC backdrop in `plot_btc_with_groups` uses `df_raw` clipped to `X.index[0]` and `X.index[-1]` so the price line and the group bands share endpoints exactly.
+
+**Group bounds computed once, passed everywhere.** The helper `_compute_group_bounds(n_events, n_groups)` divides the event index into N contiguous chunks of equal size (with the remainder distributed to the last group). It is computed once per call site and shared across the plotting and audit functions, so the rendered group boundaries always match what the CPCV splitter actually used.
+
+**Demonstration-split selection is deterministic.** `pick_demo_splits(all_combos, n_groups)` selects three illustrative split indices: contiguous-early `(0, 1)`, one-gap `(1, 3)`, and contiguous-tail `(n_groups-2, n_groups-1)`. These three patterns exhaust the qualitatively distinct CPCV scenarios for the train/test timeline plot, which would otherwise pick arbitrary splits and miss interesting cases. Callers can override by passing `demo_splits=[i, j, k]` explicitly.
+
+**ASCII status flags.** The leakage audit and purge-detail dump use `OK` / `FAIL` / `OVERLAP` rather than Unicode characters (`✓` / `✗`), so the output renders correctly in Windows console, terminal pipes, and LaTeX appendix tables. The audit function returns a `DataFrame` with the per-split leak counts so the notebook can write it to a thesis-appendix CSV or filter to failures only.
+
+**Leakage audit logic.** For each split, `audit_cpcv_leakage` walks the test groups, finds the time range of each group, and checks the training set for any label whose event time `t` falls before the test-group start while its barrier-touch end-time `t1` falls inside the test-group window. This is exactly the AFML purging condition; on a clean run with `embargo_pct=0.01` and `num_days=10` triple-barrier labels, all 28 splits should report zero leaks.
+
+### Key functions
+
+- `pick_demo_splits(all_combos, n_groups) → list[int]`: helper that picks three illustrative split indices.
+- `plot_btc_with_groups(X, df_raw, n_groups, use_log_scale)`: BTC close price with the N CPCV groups shaded as coloured bands.
+- `plot_train_test_timelines(X, splits, n_groups, k, demo_splits)`: three sub-panels showing train (steelblue) and test (crimson) date partitioning for representative splits, with test-group shading and group-boundary verticals.
+- `print_purge_embargo_detail(X, t1, splits, n_groups, k, demo_splits)`: per-split text dump showing the last three training rows before each test group (purge zone) and the first three after (embargo zone), with `OK` / `OVERLAP` flags on each pre-test row.
+- `audit_cpcv_leakage(X, t1, splits, n_groups, k, split_info)`: full audit across all splits; prints summary table and returns the audit `DataFrame`.
+
+The 8-color palette used by the visual functions is exposed as the module-level constant `DEFAULT_GROUP_COLORS` for consistency across plots.
 
 ---
 
@@ -288,7 +354,7 @@ For each classifier:
 3. Fits the classifier and computes baseline F1 on inner-test.
 4. For each feature, permutes the column, recomputes F1, and records `MDA = baseline_F1 - permuted_F1`.
 
-The final per-feature MDA is the average across both classifiers and all inner folds. Features with positive MDA are kept (permuting them hurts at least one model on average), capped at the top 40% by MDA value, with a hard floor of 5 features minimum.
+The final per-feature MDA is the average across both classifiers and all inner folds. Features with positive MDA are kept (permuting them hurts at least one model on average), capped at the top 25% by MDA value, with a hard floor of 5 features minimum. The cap was tightened from an earlier 40% setting after a high-PBO run revealed that only ~6 features cleared 50% selection frequency in the stability bar chart; tightening the cap to 25% forces roughly 15 features through the bottleneck and aligns the selection cap with the empirical stability finding.
 
 The rationale for multi-model MDA: RF-only MDA introduces tree bias (features that tree ensembles naturally exploit get inflated importance). SFI in weak-signal regimes produces uninformative near-uniform scores. Averaging across model families reduces selection variance and prevents architecture bias.
 
@@ -324,12 +390,12 @@ For each CPCV training fold, runs Bayesian hyperparameter optimization (Optuna's
 ### Search spaces (capped to match the regularization stance)
 
 - **Logistic Regression**: `C` ∈ log-uniform [1e-4, 1e2], `penalty` ∈ {l1, l2}.
-- **Random Forest**: `n_estimators` ∈ [100, 250], `max_depth` ∈ [3, 15], `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
-- **XGBoost**: `max_depth` ∈ [2, 6], `learning_rate` ∈ log [0.01, 0.3], `min_child_weight` ∈ [1, 30], plus subsample, colsample_bytree, gamma, reg_alpha, reg_lambda. Fixed `n_estimators=500` with early stopping at 20 rounds.
-- **LSTM**: `hidden_size` ∈ [16, 32], `num_layers` ∈ [1, 2], `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=14 (matches production).
-- **KAN**: `width1` ∈ [3, 12], `width2` ∈ [0, 10], `lr` ∈ log [5e-4, 5e-2], `weight_decay` ∈ log [1e-5, 5e-3], `grid` ∈ {3, 5}.
+- **Random Forest**: `n_estimators` ∈ [100, 250], `max_depth` ∈ [2, 6], `min_samples_leaf` ∈ [15, 40], `max_features` ∈ {sqrt, log2}.
+- **XGBoost**: `max_depth` ∈ [1, 3], `learning_rate` ∈ log [0.01, 0.3], `min_child_weight` ∈ [5, 30], plus subsample, colsample_bytree, gamma, reg_alpha, reg_lambda. Fixed `n_estimators=500` with early stopping at 20 rounds.
+- **LSTM**: `hidden_size` ∈ {16, 32}, `num_layers` fixed at 1, `dropout` ∈ [0.1, 0.5], `learning_rate` ∈ log [1e-4, 5e-2]. Window=14 (matches production).
+- **KAN**: `width1` ∈ [2, 6], `width2` fixed at 0, `lr` ∈ log [5e-4, 5e-2], `weight_decay` ∈ log [1e-5, 5e-3], `grid` ∈ {3, 5}.
 
-The caps were deliberately tightened in the final configuration relative to common defaults. RF `n_estimators` capped at 250 (down from an earlier 300) and `max_depth` capped at 15 (down from 20): trees in a noisy regime do not benefit from more than 250 estimators, and depths beyond 15 overfit BTC daily features. LSTM `num_layers` tightened from [1, 3] to [1, 2]: three-layer LSTMs on ~1,250 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy. With ~900 training samples per outer fold (at N=8) and ~300 inner-validation samples, overly flexible architectures guarantee overfitting; each cap is justified by the samples-to-parameters ratio.
+The caps were tightened in the locked configuration relative to common defaults and to earlier iterations of this thesis. RF `n_estimators` capped at 250 (down from an earlier 300) because trees in a noisy regime do not benefit from more than 250 estimators. RF `max_depth` was tightened further from [3, 15] to [2, 6]: depth 6 has 64 leaves which is plenty for ~900-sample training folds, and shallower forests vote in tighter agreement, reducing the disagreement that surfaces as path-Sharpe variance. RF `min_samples_leaf` was raised from [1, 30] to [15, 40] so each leaf represents at least 1.7% of the training fold rather than fitting handfuls of high-volatility events. XGBoost `max_depth` was tightened from [2, 6] to [1, 3] because boosting compounds depth nonlinearly across rounds; depth 3 across 50 rounds already produces substantial nonlinear capacity, and depth 6 in this regime memorises residuals. XGBoost `min_child_weight` floor was raised from 1 to 5 to align with the RF leaf-size discipline. LSTM `num_layers` was first tightened from [1, 3] to [1, 2] and then hardcoded to 1: two- and three-layer LSTMs on ~1,150 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy; hardcoding to 1 frees Optuna trials for finer exploration of dropout and learning_rate. KAN `width1` was tightened from [3, 12] to [2, 6] to keep the symbolic formula extracted in Phase 3 humanly readable, since each surviving width1 unit becomes one additive term plus interactions in the closed-form expression. KAN `width2` was hardcoded to 0 (one hidden layer only): a two-hidden-layer formula nests trigonometric primitives in trigonometric primitives and produces fourth-order compositions that lose interpretability. Hardcoding `width2=0` also ensures the architecture used for CPCV evaluation matches the architecture extracted in Phase 3, so the symbolic formula reflects the actual benchmark model rather than an unrelated KAN topology. With ~900 training samples per outer fold (at N=8) and ~300 inner-validation samples, overly flexible architectures guarantee overfitting; each cap is justified by the samples-to-parameters ratio.
 
 ### Production consistency
 
@@ -508,7 +574,7 @@ A PyTorch LSTM with last-hidden-state pooling that consumes windowed sequences a
 
 **Sequence construction.** The 2D feature matrix is reshaped into 3D windowed sequences of length 14 (two BTC calendar weeks). Each timestep contains all selected features at that bar. The first 13 observations are dropped (insufficient lookback). The function returns `valid_indices` mapping sequences back to original positional indices.
 
-**Architecture.** Multi-layer LSTM (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier.
+**Architecture.** Single-layer LSTM (`num_layers=1` hardcoded, `hidden_size` ∈ {16, 32}, `dropout` ∈ [0.1, 0.5]) → last hidden state from the final layer → LayerNorm → dropout → linear classifier. Hidden size, dropout, and learning rate are tuned per split. `num_layers` is no longer searched after empirical evidence that the second layer added path-Sharpe variance without improving accuracy; the previous configuration searched [1, 2] and converged to single-layer almost every fold, so the search dimension is now hardcoded to free Optuna trials for finer exploration of the remaining hyperparameters.
 
 **Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer is used as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~900-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
 
@@ -544,7 +610,7 @@ A KAN classifier using the `efficient-kan` library, trained as a standard PyTorc
 
 **KAN as architecture.** Where MLPs apply learnable weights to fixed activation functions, KANs apply fixed weights (additions) to learnable activation functions. Each edge in the network is a B-spline basis function whose shape adapts during training. The Kolmogorov-Arnold representation theorem guarantees that any continuous multivariate function can be expressed as a finite composition of univariate functions and additions, providing the theoretical motivation.
 
-**Architecture for this thesis.** `[n_features, KAN_HIDDEN, n_classes]` — a narrow bottleneck with B-spline activations. Optionally a second hidden layer if `KAN_HIDDEN2 > 0`. Both widths and grid size are tuned per split (width1 ∈ [3, 12], width2 ∈ [0, 10], grid ∈ {3, 5}).
+**Architecture for this thesis.** `[n_features, KAN_HIDDEN, n_classes]` — a single hidden layer with B-spline activations forming a narrow bottleneck. The `width1` parameter is tuned per split within `[2, 6]` and grid size within `{3, 5}`; `width2` is hardcoded to 0, permanently disabling the second hidden layer. The single-hidden-layer constraint is essential for the Phase 3 symbolic-extraction deliverable: a two-hidden-layer KAN extracts as a formula that nests trigonometric primitives in trigonometric primitives (fourth-order compositions), which loses interpretability. With width1 capped at 6, the extracted formula has at most 6 input-derived terms plus a small number of interaction terms, which is humanly readable. Hardcoding `width2=0` also ensures the CPCV-evaluated KAN architecture matches the architecture used by `prepare_extraction_data` in Phase 3, so the symbolic formula reflects the same model the benchmark numbers describe rather than an unrelated KAN topology.
 
 **Tanh input normalization to spline grid range.** Features are tanh-normalized to [-1, 1] to match efficient-kan's default `grid_range=[-1, 1]`. Without this, features outside the grid range would extrapolate to flat splines, losing all gradient signal.
 
@@ -712,12 +778,11 @@ The thesis's novel methodological contribution. Re-trains a PyKAN model on a sel
 3. **Symbolify.** For each surviving edge, calls `suggest_symbolic` with a custom function library {x, x², x³, x⁴, exp, log, sqrt, tanh, sin, cos, abs, sgn, arctan, 0}. Falls back to PyKAN's default library on `KeyError`. Implements brute-force candidate testing when `"0"` (constant) wins by zero complexity penalty. If best R² ≥ 0.3, the edge is replaced with the symbolic function via `fix_symbolic`.
 4. **Affine fine-tune.** After symbolification, the remaining affine parameters (a, b, c, d per symbolic edge) are LBFGS-optimized for 30 steps to compensate for substitution error. NaN detection reverts to the pre-fine-tune state.
 
-**Architecture coupling to CPCV.** The symbolic re-training uses the CPCV-tuned `width1` as its starting hidden width, capped at `PYKAN_SYMBOLIC_WIDTH_CAP=8`. Two simplifications are applied for symbolic tractability:
+**Architecture coupling to CPCV.** The symbolic re-training uses the CPCV-tuned `width1` as its starting hidden width, capped at `PYKAN_SYMBOLIC_WIDTH_CAP=8`. Now that `width2` is hardcoded to 0 in the CPCV tuning stage, the architectures used for CPCV evaluation and for symbolic extraction match by construction; no additional simplification step is needed to drop a second hidden layer. One CPCV → symbolic divergence remains:
 
-1. **Drop width2.** Even if tuning selected a second hidden layer, only the first is used for symbolic extraction. Two hidden layers produce nested f(g(x)) compositions that overwhelm SymPy's simplification routines.
-2. **Force grid=3.** Even if tuning selected grid=5, the symbolic model uses grid=3. Coarser splines produce cleaner symbolic matches with fewer candidate knots.
+1. **Force grid=3.** Even if tuning selected grid=5, the symbolic model uses grid=3. Coarser splines produce cleaner symbolic matches with fewer candidate knots.
 
-These simplifications trade some predictive accuracy for formula clarity. The thesis presents the symbolic accuracy and pre-symbolic accuracy side by side so the trade-off is transparent.
+This single simplification trades some predictive accuracy for formula clarity. The thesis presents the symbolic accuracy and pre-symbolic accuracy side by side so the trade-off is transparent.
 
 **Data-aware safety floor.** Independent of the tuned width, the function applies a samples-per-parameter floor. If `n_train / total_params < 5`, the hidden width is reduced. For ~350 training samples (after the 80/20 cal split) with grid=3 and k=3, this typically caps hidden width at 4-5 regardless of the tuned value.
 

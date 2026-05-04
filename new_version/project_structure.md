@@ -10,7 +10,7 @@
 
 The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Networks (KANs), benchmarked against AR Logistic, Logistic Regression, Random Forest, XGBoost, and LSTM models, evaluated under López de Prado's *Advances in Financial Machine Learning* (2018) framework. The pipeline is organized into three phases with strict leakage boundaries between them.
 
-**Data:** BTC-USD daily OHLCV, September 2014 – April 2026 (~4,200 bars).
+**Data:** BTC-USD daily OHLCV, November 2014 – May 2026 (~4,200 bars). Raw data starts in November 2014 to provide the 252-day lookback required by the longest-warmup features (Hurst, EMA 50/200 ratio, SADF). The CUSUM event filter is applied from August 8, 2015 onward — the date of Ethereum's Frontier launch and the first day with valid ETH/USD price data needed for the `eth_btc_ratio` feature. This buffer-and-truncate structure ensures that all engineered features have completed their warmup windows by the start of model evaluation, and that all cross-asset crypto features have full data availability across every CPCV fold.
 **Features:** 62 columns total, all eligible for MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 22 external: 13 macro, 1 crypto-macro, 8 on-chain from CoinMetrics, 6 autoregressive lags). The 6 lag features (`log_returns_lag1` … `log_returns_lag30`) compete with engineered features for the MDA top-k cap. AR Logistic continues to consume the 6 lag columns by name from the pre-MDA matrix as its pure-autoregressive baseline, independently of MDA's choices.
 **Calendar:** All rolling windows use the BTC trading calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year).
 **Evaluation:** CPCV (N=8, k=2) producing 28 splits and 7 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
@@ -35,11 +35,13 @@ project/
 │   │   ├── sample_weights.py               ← concurrent labels, uniqueness, return attribution, time decay
 │   │   ├── features.py                     ← TA + mathematical features, log transforms
 │   │   ├── external_features.py            ← macro, crypto-macro, on-chain features
-│   │   └── alignment.py                    ← index intersection, validation assertions
+│   │   ├── alignment.py                    ← index intersection, validation assertions
+│   │   └── pre_cpcv_plots.py               ← labelling diagnostics, feature EDA, ADF stationarity test
 │   │
 │   ├── cpcv/                               ← PHASE 2: Cross-Validation & Training
 │   │   ├── __init__.py
 │   │   ├── cv.py                           ← CPCV splits, purging, embargo, path matrix
+│   │   ├── cpcv_plots.py                   ← group partitioning, train/test timelines, purging detail, leakage audit
 │   │   ├── preprocessing.py                ← per-fold FFD, RobustScaler, multi-model MDA feature selection
 │   │   ├── tuning.py                       ← Optuna TPE + Purged K-Fold nested per-split tuning
 │   │   ├── calibration.py                  ← Platt scaling, vector scaling (default for PyTorch models)
@@ -94,7 +96,7 @@ Fetches daily OHLCV from yfinance and returns a validated DataFrame with columns
 | Volume < 0 | Logs warning, keeps row |
 | NaN Close | Drops row + logs warning |
 
-**Parameters used in notebook:** `ticker="BTC-USD"`, `start="2014-09-17"`, `end="2026-04-28"`
+**Parameters used in notebook:** `ticker="BTC-USD"`, `start="2014-11-01"`, `end="2026-05-01"`
 
 **Internal helpers:** `_fill_small_gaps(df)` handles gap detection and forward-filling with the 3-day limit. `_check_ohlcv_consistency(df)` validates OHLCV relationships row-by-row.
 
@@ -123,6 +125,8 @@ Fires an event and resets when `s_pos >= h` or `s_neg <= -h`. The zero floor ens
 Returns a DatetimeIndex of event timestamps, reducing ~4,200 bars to ~1,000 informative events.
 
 **Parameters in notebook:** `h = 1.0 × daily_vol.mean()`. The multiplier was tightened from an earlier 1.5× choice after empirical sweeps: `0.5×` produces too many noisy events, `3.0×` reduces to ~200 (too few for ML), `1.0×` yields a workable event count with roughly balanced classes.
+
+**CUSUM start-date truncation.** After the filter runs on the full raw return series, the notebook truncates the event index to a configured `CUSUM_START_DATE` (currently `"2015-08-08"`, the date of Ethereum's Frontier launch and the first day with valid ETH/USD price data from CoinMetrics). Events that fired before this date are dropped. This is structurally important: the EWMA daily-volatility estimator with `span=50` needs roughly 150 days of warmup to converge, which is satisfied for any event after February 2015 given the November 2014 raw-data start. More importantly, `eth_btc_ratio` (one of the cross-asset crypto features) cannot be computed before ETH started trading. Truncating CUSUM to start at the ETH availability date ensures every labelled event has full feature coverage across every CPCV fold and prevents the asymmetric data-availability problem that otherwise produces fully-NaN early test partitions under N=8. The CUSUM accumulators `s_pos` and `s_neg` themselves are computed on the full raw series, so events that survive this truncation reflect the dynamic state of the cumulative drift over the entire pre-event history. Empirically, the mean daily volatility over the truncated window matches the full-series mean to four decimal places, confirming the EWMA was fully converged by the truncation date.
 
 ---
 
@@ -325,9 +329,13 @@ Single market-level cross-crypto signal, distinct from blockchain fundamentals (
 
 | # | Feature | Source | Method |
 |---|---------|--------|--------|
-| 1 | `eth_btc_ratio` | yfinance ETH-USD | `ETH_close / BTC_close` aligned via merge_asof |
+| 1 | `eth_btc_ratio` | CoinMetrics ETH PriceUSD (with yfinance fallback) | `ETH_close / BTC_close` aligned via merge_asof |
+
+**ETH source priority.** The earlier version of this column used yfinance's `ETH-USD` ticker as the sole source. yfinance's ETH-USD history begins around November 9, 2017 (3,092 daily bars over a ~4,200-day external dataset), leaving roughly 27% of the calendar series as NaN at the head and producing entire-test-partition NaN in early CPCV folds under N=8. The current implementation switches the primary source to CoinMetrics' Community-tier API, which serves ETH price data back to August 8, 2015 (Ethereum's Frontier launch date). The fetch tries three CoinMetrics metrics in priority order — `ReferenceRateUSD`, `PriceUSD`, then a `CapMrktCurUSD / SplyCur` derivation — because not every ETH metric is available on the Community tier (ReferenceRateUSD is currently Pro-gated for ETH and returns 1 row; PriceUSD returns ~3,917 daily rows back to August 2015). The first metric returning more than 100 rows is used. yfinance remains as a final fallback if all three CoinMetrics attempts fail; the source actually used is logged at fetch time. With the CoinMetrics PriceUSD source, the residual `eth_btc_ratio` NaN rate over the external dataframe is 7.7%, all of which falls in the November 2014 → August 2015 pre-ETH-trading window and is fully truncated out by the CUSUM start-date filter described in Step 2.
 
 **Note on the dropped `btc_dominance` feature.** An earlier version included a second crypto-macro column, `btc_dominance`, fetched from CoinGecko's `/coins/bitcoin/market_chart` endpoint with a `100 / (1 + ETH/BTC)` proxy as fallback. The CoinGecko endpoint actually returns BTC market cap in USD (not the bounded [0, 100] dominance percentage the column name implied), and the proxy fallback was a price-correlated approximation that the methodology could not cleanly defend. The column was removed; `eth_btc_ratio` carries the alt-rotation signal alone.
+
+**Why not CoinGecko for ETH directly?** CoinGecko's free public API was evaluated as a candidate ETH source. As of 2024 the free tier limits historical queries to the most recent 365 days only; the 2015-2017 ETH history needed for full BTC-dataset coverage sits behind a paid tier. CoinMetrics' Community tier has no such restriction and serves ETH prices back to genesis without rate limits or authentication, which is why it is the chosen primary source.
 
 #### Step 6.f — On-Chain Features (`external_features.py`)
 
@@ -396,7 +404,7 @@ Lives directly in `main.ipynb` section 2.5 as inline plotting cells. Inspects da
 
 #### `align_for_cv(features, bins, weights) → (X, y, w, t1)`
 
-Computes the triple intersection of features (all ~4,200 daily bars), bins (CUSUM-filtered events, **1,245** after dropping rare class 0 at 8.5% threshold), and weights (same index as bins) via `features.index.intersection(bins.index).intersection(weights.index)`.
+Computes the triple intersection of features (all ~4,200 daily bars), bins (CUSUM-filtered events truncated to start at `CUSUM_START_DATE`, approximately **1,150** after dropping rare class 0 at 8.5% threshold), and weights (same index as bins) via `features.index.intersection(bins.index).intersection(weights.index)`.
 
 **Assertions (raises on failure):**
 - Non-empty intersection
@@ -433,20 +441,42 @@ Feature computation produces NaN values for two reasons:
 - A *hard assertion* that `t1` is fully populated (any missing barrier-touch timestamp would break CPCV purging).
 - A *soft warning* listing per-column NaN counts for partial-NaN columns; the pipeline continues.
 
-Most warm-up NaNs are eliminated naturally at alignment because `bins.index` (the CUSUM event index, ~1,245 events after dropping the rare class) does not start firing until daily volatility itself has warmed up. By that point most TA features are valid. A handful of leading rows from slow-warming features (Hurst at 180 bars, SADF at 90) may still be NaN at alignment time, and external columns may still have scattered NaN cells. Both are acknowledged and deferred to Phase 2.
+Most warm-up NaNs are eliminated naturally at alignment because `bins.index` (the CUSUM event index, ~1,150 events after the August 2015 truncation and the rare-class drop) starts firing well after the longest feature warmup window has completed. The 252-day raw-data buffer ahead of the CUSUM start date guarantees that even the slowest-warming features (Hurst at 252, EMA 50/200 ratio at 200, SADF at variable but bounded windows) have valid values for every CUSUM event. External columns may still have scattered NaN cells where the source data was not yet released or not aligned to a BTC trading day; these are handled in Phase 2 via per-fold ffill+bfill within partitions.
 
 The X passed to CPCV may therefore contain partial-NaN rows. This is intentional: the per-fold preprocessing step resolves them with a partition-aware policy described in Step 11 (FFD).
 
 ### Pre-CPCV Output Summary
 
+The shape numbers below reflect the locked configuration with `START_DATE="2014-11-01"`, `END_DATE="2026-05-01"`, `CUSUM_START_DATE="2015-08-08"`, `CUSUM_MULT=1.0`, `pt_sl=(1.5, 1.5)`, `num_days=10`, and `drop_rare_labels(min_pct=0.085)`. Approximate event count is given below; the figure depends on the exact CUSUM event density in the August 2015 → May 2026 window and is updated after the locked end-to-end run. The previous configuration (raw data from September 2014, no CUSUM truncation) produced 1,245 events; the buffer-and-truncate configuration drops events that fired before August 8, 2015, reducing the event count by approximately 80-100.
+
 | Object | Shape | Description |
 |--------|-------|-------------|
-| `X` | 1,245 × 62 | Feature matrix (25 TA + 9 math + 22 external + 6 lag, post log-transform). All 62 columns are eligible for MDA selection; AR Logistic restricts itself to the 6 lag columns by name from the pre-MDA matrix. |
-| `y` | 1,245 | Binary labels {-1, +1}. Class balance: {+1: 697, -1: 548}. The 0 class is removed by `drop_rare_labels(min_pct=0.085)` after triple-barrier labeling. |
-| `w` | 1,245 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
-| `t1` | 1,245 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
+| `X` | ~1,150 × 62 | Feature matrix (25 TA + 9 math + 22 external + 6 lag, post log-transform). All 62 columns are eligible for MDA selection; AR Logistic restricts itself to the 6 lag columns by name from the pre-MDA matrix. |
+| `y` | ~1,150 | Binary labels {-1, +1}. The 0 class is removed by `drop_rare_labels(min_pct=0.085)` after triple-barrier labeling. |
+| `w` | ~1,150 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
+| `t1` | ~1,150 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
 
 These four objects are the contract between Phase 1 and Phase 2. Everything from FFD onward happens inside the CPCV loop, fitted on training data only.
+
+---
+
+### Step 9.5 — Pre-CPCV Plotting and EDA (`pre_cpcv_plots.py`)
+
+Visualisation and diagnostic helpers for the labelling and feature-engineering stages. Each function takes the relevant data, returns a matplotlib `Figure` (or `(Figure, DataFrame)` for the ADF test that produces both a chart and a result table), and prints diagnostic summaries. Functions do not call `plt.show()`; the notebook decides whether to display, save, or close each figure. This keeps the helpers reusable for thesis-figure exports at different sizes and DPIs.
+
+| Function | Purpose | Returns |
+|----------|---------|---------|
+| `plot_cusum_filter(log_returns, t_events, h, zoom_start, zoom_end)` | Two-panel zoom: log returns coloured by sign with event markers, and CUSUM cumulative sums `s_pos` / `s_neg` against the threshold band | `Figure` |
+| `plot_tbl_examples(bins, close, daily_vol, pt_sl, num_days, zoom_start, zoom_end)` | Side-by-side panels showing one event per barrier-touch type (profit / stop loss / vertical) with annotated price paths | `Figure` or `None` |
+| `plot_label_distribution(bins)` | Donut chart of class counts with absolute and relative numbers printed below | `Figure` |
+| `plot_feature_distributions(feature_matrix, kurtosis_threshold)` | Grid of histograms with kurtosis flagging for features that may saturate KAN spline ranges | `Figure` |
+| `plot_feature_correlation(feature_matrix, corr_threshold, annotate)` | Annotated heat-map of the feature correlation matrix; flags pairs above the threshold | `Figure` |
+| `plot_feature_label_mutual_info(feature_matrix, bins, mi_threshold)` | Horizontal bar chart of MI between each feature and the binary label, computed via `sklearn.mutual_info_classif` | `Figure` |
+| `plot_adf_stationarity(feature_matrix, significance, maxlag, autolag)` | Per-feature Augmented Dickey-Fuller test with a p-value bar chart, threshold line at `significance`, and a returned DataFrame of test statistics for downstream use | `(Figure, DataFrame)` |
+
+The ADF function returns the result table because its output drives the FFD column choice in the notebook (`COLUMNS_TO_FFD`); the table is also a candidate for a thesis appendix.
+
+The CUSUM and TBL functions accept `zoom_start` / `zoom_end` parameters with notebook-overridable defaults. The defaults pick a recent zoom window (Jan-Apr 2026); call with different ranges to inspect earlier regimes.
 
 ---
 
@@ -504,6 +534,24 @@ Each function is called exactly once; the printed summary is rendered without re
 
 ---
 
+### Step 10.5 — CPCV Plotting and Audits (`cpcv_plots.py`)
+
+Visualisation and verification helpers for the CPCV configuration, called after the CV cell has produced `splits`, `path_map`, `n_paths`, and `split_info`. Each function takes the CPCV inputs as parameters and returns either a `Figure` (visual diagnostics) or a `DataFrame` (the leakage audit). All functions derive their date axis from `X.index` directly, so after the CUSUM start-date truncation they automatically span the analysis window (August 2015 onward) rather than the raw-data start date.
+
+| Function | Purpose | Returns |
+|----------|---------|---------|
+| `pick_demo_splits(all_combos, n_groups)` | Helper that picks three illustrative split indices: contiguous-early `(0, 1)`, one-gap `(1, 3)`, and contiguous-tail `(n_groups-2, n_groups-1)` | `list[int]` |
+| `plot_btc_with_groups(X, df_raw, n_groups, use_log_scale)` | BTC close price with the N CPCV groups shaded as coloured bands; toggleable log/linear y-axis | `Figure` |
+| `plot_train_test_timelines(X, splits, n_groups, k, demo_splits)` | Three sub-panels showing train (steelblue) and test (crimson) date partitioning for representative splits, with test-group shading and group-boundary verticals | `Figure` |
+| `print_purge_embargo_detail(X, t1, splits, n_groups, k, demo_splits)` | Per-split text dump showing the last three training rows before each test group (purge zone) and the first three after (embargo zone), with `OK` / `OVERLAP` flags on each pre-test row | `None` |
+| `audit_cpcv_leakage(X, t1, splits, n_groups, k, split_info)` | Full audit across all splits checking that no training label end-time `t1` resolves inside a test group; prints a summary table and returns the audit data | `DataFrame` |
+
+`audit_cpcv_leakage` returns the audit as a DataFrame so the notebook can write it to a thesis appendix table or filter to failures only; on a clean run all 28 splits should report `status="OK"` with zero leaks.
+
+The 8-color palette used by the visual functions is exposed as a module-level constant `DEFAULT_GROUP_COLORS` for consistency across plots.
+
+---
+
 ### Step 11 — Per-Fold Preprocessing (`preprocessing.py`)
 
 **Produces:** Scaled, FFD-transformed, feature-selected train and test DataFrames. Shared across all models within the same fold.
@@ -511,7 +559,7 @@ Each function is called exactly once; the printed summary is rendered without re
 **Module-level constants:**
 ```
 FFD: FFD_D_RANGE=(0.0, 1.0, 0.05), FFD_THRESHOLD=1e-4, FFD_ADF_SIGNIFICANCE=0.05, FFD_MAX_LOOKBACK=200
-Selection: MDA_N_ESTIMATORS=500, MDA_N_INNER_FOLDS=3, MDA_TOP_K_FRAC=0.4, MIN_FEATURES=5
+Selection: MDA_N_ESTIMATORS=500, MDA_N_INNER_FOLDS=3, MDA_TOP_K_FRAC=0.25, MIN_FEATURES=5
 ```
 
 #### Step 11.a — FFD (`ffd_transform`)
@@ -553,12 +601,14 @@ For each model, `_compute_mda_single_model()` runs a **purged inner 3-fold CV** 
 
 The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
 1. Keep features with averaged MDA > 0 (permuting hurts at least one model on average)
-2. Cap at `top_k_frac` of total features (default 40%, overridable from notebook)
+2. Cap at `top_k_frac` of total features (default 25%, overridable from notebook)
 3. Hard floor of 5 features minimum
 
 **Lag features in the MDA pool.** `select_features` runs MDA over all 62 features, including the six `log_returns_lagN` columns. An earlier version of the pipeline excluded lag features from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received six features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing; lag columns appear in `selected` for a given fold only if their averaged MDA (RF + Logistic Regression permutation importance) is positive and ranks within the top-k cap. AR Logistic continues to consume the six lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, independently of MDA's choices.
 
-**Typical result:** ~22–26 features selected per fold from the 62 candidates. The 6 lag columns sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
+**Typical result:** ~14–16 features selected per fold from the 62 candidates. The 6 lag columns sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
+
+**TOP_K_FRAC tightening (from 0.4 to 0.25).** The cap was tightened in the locked configuration after a high-PBO run with the 0.4 setting. Across the previous run's CPCV folds, only ~6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Tightening to 0.25 forces roughly 15 features through the bottleneck and aligns the selection cap with the empirical stability finding. The trade-off is that one or two folds may select fewer features than they would have at 0.4, but those folds were also the ones contributing the most rank variance to PBO, so the tightening attacks the right problem.
 
 #### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, ffd_columns, top_k_frac, skip_selection=False)`
 
@@ -602,14 +652,14 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 
 **`tune_random_forest(X, y, w, n_trials=None)`** — Search space:
 - `n_estimators`: int [100, 250] step 50 (capped from an earlier 300 ceiling; trees in a noisy regime do not benefit from more than 250)
-- `max_depth`: int [3, 15] (capped from an earlier 20; deep trees overfit BTC daily features)
-- `min_samples_leaf`: int [1, 30]
+- `max_depth`: int [2, 6] (tightened from earlier [3, 15]; depth 6 has 64 leaves which is plenty for ~900-sample training folds, and shallower forests vote in tighter agreement, reducing the disagreement that surfaces as path-Sharpe variance)
+- `min_samples_leaf`: int [15, 40] (raised from earlier [1, 30]; a floor of 15 forces each leaf to represent ≥1.7% of the training fold, preventing leaves that fit just a handful of high-volatility events)
 - `max_features`: categorical {sqrt, log2}
 
 **`tune_xgboost(X, y, w, n_trials=None)`** — Search space:
-- `max_depth`: int [2, 6] (capped from 10 to prevent overfitting on ~900-sample folds)
+- `max_depth`: int [1, 3] (tightened from earlier [2, 6]; XGBoost's sequential boosting compounds depth nonlinearly across rounds, so depth 3 across 50 boosting rounds already produces substantial nonlinear capacity, and depth 6 in this regime memorises residuals)
 - `learning_rate`: log-uniform [0.01, 0.3] (floor at 0.01; below this, training takes forever and the model effectively underfits)
-- `min_child_weight`: int [1, 30]
+- `min_child_weight`: int [5, 30] (floor raised from 1 to align with RF's leaf-size discipline; with ~900 train samples a `min_child_weight=1` permits trees to split off single-event leaves)
 - `subsample`, `colsample_bytree`: uniform [0.6, 1.0]
 - `gamma`: log-uniform [1e-8, 1.0] (tightened upper bound; large gamma rarely helps on weak-signal financial data)
 - `reg_alpha`, `reg_lambda`: log-uniform [1e-8, 10.0]
@@ -617,13 +667,13 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 
 **`tune_lstm(X, y, w, n_features, n_trials=None)`** — Search space:
 - `hidden_size`: int [16, 32] step 16 (capped further from 64 after empirical underperformance at higher capacities)
-- `num_layers`: int [1, 2] (tightened from earlier [1, 3]; three-layer LSTMs on ~1,250 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy)
+- `num_layers`: fixed at 1 (no longer searched; tightened from earlier [1, 2] then [1, 3]; two- and three-layer LSTMs on ~1,150 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy. Hardcoding to 1 frees Optuna trials for finer exploration of dropout and learning_rate)
 - `dropout`: uniform [0.1, 0.5] (floor raised from 0.0 for regularization)
 - `learning_rate`: log-uniform [1e-4, 5e-2]
 
 **`tune_kan(X, y, w, n_features, n_trials=None)`** — Search space:
-- `width1`: int [3, 12] (capped from an earlier 16 to prevent memorisation on ~900-sample folds)
-- `width2`: int [0, 10], 0 = skip second hidden layer (capped from an earlier 15)
+- `width1`: int [2, 6] (tightened from earlier [3, 12] then [3, 16]; the cap is set at 6 to keep the symbolic formula extracted in Phase 3 humanly readable, since each surviving width1 unit becomes one additive term plus interactions in the closed-form expression)
+- `width2`: fixed at 0 (no longer searched; tightened from earlier [0, 10]; one hidden layer only, so the Phase 3 symbolic formula does not nest trigonometric primitives in trigonometric primitives, which would otherwise produce fourth-order compositions that lose interpretability. Hardcoding `width2=0` also ensures the architecture used for CPCV evaluation matches the architecture extracted in Phase 3, so the symbolic formula reflects the actual benchmark model rather than an unrelated KAN topology)
 - `lr`: log-uniform [5e-4, 5e-2]
 - `weight_decay`: log-uniform [1e-5, 5e-3]
 - `grid`: categorical {3, 5} (dropped grid=8 to prevent memorisation)
@@ -679,7 +729,7 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 #### LSTM (`lstm_model.py`)
 
-**Architecture:** Multi-layer `nn.LSTM` (1-3 layers, hidden_size 16-32, dropout 0.1-0.5, all tunable) → last hidden state from the final layer → LayerNorm → dropout → linear classifier. All architectural parameters are tuned per split.
+**Architecture:** Single-layer `nn.LSTM` (`num_layers=1` hardcoded, `hidden_size` ∈ [16, 32], `dropout` ∈ [0.1, 0.5]) → last hidden state from the final layer → LayerNorm → dropout → linear classifier. The hidden size, dropout, and learning rate are tuned per split; `num_layers` is no longer searched after empirical evidence that the second layer added path-Sharpe variance without improving accuracy on this dataset.
 
 **Last-hidden-state pooling.** The final timestep's hidden state from the last LSTM layer serves as the sequence representation. An earlier version used learned temporal attention pooling (weighted sum across all timesteps), but it was removed: with a 14-day window and ~900-sample folds, the additional attention parameters did not improve performance and the simpler standard approach proved more robust.
 
@@ -695,7 +745,7 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 
 #### KAN (`kan_model.py`)
 
-**Architecture:** `efficient_kan.KAN(layers_hidden=[n_features, width1, (width2), 2], grid_size=grid, spline_order=3, grid_range=[-1, 1])`. Width parameters (width1 ∈ [3, 12], width2 ∈ [0, 10]) and grid size (∈ {3, 5}) are tuned per split.
+**Architecture:** `efficient_kan.KAN(layers_hidden=[n_features, width1, 2], grid_size=grid, spline_order=3, grid_range=[-1, 1])`. Width is tuned per split (`width1` ∈ [2, 6]) and grid size (∈ {3, 5}). The second hidden layer is permanently disabled (`width2=0` hardcoded in tuning.py): the CPCV-evaluated KAN matches the single-hidden-layer architecture used in the Phase 3 symbolic extraction, so the formula extracted reflects the same model the benchmark numbers describe.
 
 **Input normalization:** Tanh normalization fitted on training data: `z = tanh((x - mean) / (std + ε))`. Maps features into [-1, 1] to match the spline grid range. Stored parameters applied at inference time.
 
@@ -769,8 +819,8 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 | Logistic Regression | 3 | Yes (30 trials) | C, penalty |
 | Random Forest | 3 | Yes (30 trials) | n_estimators ≤ 300, depth, leaf, max_features |
 | XGBoost | 3 | Yes (30 trials) | 8 params, depth ≤ 6, early stopping |
-| LSTM | 2 | Yes (30 trials) | hidden ≤ 32, layers ≤ 3, dropout ≥ 0.1, lr; window=14. Tuning runs at epochs=50, patience=7; production refits at epochs=100, patience=15. |
-| KAN | 2 | Yes (30 trials) | width1 ≤ 12, width2 ≤ 10, grid ∈ {3,5}, lr ∈ [5e-4, 5e-2], weight_decay ∈ [1e-5, 5e-3] |
+| LSTM | 2 | Yes (30 trials) | hidden ∈ {16, 32}, layers fixed at 1, dropout ∈ [0.1, 0.5], lr; window=14. Tuning runs at epochs=50, patience=7; production refits at epochs=100, patience=15. |
+| KAN | 2 | Yes (30 trials) | width1 ≤ 6, width2 fixed at 0, grid ∈ {3,5}, lr ∈ [5e-4, 5e-2], weight_decay ∈ [1e-5, 5e-3] |
 
 ---
 
@@ -967,7 +1017,7 @@ Counts how often each feature was selected across all KAN CPCV folds. Returns `[
 #### Step 17.c — Data preparation (`prepare_extraction_data`)
 
 Reconstructs the extraction fold's preprocessed data:
-1. Re-generates CPCV splits to get training indices
+1. Resolves CPCV configuration (`n_groups`, `k`, `embargo_pct`) and either re-generates the splits or accepts them from the caller
 2. Applies stored FFD d* values to full series, extracts training fold
 3. Applies stored scaler transform
 4. Selects features (stored selection or explicit subset override)
@@ -975,6 +1025,8 @@ Reconstructs the extraction fold's preprocessed data:
 6. **Tanh normalization** fitted on training split: `z = tanh((x - mean) / (std + ε))`, matching efficient-kan's input preprocessing
 
 Returns PyKAN-format dataset dict with normalized float32 tensors.
+
+**CPCV-config threading.** The function accepts `splits`, `n_groups`, `k`, and `embargo_pct` as optional parameters and resolves them in this priority order: explicit `splits` → explicit `n_groups`/`k`/`embargo_pct` → values stored in `cpcv_results["split_info"]` → `ValueError`. The previous version called `generate_cpcv_splits(X, t1)` with no arguments and silently fell back to the cv.py module defaults; if the module defaults differed from what `cpcv_results` was actually trained against, the function would silently regenerate the wrong fold (different N produces different group boundaries, so `splits[best_split_idx]` would point to a completely different training set). The current design refuses to guess: if the configuration cannot be resolved from any of the three sources, the function raises rather than silently using a mismatched fold.
 
 #### Step 17.d — PyKAN training (`train_pykan`)
 
