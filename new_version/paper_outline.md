@@ -308,12 +308,14 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 ### 3.1 Data
 
 - **Source.** BTC-USD daily OHLCV from yfinance.
-- **Range.** 2014-09-17 to 2026-04-28 (approximately 4,200 daily bars).
+- **Range.** 2014-11-01 to 2026-05-01 (approximately 4,200 daily bars).
+- **CUSUM start-date truncation.** The raw OHLCV series begins on 2014-11-01 to provide the 252-day lookback the longest-warmup features require (Hurst at 252, EMA 50/200 ratio at 200, SADF). The CUSUM event filter is then truncated to start on 2015-08-08, the date of Ethereum's Frontier launch and the first day with valid ETH/USD price data needed for the `eth_btc_ratio` feature. Events that fired before this date are dropped. The CUSUM accumulators themselves are computed on the full raw series, so events that survive truncation reflect the dynamic state of the cumulative drift over the entire pre-event history. Empirically, the mean daily volatility over the truncated window matches the full-series mean to four decimal places, confirming the EWMA was fully converged by the truncation date.
+- **Why this buffer-and-truncate design.** Two leakage and data-availability problems forced the choice. First, every engineered feature must have completed its warmup window before the first labelled event so that no fold sees a partial-feature observation. Second, `eth_btc_ratio` cannot be computed before ETH started trading; without truncation, early CPCV folds under N=8 produce fully-NaN test partitions. Truncating CUSUM to start at the ETH availability date solves both problems simultaneously.
 - **Validation pipeline.** Empty downloads raise; MultiIndex columns flattened; duplicate dates raise; calendar gaps ≤ 3 days forward-filled, gaps > 3 days raise; OHLCV consistency checks; NaN Close drops the row.
 - **Calendar.** All rolling windows use the BTC trading calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year). BTC trades 24/7.
-- **External sources (overview, detailed in 3.4).** Macro (yfinance, FRED), crypto-macro (yfinance), on-chain (CoinMetrics Community API).
+- **External sources (overview, detailed in 3.4).** Macro (yfinance, FRED), crypto-macro (CoinMetrics with yfinance fallback), on-chain (CoinMetrics Community API).
 - **Anti-leakage.** Externals aligned via `merge_asof(direction='backward')`. CoinMetrics shifted by 1 day (end-of-day reporting convention).
-- **Figure.** BTC-USD log price 2014 to 2026 with CPCV group boundaries overlaid.
+- **Figure.** BTC-USD log price 2014 to 2026 with CPCV group boundaries overlaid; vertical line marking the 2015-08-08 CUSUM truncation date.
 - **Cochrane note.** Do not write extensive descriptions of well-known datasets (BTC OHLCV is well-known). Keep this section to about one page.
 
 ### 3.2 Labeling [T-R5: introduces the event / label / observation thread]
@@ -328,11 +330,12 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 #### 3.2.2 CUSUM event filter (AFML Snippet 2.4)
 
-- Symmetric CUSUM accumulators `s_pos`, `s_neg`.
+- Symmetric CUSUM accumulators `s_pos`, `s_neg` computed on the full raw return series from 2014-11-01 onward.
 - Threshold: `h = 1.0 × mean(daily_vol)`.
 - Justification for 1.0× (tightened from 1.5×): empirical sweep showed 0.5× too noisy, 3.0× too sparse; 1.0× yields workable event count with balanced classes.
-- Reduces approximately 4,200 daily bars to approximately 1,000 informative events.
-- **Figure.** CUSUM accumulators alongside BTC price with event markers.
+- **Truncation.** After CUSUM fires its candidate events on the full series, the event index is truncated to start on `CUSUM_START_DATE = 2015-08-08` (Section 3.1). The accumulators continue to reflect the dynamic state of the cumulative drift over the entire pre-event history; only the event-firing window is restricted to the data-availability frontier of `eth_btc_ratio`. This drops approximately 80 to 100 candidate events that fired before the cross-asset feature window opened.
+- The post-truncation event series reduces approximately 4,200 daily bars to approximately 1,000 informative events.
+- **Figure.** CUSUM accumulators alongside BTC price with event markers; the 2015-08-08 truncation boundary marked.
 
 #### 3.2.3 Triple barrier labeling (AFML Snippets 3.2, 3.4, 3.5)
 
@@ -347,7 +350,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 - `min_pct = 0.085` (raised from default 0.05 to aggressively remove residual class-0 events).
 - Combined with symmetric `pt_sl` and `min_return = 0.02`, class 0 is eliminated → binary labels {-1, +1}.
-- **Final aligned event count.** 1,245 events. Class balance: {+1: 697, -1: 548}.
+- **Final aligned event count.** Approximately 1,150 events after the August 2015 CUSUM truncation and the rare-class drop. Class balance is binary {-1, +1} with the exact counts produced by the locked end-to-end run. The previous configuration (raw data from September 2014, no CUSUM truncation) produced 1,245 events; the buffer-and-truncate configuration drops approximately 80 to 100 events that fired before the ETH-availability date.
 - **Table.** Label distribution before and after rare-label removal (self-contained caption).
 
 ### 3.3 Sample Weights (AFML Chapter 4)
@@ -375,7 +378,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 | Technical (TA) | 25 | OHLCV | Price/volume patterns |
 | Mathematical (AFML Part 4) | 9 | Returns/log-prices | Information-theoretic, randomness, structural breaks |
 | External: macro | 13 | yfinance, FRED | Macro economic environment |
-| External: crypto-macro | 1 | yfinance | Cross-crypto signal |
+| External: crypto-macro | 1 | CoinMetrics + yfinance fallback | Cross-crypto signal |
 | External: on-chain | 8 | CoinMetrics | Blockchain fundamentals |
 | Lag (autoregressive) | 6 | Log returns | Pure-autoregressive baseline |
 | **Total** | **62** | | |
@@ -402,7 +405,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 #### 3.4.3 External features (22)
 
 - **Macro (13).** `dxy_roc_30`, `us2y` (FRED DGS2 with T10Y2Y fallback), `us10y` (^TNX), `yield_curve_2y10y`, `yield_curve_10y30y`, `vix`, `sp500_ret_30`, `nasdaq_ret_30`, `gold_ret_30`, `silver_ret_30`, `copper_ret_30`, `oil_ret_30`, `natgas_ret_30`.
-- **Crypto-macro (1).** `eth_btc_ratio` (alt-rotation signal). The earlier `btc_dominance` column was removed because the CoinGecko endpoint returns BTC market cap (not bounded [0, 100] dominance) and the proxy fallback was a price-correlated approximation that the methodology could not cleanly defend.
+- **Crypto-macro (1).** `eth_btc_ratio` (alt-rotation signal), computed as `ETH_close / BTC_close` aligned via `merge_asof`. **ETH source priority:** CoinMetrics Community API as the primary source, trying three metrics in order (`ReferenceRateUSD` → `PriceUSD` → derived `CapMrktCurUSD / SplyCur`); the first metric returning more than 100 rows is used. yfinance ETH-USD is the final fallback. This change replaces an earlier yfinance-only implementation whose ETH-USD history began only in November 2017 and produced a 27% NaN rate over the external dataframe with entire-test-partition NaN in early CPCV folds under N=8. With the CoinMetrics PriceUSD source, ETH coverage extends back to 2015-08-08 and the residual NaN rate falls to 7.7%, all of which sits in the November 2014 to August 2015 pre-ETH-trading window and is fully truncated out by the CUSUM start-date filter (Section 3.2.2). The earlier `btc_dominance` column was removed because the CoinGecko endpoint returns BTC market cap (not bounded [0, 100] dominance) and the proxy fallback was a price-correlated approximation that the methodology could not cleanly defend.
 - **On-chain (8).** `active_addr_roc_14`, `tx_count_roc_14`, `hashrate_roc_30`, `mvrv` (level), `net_exchange_flow`, `fee_per_tx`, `exchange_supply_pct`, `issuance_ntv`. CoinMetrics Community API, shifted by 1 day.
 - **Anti-leakage.** All external series merged onto BTC's calendar via `merge_asof(direction='backward')`. Cache invalidates on column-set change (not just date range).
 
@@ -429,7 +432,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - `align_for_cv(features, bins, weights) → (X, y, w, t1)` via index intersection.
 - Hard assertions: non-empty intersection; no duplicate dates; monotone index; identical lengths; no all-NaN columns.
 - Validation: `t1` fully populated; weights > 0; labels ∈ {-1, 0, +1}; X/y/w/t1 share indices.
-- **Output.** `(1245 × 62)` X, `(1245)` y, `(1245)` w, `(1245)` t1.
+- **Output.** `(~1,150 × 62)` X, `(~1,150)` y, `(~1,150)` w, `(~1,150)` t1.
 - **Table.** Alignment summary (daily bars → CUSUM events → labelled events → aligned size). Self-contained caption.
 
 ### 3.5 Cross-Validation Framework
@@ -447,8 +450,8 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - `N_GROUPS = 8`, `K_TEST_GROUPS = 2`, `EMBARGO_PCT = 0.01`.
 - Groups 0 to 6 of size `⌊T/N⌋`, group 7 absorbs remainder.
 - Total splits: `C(8, 2) = 28`; backtest paths: `C(N-1, k-1) = C(7, 1) = 7`.
-- Each group appears in 7 test sets. Per-group sample size approximately 156.
-- **Justification for N=8, k=2.** Yields approximately 156 events per group while keeping the training fold above 900 events; 28 splits and 7 paths give denser combinatorial diversity for PBO than the earlier N=6 configuration (which produced 15 splits and 5 paths) without dropping per-group sample size below the rough lower bound for daily-bar AFML pipelines. The choice trades a smaller test fold per split against a larger Sharpe-matrix cross-section for PBO and DSR.
+- Each group appears in 7 test sets. Per-group sample size approximately 144 events at the locked configuration.
+- **Justification for N=8, k=2.** Yields approximately 144 events per group while keeping the training fold at approximately 600 events after purging and embargo; 28 splits and 7 paths give denser combinatorial diversity for PBO than the earlier N=6 configuration (which produced 15 splits and 5 paths) without dropping per-group sample size below the rough lower bound for daily-bar AFML pipelines. The choice trades a smaller test fold per split against a larger Sharpe-matrix cross-section for PBO and DSR.
 - **Table.** Group boundaries (group ID, positional index range, date range, count). Self-contained caption.
 
 #### 3.5.3 Purging (AFML Snippet 7.1)
@@ -507,9 +510,10 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
   - Final MDA = `mean(MDA_RF, MDA_LR)` per feature.
   - Rationale: prevents bias toward any single model architecture; SFI in weak-signal regimes returns near-uniform scores; RF-only inflates tree-friendly features.
 - **Inner CV.** Purged 3-fold on the training set (same `t1`-based overlap conditions as outer CPCV).
-- **Selection rule.** Keep features with averaged MDA > 0; cap at `MDA_TOP_K_FRAC = 0.40` (approximately 25 of 62); minimum floor of 5 features.
+- **Selection rule.** Keep features with averaged MDA > 0; cap at `MDA_TOP_K_FRAC = 0.25` (approximately 15 of 62); minimum floor of 5 features.
+- **TOP_K_FRAC tightening rationale (advisor-reviewed).** The cap was tightened from 0.40 to 0.25 in the locked configuration after a high-PBO run with the looser setting. Across the previous run's CPCV folds, only approximately 6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Tightening to 0.25 forces approximately 15 features through the bottleneck and aligns the selection cap with the empirical stability finding. The trade-off is that one or two folds may select fewer features than they would have at 0.40, but those folds were also the ones contributing the most rank variance to PBO, so the tightening attacks the right problem.
 - **AR Logistic exception.** Bypasses MDA entirely; receives pre-MDA matrix and selects 6 lag columns by name.
-- Typical result: 22 to 26 features selected per fold from 62 candidates.
+- Typical result: approximately 15 features selected per fold from 62 candidates (down from approximately 22 to 26 under the previous 0.40 cap).
 
 ### 3.7 Models [T-R4: one construct per paragraph; six models, four families]
 
@@ -534,7 +538,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 #### 3.7.3 Random Forest
 
 - 500-tree ensemble, `class_weight='balanced_subsample'`, `n_jobs=-1`.
-- Tuned per split: `n_estimators` ∈ [100, 250] step 50 (capped from an earlier 300 ceiling; trees in a noisy regime do not benefit from more than 250), `max_depth` ∈ [3, 15] (capped from an earlier 20; deep trees overfit BTC daily features), `min_samples_leaf` ∈ [1, 30], `max_features` ∈ {sqrt, log2}.
+- Tuned per split: `n_estimators` ∈ [100, 250] step 50 (capped from an earlier 300 ceiling; trees in a noisy regime do not benefit from more than 250), `max_depth` ∈ [2, 6] (tightened from earlier [3, 15]; depth 6 has 64 leaves which is plenty for approximately 600-sample training folds, and shallower forests vote in tighter agreement, reducing the disagreement that surfaces as path-Sharpe variance), `min_samples_leaf` ∈ [15, 40] (raised from earlier [1, 30]; a floor of 15 forces each leaf to represent at least 1.7% of the training fold, preventing leaves that fit just a handful of high-volatility events), `max_features` ∈ {sqrt, log2}.
 - 3 seeds, 30 trials per split.
 - **Cite:** `breiman_2001`.
 
@@ -542,7 +546,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 - 500-tree gradient-boosted ensemble with early stopping at 20 rounds.
 - Objective `binary:logistic`; `scale_pos_weight` from class balance.
-- Tuned per split: `max_depth` ∈ [2, 6] (capped from 10 to prevent memorization on approximately 900-sample folds), `learning_rate` log-uniform [0.01, 0.3], `min_child_weight` ∈ [1, 30], `subsample` and `colsample_bytree` ∈ [0.6, 1.0], `gamma` log-uniform [1e-8, 1.0], `reg_alpha`, `reg_lambda` log-uniform [1e-8, 10.0].
+- Tuned per split: `max_depth` ∈ [1, 3] (tightened from earlier [2, 6]; XGBoost's sequential boosting compounds depth nonlinearly across rounds, so depth 3 across 50 boosting rounds already produces substantial nonlinear capacity, and depth 6 in this regime memorises residuals), `learning_rate` log-uniform [0.01, 0.3] (floor at 0.01; below this, training takes forever and effectively underfits), `min_child_weight` ∈ [5, 30] (floor raised from 1 to align with RF's leaf-size discipline; with approximately 600 train samples a `min_child_weight=1` permits trees to split off single-event leaves), `subsample` and `colsample_bytree` ∈ [0.6, 1.0], `gamma` log-uniform [1e-8, 1.0], `reg_alpha`, `reg_lambda` log-uniform [1e-8, 10.0].
 - **Calibration set dual role.** Calibration set acts as eval set for early stopping AND as Platt-fit data. Acknowledged as a mild dependency: only ensemble size affected, no individual tree decisions.
 - 3 seeds, 30 trials per split.
 - **Cite:** `chen_guestrin_2016`.
@@ -551,13 +555,13 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 > Methodology assumes the reader has read 2.1; do not re-explain the LSTM architecture from first principles.
 
-- **Architecture.** Multi-layer `nn.LSTM` → last hidden state from final layer → LayerNorm → dropout → linear classifier.
+- **Architecture.** Single-layer `nn.LSTM` (`num_layers=1` hardcoded) → last hidden state from the final layer → LayerNorm → dropout → linear classifier. Hidden size, dropout, and learning rate are tuned per split; `num_layers` is no longer searched.
 - **Sliding window.** `LSTM_WINDOW = 14` (deliberately close to TBL `num_days = 10`; longer windows attenuate gradient signal and inflate parameter-to-sample ratio). Reduces effective training count from `N` to `N - 13` sequences. `last_valid_indices` stored for re-alignment.
-- **Last-hidden-state pooling.** Earlier learned-attention pooling was removed: with window=14 and approximately 900-sample folds, additional attention parameters did not improve performance.
+- **Last-hidden-state pooling.** Earlier learned-attention pooling was removed: with window=14 and approximately 600-sample folds, additional attention parameters did not improve performance.
 - **Tanh input normalization.** `z = tanh((x - μ) / σ)`, mean and std fitted on training data only.
 - **Training stack.** AdamW (lr tuned, `weight_decay=1e-4`), CrossEntropyLoss with class weights and AFML sample weights, label smoothing 0.1, gradient clipping (max norm 1.0), cosine annealing warm restarts (`T_0=25`, `T_mult=2`), batch size 64, max 100 epochs, early stopping patience 15, best-state restoration.
 - **Tuning consistency.** `LSTMClassifier.__init__` reads module-level constants at call time (not as default args), so tuning overrides actually reach the model. Tuning runs at epochs=50, patience=7; production refits at epochs=100, patience=15. This is the only axis where tuning and production diverge; documented as a deliberate compute-vs-fidelity trade-off.
-- Tuned per split: `hidden_size` ∈ [16, 32] step 16, `num_layers` ∈ [1, 2] (tightened from earlier [1, 3]; three-layer LSTMs on approximately 1,250 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy), `dropout` ∈ [0.1, 0.5] (floor raised from 0.0), `lr` log-uniform [1e-4, 5e-2].
+- Tuned per split: `hidden_size` ∈ [16, 32] step 16, `num_layers` fixed at 1 (no longer searched; tightened from earlier [1, 2] then [1, 3]; two- and three-layer LSTMs on approximately 1,150 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy. Hardcoding to 1 frees Optuna trials for finer exploration of dropout and learning_rate), `dropout` ∈ [0.1, 0.5] (floor raised from 0.0), `lr` log-uniform [1e-4, 5e-2].
 - 2 seeds, 30 trials per split.
 - **Cite:** `hochreiter_schmidhuber_1997`.
 
@@ -565,13 +569,14 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 > Methodology assumes the reader has read 2.1; this section covers implementation specifics only (efficient-kan vs PyKAN, this thesis's architecture, hyperparameters).
 
-- **Library.** `efficient_kan.KAN([n_features, width1, (width2,) 2], grid_size=grid, spline_order=3, grid_range=[-1, 1])`.
+- **Library and architecture.** `efficient_kan.KAN([n_features, width1, 2], grid_size=grid, spline_order=3, grid_range=[-1, 1])`. Single hidden layer by construction: the second hidden layer is permanently disabled (`width2=0` hardcoded in `tuning.py`). Width is tuned per split (`width1` ∈ [2, 6]) and grid size (∈ {3, 5}).
+- **Why single-hidden-layer architecture.** The CPCV-evaluated KAN matches the architecture used in the Phase 3 symbolic extraction. The benchmark numbers and the extracted symbolic formula therefore describe the same model rather than two unrelated KAN topologies. A two-hidden-layer KAN would let symbolic extraction nest trigonometric primitives in trigonometric primitives, producing fourth-order compositions that lose interpretability and would force the symbolic chapter to caveat that the formula approximates a different model than the one benchmarked.
 - **Tanh input normalization** matching grid range.
 - **Training stack.** AdamW (lr and weight_decay tuned), CrossEntropyLoss with class weights and AFML sample weights, label smoothing 0.1, gradient clipping (max norm 1.0), cosine annealing warm restarts (`T_0=30`, `T_mult=2`), early stopping patience 20, best-state restoration. Max 200 epochs.
-- **Single-grid training (no coarse-to-fine).** With approximately 900 training samples, grid refinement adds parameters faster than the data can support.
+- **Single-grid training (no coarse-to-fine).** With approximately 600 training samples per CPCV fold, grid refinement adds parameters faster than the data can support.
 - **No SWA, no entropy regularization.** SWA conflicted with early stopping; entropy regularization was redundant with `label_smoothing=0.1`. Removed for coherence.
-- **Dual-library strategy.** efficient-kan for all 28 CPCV splits (fast, stable, standard PyTorch). PyKAN re-trained independently for symbolic extraction (Section 3.12), where only PyKAN exposes `prune()`, `suggest_symbolic()`, `fix_symbolic()`, `symbolic_formula()`. Both share the B-spline basis and tanh normalization.
-- Tuned per split: `width1` ∈ [3, 12] (capped from 16), `width2` ∈ [0, 10] (0 = single hidden layer), `lr` log-uniform [5e-4, 5e-2], `weight_decay` log-uniform [1e-5, 5e-3], `grid` ∈ {3, 5} (dropped grid=8 to prevent memorization).
+- **Dual-library strategy.** efficient-kan for all 28 CPCV splits (fast, stable, standard PyTorch). PyKAN re-trained independently for symbolic extraction (Section 3.12), where only PyKAN exposes `prune()`, `suggest_symbolic()`, `fix_symbolic()`, `symbolic_formula()`. Both share the B-spline basis, tanh normalization, and now the single-hidden-layer topology.
+- Tuned per split: `width1` ∈ [2, 6] (tightened from earlier [3, 12] then [3, 16]; the cap is set at 6 to keep the symbolic formula extracted in Phase 3 humanly readable, since each surviving width1 unit becomes one additive term plus interactions in the closed-form expression), `width2` fixed at 0 (no longer searched), `lr` log-uniform [5e-4, 5e-2], `weight_decay` log-uniform [1e-5, 5e-3], `grid` ∈ {3, 5} (dropped grid=8 to prevent memorization).
 - 2 seeds, 30 trials per split.
 - **Cite:** `liu_kan_2024`.
 
@@ -589,10 +594,10 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 |-------|--------|--------------|--------------|--------------|-------|--------|------|
 | AR Logistic | Econometric | LR on lags [1,2,3,7,14,30] | C=1.0, L2, max_iter=1000 | (none) | 3 | 0 | Pure momentum (Q1, Q2) |
 | Logistic Regression | Linear ML | LR on selected features | max_iter=1000 | C, penalty | 3 | 30 | Linear baseline (Q3) |
-| Random Forest | Ensemble | balanced_subsample | n_jobs=-1 | n_estimators ≤ 250, max_depth ≤ 15, min_leaf, max_features | 3 | 30 | Nonlinear ensemble (Q3) |
-| XGBoost | Ensemble | 500 trees + early stop@20 | binary:logistic | max_depth ≤ 6, lr, subsample, etc. (8) | 3 | 30 | Gradient boosting (Q3) |
-| LSTM | Neural | window=14, last-hidden pooling | T_0=25, batch=64 | hidden ∈ {16, 32}, layers ∈ {1, 2}, dropout, lr | 2 | 30 | Temporal dependencies (Q3) |
-| KAN | Neural | [n, w1, (w2), 2], grid ∈ {3,5}, k=3 | T_0=30, label_smooth=0.1 | width1 ≤ 12, width2 ≤ 10, grid, lr, weight_decay | 2 | 30 | Interpretable architecture (Q3, Q4) |
+| Random Forest | Ensemble | balanced_subsample | n_jobs=-1 | n_estimators ≤ 250, max_depth ∈ [2, 6], min_samples_leaf ∈ [15, 40], max_features | 3 | 30 | Nonlinear ensemble (Q3) |
+| XGBoost | Ensemble | 500 trees + early stop@20 | binary:logistic | max_depth ∈ [1, 3], lr, min_child_weight ∈ [5, 30], subsample, etc. (8) | 3 | 30 | Gradient boosting (Q3) |
+| LSTM | Neural | window=14, last-hidden pooling, num_layers=1 | T_0=25, batch=64 | hidden ∈ {16, 32}, dropout ∈ [0.1, 0.5], lr | 2 | 30 | Temporal dependencies (Q3) |
+| KAN | Neural | [n, width1, 2], single hidden layer, k=3 | width2=0, T_0=30, label_smooth=0.1 | width1 ∈ [2, 6], grid ∈ {3, 5}, lr, weight_decay | 2 | 30 | Interpretable architecture (Q3, Q4) |
 
 ### 3.8 Hyperparameter Tuning
 
@@ -765,7 +770,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 - **Grid extension disabled** (`PYKAN_GRID_EXTEND=False`): with approximately 350 samples (training fold of split 27 after 80/20), refining grid 3 to 5 adds parameters faster than data supports.
 - **Accuracy gate:** if val acc < 53% after Adam, log warning but continue. Symbolic extraction may yield constants.
-- **Architectural simplifications for sympy tractability.** Width capped at `PYKAN_SYMBOLIC_WIDTH_CAP=8`; second hidden layer dropped (`PYKAN_SYMBOLIC_DROP_WIDTH2=True`); grid forced to 3 (`PYKAN_SYMBOLIC_FORCE_GRID=3`). Necessary because width-12 produces approximately 24 summed terms and two hidden layers produce nested compositions sympy cannot simplify in reasonable time. The symbolic-extraction model therefore approximates a simplified version of the CPCV-benchmarked KAN.
+- **Architecture matches the CPCV-benchmarked KAN.** The PyKAN model trained here uses the same single-hidden-layer topology and the same width cap (`width1` ≤ 6) as the efficient-kan model evaluated under CPCV. The extracted symbolic formula therefore describes the same architecture the benchmark numbers describe, not a simplified surrogate. This is a structural change from earlier configurations, where the symbolic-extraction KAN was constrained more tightly than the CPCV-evaluated KAN to keep sympy simplification tractable; the previous architecture-mismatch caveat (`PYKAN_SYMBOLIC_WIDTH_CAP`, `PYKAN_SYMBOLIC_DROP_WIDTH2`, `PYKAN_SYMBOLIC_FORCE_GRID`) is no longer needed.
 
 #### 3.12.5 Pruning (Algorithm 1, Step 2)
 
@@ -773,7 +778,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 - `model.attribute()` for importance scoring.
 - `model.prune(threshold=PRUNE_THRESHOLD=0.01)` with multi-API fallback (PyKAN versions vary).
 - Verify pruned model still forward-passes; revert if broken.
-- Typical compression: `[12, 5, 2] → [5, 3, 2]` or similar.
+- Typical compression (with `width1 ≤ 6` from the new tuning regime): a `[n_features, 6, 2]` topology often prunes to something like `[n_features, 3, 2]` after training-time activation thresholds. Earlier configurations with `width1` up to 12 produced richer pre-prune networks but created the architectural-mismatch problem documented in 3.12.4.
 
 #### 3.12.6 Symbolification (Algorithm 1, Step 3)
 
@@ -830,10 +835,10 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 - Fold-specific (different folds → potentially different formulas).
 - Small sample (approximately 350 training observations after 80/20 split on split 27).
-- Architectural simplifications (width cap 8, single hidden layer, grid=3) → formula approximates a simplified version of the benchmarked KAN.
 - R² threshold sensitivity (lowered to 0.30 to admit symbolic fits in weak-signal regime).
 - Post-symbolic accuracy may be lower than pre-symbolic accuracy.
 - Brute-force fallback depends on PyKAN's stdout format.
+- **Architecture parity (no longer a limitation, formerly a caveat).** The single-hidden-layer / `width1 ≤ 6` configuration now matches the CPCV-benchmarked KAN, so the extracted formula describes the same architecture the benchmark numbers describe. The earlier mismatch (a tighter symbolic-extraction architecture than the CPCV one) is documented in 3.12.4 for transparency but does not apply to the locked configuration.
 - **Cite:** `cho_lee_kim_2025`, `liu_kan_2024`, `noorizadegan_2026`.
 
 ### 3.13 Diagnostics
@@ -955,14 +960,14 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 - Interpretability value even when predictive performance is weak: a closed-form decision function that a human can audit, even if its accuracy is near baseline, beats a black-box model with the same accuracy.
 - Comparison with VIX KAN paper's symbolic findings: their formulas reveal mean-reversion and leverage effects (validated against domain knowledge); this thesis's formula reveals [STRUCTURE] (interpret post-hoc).
-- Limitations: fold-specific; small sample; architectural simplifications; R² threshold sensitivity.
+- Limitations: fold-specific; small sample (approximately 350 training observations on split 27); R² threshold sensitivity. Architectural parity has been resolved: the symbolic-extraction KAN now matches the CPCV-benchmarked KAN.
 
 ### 5.4 Limitations (five honest, from defense L1 to L5)
 
-- **L1. Computational power.** Currently 2 to 3 seeds, 30 trials, KAN width capped at 12. With more compute: more seeds, more trials, wider HP ranges. The N=8 / 28-split configuration alone roughly doubles the per-experiment runtime relative to N=6 / 15 splits.
+- **L1. Computational power.** Currently 2 to 3 seeds, 30 trials, KAN width capped at 6. With more compute: more seeds, more trials, wider HP ranges. The N=8 / 28-split configuration alone roughly doubles the per-experiment runtime relative to N=6 / 15 splits.
 - **L2. Daily OHLCV only.** Discards intraday microstructure. Pipeline is timeframe-agnostic; hourly extension would multiply event count and unlock microstructure features.
 - **L3. Symbolic extraction is fold-specific.** Per-fold extraction would let us count which features and primitives recur (structural signal vs. one-off noise).
-- **L4. Architectural simplifications in the symbolic-extraction KAN.** Single hidden layer, grid=3, top-5 features. Post-symbolic accuracy is therefore a *lower bound* on what a full-architecture KAN learns.
+- **L4. KAN width cap is binding for interpretability.** The `width1 ≤ 6` cap is set so the extracted symbolic formula stays humanly readable, since each surviving width1 unit becomes one additive term plus its interactions in the closed-form expression. A larger cap would let the model fit more complex patterns but would also produce a formula too long to interpret. This is an explicit interpretability-vs-capacity trade-off, not a generic constraint imposed by sample size or compute.
 - **L5. No regime-conditional analysis.** BTC has had approximately 5 distinct regimes over 2014 to 2026. Full-sample Sharpe averages over them. A regime-conditional analysis is left for future work, especially given DSR ≈ 0.
 
 ---
