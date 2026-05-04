@@ -244,8 +244,8 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
 
     Search space:
         n_estimators:     int [100, 250] step 50
-        max_depth:        int [3, 15]
-        min_samples_leaf: int [1, 30]
+        max_depth:        int [2, 6]
+        min_samples_leaf: int [15, 40]
         max_features:     categorical {sqrt, log2}
     """
     splits = _purged_kfold_splits(X_train, y_train, w_train)
@@ -261,8 +261,8 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
 
     def objective(trial):
         n_estimators = trial.suggest_int("n_estimators", 100, 250, step=50)
-        max_depth = trial.suggest_int("max_depth", 3, 15)
-        min_samples_leaf = trial.suggest_int("min_samples_leaf", 1, 30)
+        max_depth = trial.suggest_int("max_depth", 2, 6)
+        min_samples_leaf = trial.suggest_int("min_samples_leaf", 15, 40)
         max_features = trial.suggest_categorical("max_features", ["sqrt", "log2"])
 
         def model_fn(X_tr, y_tr, w_tr):
@@ -322,9 +322,9 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
     """Tune XGBoost via Optuna TPE + Purged K-Fold.
 
     Search space:
-        max_depth:        int [2, 6]
+        max_depth:        int [1, 3]
         learning_rate:    log-uniform [0.01, 0.3]
-        min_child_weight: int [1, 30]
+        min_child_weight: int [5, 30]
         subsample:        uniform [0.6, 1.0]
         colsample_bytree: uniform [0.6, 1.0]
         gamma:            log-uniform [1e-8, 1.0]
@@ -345,9 +345,9 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
     all_results = []
 
     def objective(trial):
-        max_depth = trial.suggest_int("max_depth", 2, 6)
+        max_depth = trial.suggest_int("max_depth", 1, 3)
         lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
-        min_child_weight = trial.suggest_int("min_child_weight", 1, 30)
+        min_child_weight = trial.suggest_int("min_child_weight", 5, 30)
         subsample = trial.suggest_float("subsample", 0.6, 1.0)
         colsample_bytree = trial.suggest_float("colsample_bytree", 0.6, 1.0)
         gamma = trial.suggest_float("gamma", 1e-8, 1.0, log=True)
@@ -450,19 +450,20 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
     Search space:
         hidden_size:   int [16, 32] step 16
-        num_layers:    int [1, 2]
+        num_layers:    fixed at 1 (not searched)
         dropout:       uniform [0.1, 0.5]
         learning_rate: log-uniform [1e-4, 5e-2]
 
     The hidden_size cap of 32 (vs an earlier 128 ceiling) was tightened
-    to prevent memorisation on ~700-sample purged folds. The num_layers
-    range was further tightened from [1, 3] to [1, 2] in the final
-    configuration: three-layer LSTMs on ~1,250 events are deep-overfit
-    territory, and the additional layer added variance to path-Sharpes
-    without improving accuracy. Tuning runs fewer epochs and a shorter
-    patience window than production (epochs=50, patience=7) to keep the
-    per-trial cost bounded; the production fit re-runs at epochs=100,
-    patience=15.
+    to prevent memorisation on ~700-sample purged folds. ``num_layers``
+    was hardcoded to 1 in the final configuration: two- and three-layer
+    LSTMs on ~1,250 events are deep-overfit territory, the second layer
+    added variance to path-Sharpes without improving accuracy, and
+    removing the hyperparameter from the search frees Optuna trials for
+    finer exploration of dropout and learning_rate. Tuning runs fewer
+    epochs and a shorter patience window than production (epochs=50,
+    patience=7) to keep the per-trial cost bounded; the production fit
+    re-runs at epochs=100, patience=15.
     """
     from torch.utils.data import TensorDataset, DataLoader
     from src.cpcv.models.lstm_model import LSTMClassifier, create_sequences
@@ -521,9 +522,11 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
         # to prevent overfitting given (a) LSTM_WINDOW=14 reducing effective
         # training sequences, (b) ~700-sample folds, and (c) the model lost
         # to a 6-lag AR baseline at higher capacities — smaller models are
-        # the right direction.
+        # the right direction. num_layers is hardcoded to 1 (no longer
+        # searched): two- and three-layer LSTMs on ~1,250 events overfit
+        # without improving accuracy.
         hidden_size = trial.suggest_int("hidden_size", 16, 32, step=16)
-        num_layers = trial.suggest_int("num_layers", 1, 2)
+        num_layers = 1  # hardcoded; not searched
         dropout = trial.suggest_float("dropout", 0.1, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
 
@@ -658,7 +661,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     return {
         "best_params": {
             "hidden_size": best["hidden_size"],
-            "num_layers": best["num_layers"],
+            "num_layers": 1,  # hardcoded; not searched
             "dropout": best["dropout"],
             "learning_rate": best["learning_rate"],
         },
@@ -675,15 +678,26 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     """Tune KAN via Optuna TPE + Purged K-Fold.
 
     Search space:
-        width1:       int [3, 12]          (1st hidden layer)
-        width2:       int [0, 10]          (2nd hidden; 0 = skip)
+        width1:       int [2, 6]           (1st hidden layer)
+        width2:       fixed at 0            (2nd hidden; not searched)
         lr:           log-uniform [5e-4, 5e-2]
         weight_decay: log-uniform [1e-5, 5e-3]
         grid:         categorical {3, 5}
 
-    The width1 ceiling of 12 (vs an earlier 16) and the dropping of
-    grid=8 from the categorical set were tightened to prevent
-    memorisation on ~700-sample purged folds.
+    The width1 ceiling was tightened from an earlier 12 down to 6 to
+    align with the Phase 3 symbolic-extraction deliverable: a wider
+    KAN produces a closed-form formula with that many input-derived
+    terms, and width > 6 begins to produce formulas that are no
+    longer humanly readable. ``width2`` is hardcoded to 0 (single
+    hidden layer) for the same reason: a two-hidden-layer formula
+    nests trigonometric primitives in trigonometric primitives,
+    yielding fourth-order compositions that lose interpretability.
+    Hardcoding ``width2`` at 0 also ensures that the architecture
+    used for CPCV evaluation matches the architecture extracted in
+    Phase 3, so the symbolic formula reflects the actual benchmark
+    model rather than an unrelated KAN topology. The grid=8 option
+    was dropped from the categorical set to prevent memorisation on
+    ~700-sample purged folds.
 
     Fixed: k=3, epochs=200, patience=20, full-batch, tanh normalization.
     """
@@ -712,19 +726,19 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        # Search space capped to match production architecture expectations:
-        # width1 up to 12 (not 16), grid restricted to {3, 5} (drop 8 to
-        # prevent memorization on ~700-sample folds).
-        width1 = trial.suggest_int("width1", 3, 12)
-        width2 = trial.suggest_int("width2", 0, 10)
+        # Search space tightened for thesis-deliverable interpretability:
+        # width1 narrowed to [2, 6] so the extracted symbolic formula
+        # has at most 6 input-derived terms (humanly readable), and
+        # width2 hardcoded at 0 so the formula has one hidden layer
+        # (no nested trigonometric compositions). grid restricted to
+        # {3, 5} (drop 8 to prevent memorization on ~700-sample folds).
+        width1 = trial.suggest_int("width1", 2, 6)
+        width2 = 0  # hardcoded; not searched
         lr = trial.suggest_float("lr", 5e-4, 5e-2, log=True)
         wd = trial.suggest_float("weight_decay", 1e-5, 5e-3, log=True)
         grid = trial.suggest_categorical("grid", [3, 5])
 
-        if width2 == 0:
-            widths = [n_features, width1, 2]
-        else:
-            widths = [n_features, width1, width2, 2]
+        widths = [n_features, width1, 2]
 
         split_losses = []
 
@@ -873,7 +887,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     return {
         "best_params": {
             "width1": best["width1"],
-            "width2": best["width2"],
+            "width2": 0,  # hardcoded; not searched
             "grid": best["grid"],
             "lr": best["lr"],
             "weight_decay": best["weight_decay"],

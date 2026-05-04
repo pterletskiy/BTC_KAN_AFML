@@ -289,6 +289,10 @@ def prepare_extraction_data(
     best_split_idx: int,
     prep_info: dict,
     feature_subset: list[str] | None = None,
+    n_groups: int | None = None,
+    k: int | None = None,
+    embargo_pct: float | None = None,
+    splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> tuple[dict, list[str]]:
     """Reconstruct preprocessed data for the extraction fold.
 
@@ -301,8 +305,42 @@ def prepare_extraction_data(
         If provided, only these features are used for symbolic extraction.
         This allows extracting simpler formulas with fewer variables,
         independent of the CPCV feature selection.
+    n_groups, k, embargo_pct : optional
+        CPCV configuration. Must match the values used to produce
+        ``cpcv_results``. If omitted, defaults are inferred from
+        ``cpcv_results["split_info"]`` so that the regenerated splits
+        align with the original training fold. Pass them explicitly
+        only when ``cpcv_results`` lacks a ``split_info`` entry.
+    splits : list of (train_idx, test_idx), optional
+        Pre-computed CPCV splits, identical to the list produced by
+        the notebook's CV cell. When provided, the function uses them
+        directly and skips internal regeneration. Recommended pattern:
+        pass the same ``splits`` list the notebook produced upstream.
     """
-    splits = generate_cpcv_splits(X, t1)
+    # Resolve CPCV configuration: prefer explicit splits → cpcv_results
+    # split_info → explicit n_groups/k/embargo_pct → cv.py defaults.
+    if splits is None:
+        if n_groups is None or k is None or embargo_pct is None:
+            si = cpcv_results.get("split_info") or {}
+            if n_groups is None:
+                n_groups = si.get("n_groups")
+            if k is None:
+                k = si.get("k")
+            if embargo_pct is None:
+                embargo_pct = si.get("embargo_pct")
+        if n_groups is None or k is None or embargo_pct is None:
+            raise ValueError(
+                "prepare_extraction_data: CPCV configuration could not be "
+                "resolved. Pass ``splits`` directly, or pass ``n_groups`` / "
+                "``k`` / ``embargo_pct``, or ensure ``cpcv_results`` "
+                "contains a ``split_info`` entry with these keys. "
+                "Regenerating with cv.py defaults would silently use a "
+                "different fold from the one ``cpcv_results`` was trained "
+                "on, which is unsafe."
+            )
+        splits = generate_cpcv_splits(
+            X, t1, n_groups=n_groups, k=k, embargo_pct=embargo_pct,
+        )
     train_idx, _ = splits[best_split_idx]
 
     # ``y`` may arrive as a numpy array, a pandas Series, or anything

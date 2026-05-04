@@ -215,7 +215,7 @@ def run_cpcv_pipeline(
     w: pd.Series,
     t1: pd.Series,
     bins_ret: pd.Series,
-    n_groups: int = 6,
+    n_groups: int = 8,
     k: int = 2,
     embargo_pct: float = 0.01,
     n_seeds: int = 3,
@@ -225,6 +225,10 @@ def run_cpcv_pipeline(
     tune: bool = False,
     tune_models: list[str] | None = None,
     n_trials: int | None = None,
+    splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    path_map: dict | None = None,
+    n_paths: int | None = None,
+    split_info: dict | None = None,
 ) -> dict:
     """Run the full CPCV evaluation across all models and all splits.
 
@@ -241,12 +245,13 @@ def run_cpcv_pipeline(
     bins_ret : pd.Series
         Return at barrier touch (``bins['ret']``), needed for financial
         performance computation downstream.
-    n_groups : int
-        Number of CPCV groups.
-    k : int
-        Number of test groups per split.
-    embargo_pct : float
-        Embargo fraction.
+    n_groups : int, default 8
+        Number of CPCV groups. Used only when ``splits`` is not provided.
+    k : int, default 2
+        Number of test groups per split. Used only when ``splits`` is
+        not provided.
+    embargo_pct : float, default 0.01
+        Embargo fraction. Used only when ``splits`` is not provided.
     n_seeds : int
         Number of random seeds per model per fold.
     models : list[str], optional
@@ -266,6 +271,15 @@ def run_cpcv_pipeline(
         Number of Optuna trials per model per split. Overrides the
         defaults in tuning.py (60 for classical, 40 for neural).
         Lower values (e.g. 20–30) speed up tuning significantly.
+    splits, path_map, n_paths, split_info : optional
+        Pre-computed CPCV outputs from the notebook's CV cell. When all
+        four are provided, the pipeline uses them directly and does not
+        regenerate splits or the path matrix internally. This is the
+        recommended pattern: it avoids duplicate log lines and ensures
+        the configuration the notebook prints in its CV cell matches
+        the configuration the pipeline actually uses. When any of these
+        are ``None``, the pipeline falls back to computing them from
+        ``n_groups``, ``k``, and ``embargo_pct``.
 
     Returns
     -------
@@ -288,6 +302,30 @@ def run_cpcv_pipeline(
     if tune_models is None:
         tune_models = ["logistic", "random_forest", "xgboost"]
 
+    # ── splits and paths ──────────────────────────────────────────────
+    # Use precomputed values from the notebook's CV cell when provided.
+    # This keeps the configuration printed by the notebook's CV summary
+    # consistent with what the pipeline actually trains on, and avoids
+    # the duplicate log lines that result from regenerating splits and
+    # the path matrix inside this function. Resolved before the header
+    # prints, so the header reflects the actual configuration.
+    if splits is None:
+        splits = generate_cpcv_splits(X, t1, n_groups, k, embargo_pct)
+    if path_map is None or n_paths is None:
+        n_paths, path_map = build_path_matrix(n_groups, k)
+    if split_info is None:
+        split_info = get_split_info(
+            X, t1, n_groups=n_groups, k=k, embargo_pct=embargo_pct,
+            splits=splits, path_map=path_map, n_paths=n_paths,
+            print_summary=False,
+        )
+    # If the caller passed precomputed splits, infer the actual N and k
+    # from split_info so the header below reports what the pipeline
+    # truly trains on rather than the function-argument defaults.
+    n_groups = split_info["n_groups"]
+    k = split_info["k"]
+    embargo_pct = split_info["embargo_pct"]
+
     print("=" * 60)
     print("CPCV Pipeline")
     print("=" * 60)
@@ -299,16 +337,12 @@ def run_cpcv_pipeline(
     print(f"  FFD columns:    {ffd_columns}")
     print(f"  Samples:        {len(X)}")
     print(f"  Features:       {X.shape[1]}")
+    print(f"  Splits:         {len(splits)}, Paths: {n_paths}")
     print(f"  Tuning:         {'NESTED (per-split) — ' + str(tune_models) + (' [' + str(n_trials) + ' trials]' if n_trials else '') if tune else 'OFF'}")
     print("=" * 60)
 
     # ── map labels: {-1, +1} → {0, 1} ────────────────────────────────
     y_mapped = ((y + 1) // 2).astype(int)
-
-    # ── splits and paths ──────────────────────────────────────────────
-    splits = generate_cpcv_splits(X, t1, n_groups, k, embargo_pct)
-    n_paths, path_map = build_path_matrix(n_groups, k)
-    split_info = get_split_info(X, t1, n_groups, k, embargo_pct)
 
     # ── storage ───────────────────────────────────────────────────────
     all_predictions = {}
