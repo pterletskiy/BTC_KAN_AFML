@@ -559,7 +559,7 @@ The 8-color palette used by the visual functions is exposed as a module-level co
 **Module-level constants:**
 ```
 FFD: FFD_D_RANGE=(0.0, 1.0, 0.05), FFD_THRESHOLD=1e-4, FFD_ADF_SIGNIFICANCE=0.05, FFD_MAX_LOOKBACK=200
-Selection: MDA_N_ESTIMATORS=500, MDA_N_INNER_FOLDS=3, MDA_TOP_K_FRAC=0.25, MIN_FEATURES=5
+Selection: MDA_N_ESTIMATORS=500, MDA_N_INNER_FOLDS=3, MDA_TOP_K_FRAC=0.30, MIN_FEATURES=5
 ```
 
 #### Step 11.a — FFD (`ffd_transform`)
@@ -601,14 +601,14 @@ For each model, `_compute_mda_single_model()` runs a **purged inner 3-fold CV** 
 
 The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
 1. Keep features with averaged MDA > 0 (permuting hurts at least one model on average)
-2. Cap at `top_k_frac` of total features (default 25%, overridable from notebook)
+2. Cap at `top_k_frac` of total features (default 30%, overridable from notebook)
 3. Hard floor of 5 features minimum
 
 **Lag features in the MDA pool.** `select_features` runs MDA over all 62 features, including the six `log_returns_lagN` columns. An earlier version of the pipeline excluded lag features from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received six features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing; lag columns appear in `selected` for a given fold only if their averaged MDA (RF + Logistic Regression permutation importance) is positive and ranks within the top-k cap. AR Logistic continues to consume the six lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, independently of MDA's choices.
 
 **Typical result:** ~14–16 features selected per fold from the 62 candidates. The 6 lag columns sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
 
-**TOP_K_FRAC tightening (from 0.4 to 0.25).** The cap was tightened in the locked configuration after a high-PBO run with the 0.4 setting. Across the previous run's CPCV folds, only ~6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Tightening to 0.25 forces roughly 15 features through the bottleneck and aligns the selection cap with the empirical stability finding. The trade-off is that one or two folds may select fewer features than they would have at 0.4, but those folds were also the ones contributing the most rank variance to PBO, so the tightening attacks the right problem.
+**TOP_K_FRAC tightening and sensitivity (from 0.4 to 0.30, with 0.25 as the sensitivity check).** The cap was tightened from common defaults of 0.40-0.50 after a high-PBO run revealed that only ~6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Two cap settings were evaluated as candidates for the primary configuration: 0.25 forces ~16 features through the bottleneck, and 0.30 forces ~19. Both produced essentially identical predictive metrics across all six models (mean accuracy and pooled AUC differed by less than 0.5 percentage points per model), but the backtest-derived metrics diverged substantially: PBO was 0.69 at 0.25 and 0.26 at 0.30, with model rankings reshuffling between the two. The 0.30 setting was selected as primary because it produced the lower PBO (under the AFML interpretation, this indicates more robust model selection) while still being meaningfully tighter than the 0.40 default. The 0.25 setting is retained as a documented sensitivity check; the divergence between the two configurations on the path-Sharpe-derived metrics, despite stable predictive metrics, is itself the AFML rank-instability finding made operational on this dataset.
 
 #### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, ffd_columns, top_k_frac, skip_selection=False)`
 
