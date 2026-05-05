@@ -968,7 +968,10 @@ def analyze_results(cpcv_results: dict) -> dict:
     # ``stitch_paths`` needs these to filter each split's stored
     # predictions down to the events belonging to the requested group.
     # Computing once and reusing avoids repeating work for every model.
-    n_groups = cpcv_results.get("n_groups", 6)
+    n_groups = cpcv_results.get("n_groups")
+    if n_groups is None:
+        split_info = cpcv_results.get("split_info", {})
+        n_groups = split_info.get("n_groups", 6)    
     event_index = _derive_event_index(predictions)
     group_bounds = _compute_group_bounds(len(event_index), n_groups)
 
