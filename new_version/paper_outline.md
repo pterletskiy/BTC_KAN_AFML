@@ -874,35 +874,64 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 
 ### 4.1 Headline (opening paragraph) [T-R1, T-R3]
 
-- "No model achieves DSR ≥ 0.95, indicating that no architecture demonstrates statistically significant predictive ability for BTC daily direction after correcting for multiple model testing."
-- "The symbolic extraction pipeline produces a closed-form decision function with [VALUE]% symbolification rate, identifying [FEATURE_1], [FEATURE_2], [FEATURE_3] as surviving features."
+- "No model achieves DSR ≥ 0.95. The top DSR (Random Forest) is 0.5149, far below significance after correcting for selection bias across the six compared models."
+- "PBO = 0.6857 lands in the adversarial regime: in 24 of 35 IS/OOS partitions, the in-sample best model underperforms the out-of-sample median. Model rankings are therefore unreliable in addition to being statistically insignificant."
+- "The symbolic extraction pipeline produces a closed-form decision function with 100% symbolification rate, three surviving features (`eth_btc_ratio`, `kurtosis`, `skewness`), and post-symbolic accuracy of 58.65% (slightly above the pre-symbolic 57.14%)."
 - Roadmap: 4.2 model comparison, 4.3 classification, 4.4 financial, 4.5 stability, 4.6 symbolic.
 
 ### 4.2 Model Comparison (the main result, Cochrane)
 
-- **Table.** Model comparison ranked by median Sharpe descending; tiebreaker std Sharpe ascending. Self-contained caption.
-- Columns: model, median Sharpe (over 7 paths), std Sharpe, DSR, F1 macro, AUC, accuracy, Brier, rank.
+- **Table.** Self-contained caption: "Model comparison ranked by median Sharpe over seven CPCV backtest paths. DSR is computed against `n_trials=6` (number of compared models), correcting the observed Sharpe for selection bias and non-normal returns. No model achieves DSR ≥ 0.95. Tiebreaker: standard deviation of path Sharpe ascending."
+
+| Rank | Model | Median Sharpe | Std Sharpe | DSR | Mean F1 | Mean Acc | Mean AUC | Median Max DD | Median Cum Ret | Median Win Rate | Median Profit Factor |
+|------|-------|---------------|------------|-----|---------|----------|----------|---------------|----------------|-----------------|----------------------|
+| 1 | Random Forest | 1.6766 | 1.2758 | 0.5149 | 0.4414 | 0.5417 | 0.5082 | -0.1733 | 0.5582 | 0.5469 | 1.3397 |
+| 2 | Logistic Regression | 1.1399 | 1.1539 | 0.3052 | 0.4133 | 0.5299 | 0.4945 | -0.1757 | 0.1571 | 0.5526 | 1.4045 |
+| 3 | KAN | 0.7963 | 1.4218 | 0.1878 | 0.4291 | 0.5509 | 0.5171 | -0.2086 | 0.1363 | 0.5597 | 1.2598 |
+| 4 | XGBoost | 0.7468 | 1.2416 | 0.1745 | 0.4396 | 0.5387 | 0.5184 | -0.2844 | 0.0757 | 0.5328 | 1.1346 |
+| 5 | LSTM | 0.5026 | 1.2903 | 0.1149 | 0.4541 | 0.5160 | 0.5080 | -0.2839 | 0.1163 | 0.5230 | 1.1134 |
+| 6 | AR Logistic | 0.2830 | 0.4725 | 0.0755 | 0.4801 | 0.5329 | 0.5097 | -0.2454 | 0.0512 | 0.5174 | 1.0845 |
+
 - **Key observations (state facts here, save interpretation for 5.1).**
-  - DSR result: all models DSR = [VALUE], below 0.95.
-  - Ranking: best [BEST_MODEL] median Sharpe [VALUE]; KAN ranks [KAN_RANK]th.
-  - Classification vs. financial divergence: note any model with higher AUC but lower Sharpe (errors concentrate on high-return events).
-  - Whether AR Logistic [matches/underperforms/outperforms] feature-engineered models (Q1, Q2 evidence).
+  - **DSR.** Top DSR is Random Forest at 0.5149; all six values fall below 0.95. No model demonstrates predictive ability that survives correction for selection bias.
+  - **Ranking.** Random Forest leads with median Sharpe 1.6766; KAN ranks 3rd at 0.7963; AR Logistic is last at 0.2830.
+  - **AUC compression.** All mean AUCs sit in the 0.49 to 0.52 band. Models are nearly indistinguishable at the classification level; bet sizing translates these tiny edges into the wider Sharpe spread.
+  - **Q1, Q2 evidence (feature engineering).** AR Logistic is the worst-ranked model on every financial metric. Pure-momentum lags carry the least signal among the six configurations. Feature engineering does separate models even though no model achieves significance.
+  - **Q3 evidence (KAN positioning).** KAN ranks 3rd of 6, ahead of XGBoost and LSTM, behind Random Forest and Logistic Regression. KAN posts the highest median accuracy (0.5509) and median win rate (0.5597) among all six models, but its higher path-Sharpe variance (1.4218 std vs. 1.2416 for XGBoost) reflects sensitivity to fold-specific regime characteristics.
+  - **Std Sharpe outlier.** AR Logistic shows the lowest std Sharpe (0.4725) by a factor of three. Pure momentum is consistent across paths because it conditions on a simple, stable signal; the cost is the lowest median.
 
 ### 4.3 Classification Metrics
 
-- **Per-split F1 distribution.** Mean, std, min, max across 28 splits per model. High variability indicates regime dependence.
-- **Pooled AUC.** Per model across all 28 splits.
-- **DeLong pairwise AUC.** Report `[NUMBER]/15` significant pairs at α=0.05. If few or none significant, state explicitly: "no pairwise AUC difference reaches significance".
+- **Per-split F1 distribution.** Mean F1 ranges narrowly from 0.4133 (Logistic Regression) to 0.4801 (AR Logistic). The high-F1 / low-Sharpe combination for AR Logistic indicates that classification quality and bet-sizing translation are partially independent: pure momentum gets the average call right slightly more often but loses the high-conviction events that drive Sharpe.
+- **Pooled AUC.** Per-model pooled AUC across all 28 splits sits in the 0.49 to 0.53 band. All models hover within three percentage points of random.
+- **DeLong pairwise AUC.** **7 of 15 pairs significantly different at α=0.05.** Pooled across splits, averaged across the 3 sklearn / 2 neural seeds:
+
+| Pair | AUC_a | AUC_b | Δ AUC | z | p | Significant |
+|------|-------|-------|-------|---|---|-------------|
+| Random Forest vs Logistic | 0.5225 | 0.5029 | +0.0195 | 2.71 | 0.0067 | Yes |
+| Random Forest vs LSTM | 0.5236 | 0.4920 | +0.0317 | 3.17 | 0.0015 | Yes |
+| KAN vs Logistic | 0.5290 | 0.5029 | +0.0260 | 3.66 | 0.0002 | Yes |
+| KAN vs XGBoost | 0.5290 | 0.5129 | +0.0161 | 2.37 | 0.0176 | Yes |
+| KAN vs AR Logistic | 0.5290 | 0.5101 | +0.0189 | 2.02 | 0.0434 | Yes |
+| XGBoost vs LSTM | 0.5148 | 0.4920 | +0.0229 | 2.34 | 0.0192 | Yes |
+| AR Logistic vs LSTM | 0.5124 | 0.4920 | +0.0205 | 2.00 | 0.0451 | Yes |
+| Random Forest vs XGBoost | 0.5225 | 0.5129 | +0.0096 | 1.91 | 0.0559 | No (marginal) |
+| (7 other pairs) | n/a | n/a | n/a | n/a | > 0.05 | No |
+
+- **Pairwise summary.** KAN posts the highest pooled AUC (0.5290) and significantly outranks Logistic Regression, XGBoost, and AR Logistic. Random Forest significantly outranks Logistic Regression and LSTM. LSTM has the lowest pooled AUC (0.4920, below 0.50) and loses 4 of its 5 pairwise comparisons.
+- **Effect-size disclosure (T-R15: write for reviewers).** Statistically significant differences are small in absolute AUC terms. KAN's significant lead over Logistic Regression is +0.026 AUC; that is reliable but not large. The DeLong test detects whether differences are non-zero, not whether they are economically material.
 - **Confusion matrices (compact, Appendix D for full).** Aggregated TP/FP/TN/FN per model. Note any model with strong class bias.
+- **Multiple testing.** No Bonferroni or BH correction across the 15 pairs; reported p-values are nominal. Acknowledged in 5.4 as a robustness limitation.
 
 ### 4.4 Financial Performance
 
-- **Path-level Sharpe distribution.** Per-model row × 7 paths + median + std.
-- **DSR computation detail.** For best model: observed median Sharpe, expected max Sharpe under null (`n=6`), pooled skew/kurt, SE(SR), DSR.
-- **PBO result.** PBO = [VALUE] / 35. Interpret in context of DSR=0:
-  - PBO ≈ 0 + DSR=0 → reliable selection of a model that does not work (good methodology, no signal). Most intellectually honest outcome.
-  - PBO ≈ 0.5 → random model selection.
-  - PBO > 0.5 → adversarial (IS winner is OOS loser).
+- **Path-level Sharpe distribution.** Per-model row × 7 paths + median + std. Random Forest's path Sharpes have the highest median (1.6766) and second-highest std (1.2758). KAN's median (0.7963) is third but its std (1.4218) is the largest, indicating regime-sensitive performance across the 7 paths. AR Logistic's std (0.4725) is the smallest by a factor of three; pure momentum produces consistent (and consistently low) returns across paths.
+- **DSR computation detail.** For Random Forest (top-ranked): observed median Sharpe 1.6766 over 7 paths, DSR = 0.5149 against `n_trials=6`. The expected maximum Sharpe under the null with six compared models, combined with the pooled skew/kurt and SE(SR), produces a DSR threshold the observed Sharpe does not clear. Full DSR-component breakdown for the top model goes to Appendix D.
+- **PBO result.** **PBO = 0.6857 = 24 of 35 IS/OOS partitions.** Interpretation in context of DSR=0:
+  - Theoretical regime map: `PBO ≈ 0` = robust selection of a model that may or may not work; `PBO ≈ 0.5` = model selection is random; `PBO > 0.5` = adversarial, the IS-best model is the OOS loser more often than not.
+  - Observed regime: **adversarial.** In 68.57% of partitions, picking the model that wins on three IS paths produces a model that underperforms the median of the four OOS paths.
+  - Joint reading with DSR=0: not only does no model demonstrate statistically significant predictive ability after multiple-testing correction, but model rankings themselves are unstable across sub-path partitions. Choosing Random Forest as "the winner" based on the headline median Sharpe is exactly the kind of selection PBO flags as adversarial.
+  - Methodological implication (T-R15: write for reviewers, this is the AFML pay-off). Without PBO, the natural conclusion from the model-comparison table is "Random Forest achieved median Sharpe 1.68 on BTC daily direction." With PBO, the honest conclusion is that the apparent ranking is dominated by sub-path variance, consistent with a regime where the genuine signal-to-noise ratio is too low for reliable model selection.
 - **Equity curves figure.** All 6 models + buy-and-hold overlay on the median (or best) path.
 - **Additional metrics table.** Cumulative return, ann return, max DD, time under water, win rate, profit factor, mean |bet|, % traded.
 
@@ -919,23 +948,60 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 ### 4.6 Symbolic Extraction Results (Q4 answer)
 
 - **Extraction summary.**
-  - Fold used: split 27, `fold_selection="last"`. Test date range [START] to [END].
-  - MDA features → top-5 stable subset: [FEATURE_1..FEATURE_5].
+  - Fold used: split 27, `fold_selection="last"`. Test set covers the most recent CPCV partition; closest to deployment scenario.
+  - Top-5 stable features by KAN selection frequency entered extraction; 3 survived pruning. Test date range and the eliminated 2 features go in the table caption.
   - Training sample size after 80/20: approximately 350 observations.
-  - Architecture (data-aware sized, with simplifications): `[5, w, 2]`.
-- **Training diagnostics.** Phase 1 Adam: train loss / val loss / val acc. Phase 2a/2b val acc. 53% gate pass/fail. Pre-prune accuracy.
-- **Pruning results.** Pre-prune edge count → post-prune. Survival rate. Pruned architecture (e.g., `[5, 3, 2] → [5, 2, 2]`). Post-prune accuracy.
-- **Symbolification results table.** Edge | function | R² | method (suggest / brute-force).
-- **The decision function.** Numbered equation in the thesis: `P(up) = sigmoid([FORMULA])`.
-- **Surviving features list** with their group membership (TA / math / macro / crypto-macro / on-chain / lag) and selection frequency from 4.5.
+  - Architecture (CPCV-matched, single hidden layer): `[5 features → width1 → 2]`.
+- **Training diagnostics.** Phase 1 Adam: train loss / val loss / val acc trajectories. Phase 2a/2b val acc. 53% gate pass/fail. Pre-prune accuracy. Detailed logs in Appendix F.
+- **Pruning results.** Pre-prune to post-prune compression. **Pruned architecture: `[[3, 0], [3, 0], [2, 0]]`** in PyKAN's `(sum_units, mult_units)` per-layer notation. The input layer pruned from 5 features to 3 (40% feature elimination); width1 retains 3 nodes; output layer is the binary classification head. Zero multiplication units (single-hidden-layer KAN, not MultKAN).
+- **Symbolification rate: 100%.** Every edge of the pruned network was successfully replaced with a symbolic primitive at R² ≥ 0.30.
+- **Surviving features (3):**
+  - `eth_btc_ratio` (crypto-macro group, the new CoinMetrics-sourced ETH/BTC alt-rotation signal).
+  - `kurtosis` (mathematical / AFML Part 4 group, rolling 21-day fourth moment).
+  - `skewness` (mathematical / AFML Part 4 group, rolling 21-day third moment).
 - **Pre-symbolic vs. post-symbolic accuracy.**
-  - Delta < 3 pp: "symbolic functions approximate splines closely; formula preserves most of the KAN's structure".
-  - Delta > 5 pp: "symbolic approximation degrades accuracy; formula should be read as approximation, not exact reproduction".
-  - Compare post-symbolic to 50% baseline.
-- **Feature interpretation (factual; economic interpretation in 5.3).** Per surviving feature: which functional form (tanh, sin, x²) the KAN assigns and what that suggests (monotonic / periodic / nonlinear).
-- **On-chain comment.** If no on-chain features survive: explicit finding. The "public inside view" of blockchain data does not provide enough signal for the KAN to retain it after pruning.
-- **Optional: best-fold comparison.** If the run was repeated with `fold_selection="best"`, briefly compare symbolification rate, surviving features, post-symbolic accuracy. Illustrates the fold-specificity limitation.
-- **Section closer.** Factual RQ4 summary (no interpretation): "the symbolic extraction pipeline produces a closed-form decision function with [VALUE]% symbolification rate; surviving features [LIST]; post-symbolic accuracy [VALUE]%, [above/near] 50%; limitations discussed in 5.3".
+  - Pre-symbolic (B-spline KAN): **57.14%**.
+  - Post-symbolic (closed-form formula): **58.65%**.
+  - Δ = +1.51 percentage points (post slightly higher).
+  - Reading: symbolic primitives (sin, cos, polynomial) are smoother than the underlying B-splines, and on the small validation slice they generalize marginally better than the spline fit they replace. The takeaway for the thesis is that post-symbolic accuracy preserves (and here slightly exceeds) the spline-version performance, satisfying the precondition that the formula represents the model rather than a degraded surrogate.
+  - Both values sit above the 50% baseline by 7 to 9 percentage points; this exceeds the 53% Phase-1 gate but does not on its own indicate predictive significance (compare DSR = 0 in 4.2).
+- **The decision function.** The extracted closed-form expression. Numbered equation in the thesis:
+
+```
+decision(x) =
+  + (1002/691) sin(61 eth_btc_ratio / 42 - 3945/847)
+  - (159/262) sin( (3813/788) sin(20 eth_btc_ratio / 19 - 4355/614)
+                   - (1510/901) sin(5336 kurtosis / 933 + 2990/983)
+                   + (127/464)  sin(3343 skewness / 775 - 7699/726)
+                   + 3379/552 )
+  - (937/955) sin( (8077/916) sin(20 eth_btc_ratio / 19 - 4355/614)
+                   - (2489/815) sin(5336 kurtosis / 933 + 2990/983)
+                   + (405/812)  sin(3343 skewness / 775 - 7699/726)
+                   + 4626/523 )
+  - (824/401) cos(270 kurtosis / 71 + 4629/889)
+  + (211/398) cos(26 skewness / 15 + 3557/845)
+  + (333/262) cos( (271/673) sin(3880 eth_btc_ratio / 713 - 3193/633)
+                   - (697/345) cos(465 kurtosis / 127 - 865/834)
+                   + (319/703) cos(443 skewness / 386 + 3032/915)
+                   - 851/208 )
+  + (497/300) cos( (409/996) sin(3880 eth_btc_ratio / 713 - 3193/633)
+                   - (1265/614) cos(465 kurtosis / 127 - 865/834)
+                   + (118/255)  cos(443 skewness / 386 + 3032/915)
+                   - 89/25 )
+  - 56/971
+
+P(up | x) = 1 / (1 + exp(-decision(x)))
+```
+
+  - Coefficients are post-`sympy.nsimplify(tolerance=1e-3)` rationals; the underlying floats are stored alongside in `sympy_objects` for sensitivity analysis.
+- **Functional-form pattern.** All 14 outer terms reduce to nested compositions of `sin` and `cos` only. No polynomial, exponential, logarithm, square root, or arctan primitive survived selection. The KAN's pruned-and-symbolified representation of P(up) is a sum of trigonometric oscillations of the three input features, with two of the terms structured as `sin(linear-combination-of-sins)` and two as `cos(linear-combination-of-sin-and-cos)`.
+- **Interpretive note (factual, economic interpretation deferred to 5.3).** The dominance of trigonometric primitives means the network learned cyclic / phase-rotation patterns in the three surviving features rather than monotonic relationships. Each feature appears 3 to 4 times across the formula at different "frequencies" (varying coefficients on the inner argument), which is how a width-3 KAN encodes higher-order interactions through nested composition.
+- **On-chain comment (Q2 evidence).** No on-chain feature appears in the surviving 3, but this finding is conditional on the pre-extraction subset: the symbolic pipeline operates on the top-5 most-stable features, so the absence of on-chain features in the survivors says only that no on-chain feature ranked in the top-5 stable set or, if any did, its KAN-edge importance fell below the prune threshold. The stronger on-chain claim (whether the "free lunch" hypothesis fails for KAN-on-BTC) belongs in 4.5 (selection frequency over 28 folds), not here.
+- **Surviving-feature group breakdown.**
+  - 1 of 3 from crypto-macro (`eth_btc_ratio`), validating the CoinMetrics ETH-source change documented in 3.4.3.
+  - 2 of 3 from mathematical / AFML Part 4 (`kurtosis`, `skewness`).
+  - 0 of 3 from technical, macro, on-chain, or lag groups.
+- **Section closer.** "The symbolic extraction pipeline produces a closed-form decision function with 100% symbolification rate. Three features survive pruning: `eth_btc_ratio`, `kurtosis`, and `skewness`. Post-symbolic accuracy is 58.65%, marginally above the pre-symbolic 57.14% and 8.65 percentage points above the 50% baseline. The formula is humanly readable but heavy with nested trigonometric composition, illustrating the gap between symbolic transparency and economic interpretability. RQ4 is answered in the affirmative: a closed-form classification formula can be extracted from a CPCV-trained KAN under AFML evaluation, even in a regime where DSR = 0 across all benchmark models."
 
 ---
 
