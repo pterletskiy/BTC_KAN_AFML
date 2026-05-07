@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from sklearn.metrics import f1_score, log_loss, roc_auc_score
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from src.cpcv.cv import (
     build_path_matrix,
