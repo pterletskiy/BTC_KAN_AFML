@@ -17,6 +17,7 @@ Single entry point: ``run_cpcv_pipeline()`` called from the notebook.
 
 import logging
 import time
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -289,6 +290,18 @@ def run_cpcv_pipeline(
         'n_splits', 'models', 'n_seeds', and optionally 'tuning_results'.
     """
     pipeline_start = time.time()
+
+    # ── bulletproof warning suppression ───────────────────────────────
+    # The notebook-level ``warnings.filterwarnings("ignore", ...)`` calls
+    # in the imports cell sometimes get overridden mid-run by sklearn's
+    # internal warning manipulation, so deprecation warnings (e.g. the
+    # sklearn 1.8 ``penalty=`` deprecation) leak into the cell output
+    # despite the user's filter intent. ``simplefilter("ignore")``
+    # resets the filter list and prepends a single catch-all rule,
+    # which is much harder for downstream libraries to override.
+    # Applied here so it takes effect every time this function is
+    # called, regardless of what happened earlier in the notebook.
+    warnings.simplefilter("ignore")
 
     # Restore pristine module constants. Prevents one run's tuned
     # hyperparameters from leaking into a later run that does not
