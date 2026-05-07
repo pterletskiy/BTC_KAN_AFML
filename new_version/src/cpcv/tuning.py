@@ -941,11 +941,11 @@ def tune_all_models(
     total_start = time.time()
 
     if verbose:
-        print(f"\n  {'='*60}")
-        print(f"  Hyperparameter Tuning (Optuna TPE + Purged K-Fold CV)")
-        print(f"  Inner CV: {N_INNER_FOLDS} folds, "
-              f"embargo={PURGE_EMBARGO} observations")
-        print(f"  {'='*60}")
+        print(
+            f"\n  Tuning ({len(models)} model{'s' if len(models) != 1 else ''}) "
+            f"— Optuna TPE + Purged K-Fold "
+            f"(inner: {N_INNER_FOLDS} folds, embargo={PURGE_EMBARGO} obs)"
+        )
 
     for model_name in models:
         if model_name not in dispatch:
@@ -960,24 +960,14 @@ def tune_all_models(
 
         if verbose and result["best_params"]:
             print(
-                f"\n    [tuning] {model_name} done in {elapsed:.1f}s"
+                f"    [tuning] {model_name} done in {elapsed:.1f}s"
                 f" — best log_loss={result['best_log_loss']:.4f}"
             )
 
     elapsed_total = time.time() - total_start
 
     if verbose:
-        print(f"\n  {'='*60}")
-        print(f"  Tuning Summary ({elapsed_total:.1f}s total)")
-        print(f"  {'─'*60}")
-        for name, res in all_results.items():
-            if res["best_params"]:
-                print(
-                    f"  {name:<16} "
-                    f"log_loss={res['best_log_loss']:.4f}  "
-                    f"params={res['best_params']}"
-                )
-        print(f"  {'='*60}")
+        print(f"  Tuning total: {elapsed_total:.1f}s")
 
     return all_results
 
@@ -986,31 +976,22 @@ def tune_all_models(
 # Helpers
 # =====================================================================
 def _print_study_summary(study, df, model_name):
-    """Print Optuna study summary."""
+    """Print a one-line Optuna study summary.
+
+    The previous version dumped a "Top 5 configurations" table per model
+    per split, which produced 5 × 6 × 28 = 840 lines of near-identical
+    configurations across a full pipeline run. The single-line summary
+    below preserves the actionable information (best params and
+    completed/pruned trial counts); the full study object remains
+    available in the returned ``results_df`` for offline inspection.
+    """
     n_complete = len([t for t in study.trials
                       if t.state == optuna.trial.TrialState.COMPLETE])
     n_pruned = len([t for t in study.trials
                     if t.state == optuna.trial.TrialState.PRUNED])
 
     print(
-        f"\n      {model_name}: {n_complete} completed, "
-        f"{n_pruned} pruned (of {len(study.trials)} total)"
+        f"      {model_name}: {n_complete} completed, {n_pruned} pruned "
+        f"(of {len(study.trials)} total) — "
+        f"best log_loss={study.best_value:.4f}, params={study.best_params}"
     )
-    print(f"      Best log_loss: {study.best_value:.4f}")
-    print(f"      Best params: {study.best_params}")
-
-    if len(df) >= 2:
-        print(f"\n      Top 5 {model_name} configurations:")
-        print(f"      {'─'*70}")
-        for i, row in df.head(5).iterrows():
-            params = " ".join(
-                f"{c}={row[c]:.4g}" if isinstance(row[c], float) else f"{c}={row[c]}"
-                for c in df.columns if c not in ["accuracy", "log_loss"]
-            )
-            ll_str = f"log_loss={row['log_loss']:.4f}"
-            acc_str = (
-                f"acc={row['accuracy']:.3f}"
-                if "accuracy" in row and not np.isnan(row.get("accuracy", np.nan))
-                else ""
-            )
-            print(f"      {i+1}. {params}  {ll_str} {acc_str}")

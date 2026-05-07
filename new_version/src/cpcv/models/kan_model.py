@@ -20,6 +20,7 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
+from tqdm.auto import tqdm
 
 from src.cpcv.models.base import BaseModel
 
@@ -182,11 +183,22 @@ class KANModel(BaseModel):
         )
 
         # ── training loop ─────────────────────────────────────────────
+        # The epoch loop is wrapped with tqdm so that interactive runs
+        # render a Keras-style progress bar with per-epoch train/val loss.
+        # ``leave=False`` collapses the bar after training completes so
+        # the notebook does not accumulate one leftover bar per outer
+        # CPCV split (28 in the locked configuration).
         best_val_loss = float("inf")
         best_state = None
         patience_counter = 0
 
-        for epoch in range(KAN_EPOCHS):
+        epoch_pbar = tqdm(
+            range(KAN_EPOCHS),
+            desc=f"  KAN training",
+            leave=False,
+            unit="epoch",
+        )
+        for epoch in epoch_pbar:
             model.train()
             optimizer.zero_grad()
 
@@ -198,6 +210,8 @@ class KANModel(BaseModel):
             torch.nn.utils.clip_grad_norm_(model.parameters(), KAN_GRAD_CLIP_NORM)
             optimizer.step()
             scheduler.step()
+
+            train_loss_val = float(loss.item())
 
             # validation
             if has_val and (epoch + 1) % KAN_VAL_INTERVAL == 0:
@@ -212,12 +226,22 @@ class KANModel(BaseModel):
                 else:
                     patience_counter += 1
 
+                # Update bar postfix with current losses for live feedback.
+                epoch_pbar.set_postfix(
+                    train=f"{train_loss_val:.4f}",
+                    val=f"{val_loss:.4f}",
+                    best=f"{best_val_loss:.4f}",
+                )
+
                 if patience_counter >= KAN_PATIENCE:
-                    logger.info(
+                    logger.debug(
                         "Early stopping at epoch %d (best val=%.4f).",
                         epoch + 1, best_val_loss,
                     )
+                    epoch_pbar.close()
                     break
+            else:
+                epoch_pbar.set_postfix(train=f"{train_loss_val:.4f}")
 
         # restore best weights
         if best_state is not None:
@@ -235,7 +259,7 @@ class KANModel(BaseModel):
             logit_range = (pred.min().item(), pred.max().item())
 
         final_epoch = epoch + 1
-        logger.info(
+        logger.debug(
             "efficient-KAN fitted: widths=%s, grid=%d, epochs=%d, "
             "val_acc=%.4f, val_loss=%.4f, logit_range=[%.2f, %.2f], device=%s.",
             self.widths, KAN_GRID, final_epoch, val_acc, best_val_loss,

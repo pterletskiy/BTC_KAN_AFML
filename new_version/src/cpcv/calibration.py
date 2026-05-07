@@ -76,7 +76,7 @@ def fit_platt_scaling(
     )
     platt.fit(logits_2d, y_true)
 
-    logger.info(
+    logger.debug(
         "Platt scaling fitted: coef=%.4f, intercept=%.4f.",
         platt.coef_[0, 0], platt.intercept_[0],
     )
@@ -117,7 +117,7 @@ def fit_temperature_scaling(
     result = minimize_scalar(nll, bounds=(0.1, 10.0), method="bounded")
     optimal_T = result.x
 
-    logger.info(
+    logger.debug(
         "Temperature scaling fitted: T=%.4f (NLL=%.4f).",
         optimal_T, result.fun,
     )
@@ -185,7 +185,7 @@ def fit_vector_scaling(
     optimal_T = float(result.x[0])
     optimal_b = result.x[1:].astype(float)
 
-    logger.info(
+    logger.debug(
         "Vector scaling fitted: T=%.4f, b=%s (NLL=%.4f).",
         optimal_T,
         np.array2string(optimal_b, precision=4),
@@ -249,7 +249,7 @@ class Calibrator:
             self.platt_model = fit_platt_scaling(logits, y)
 
         self.fitted = True
-        logger.info("Calibrator fitted: method=%s, model=%s.", self.method, model_name)
+        logger.debug("Calibrator fitted: method=%s, model=%s.", self.method, model_name)
 
     def calibrate(self, logits: np.ndarray) -> np.ndarray:
         """Apply fitted calibration to raw logits.
@@ -316,7 +316,7 @@ class Calibrator:
             raise ValueError(f"Unknown calibration method: {method}")
 
         self.fitted = True
-        logger.info("Calibrator fitted from pre-computed logits: method=%s.", self.method)
+        logger.debug("Calibrator fitted from pre-computed logits: method=%s.", self.method)
 
     def __repr__(self) -> str:
         if not self.fitted:

@@ -134,11 +134,10 @@ def find_optimal_d(
             significance,
         )
 
-    logger.info(
-        "FFD d* search: optimal d*=%.2f (p=%.4f). Sweep: %s",
+    logger.debug(
+        "FFD d* search: optimal d*=%.2f (p=%.4f).",
         d_star,
         sweep_results.get(d_star, np.nan),
-        {round(k, 2): round(v, 4) for k, v in sweep_results.items()},
     )
 
     return d_star
@@ -217,7 +216,7 @@ def ffd_transform(
 
         X_transformed[col] = apply_ffd(X_full[col], d_star)
         lookback = len(_compute_ffd_weights(d_star)) - 1
-        logger.info("FFD: col='%s', d*=%.2f, lookback=%d obs.", col, d_star, lookback)
+        logger.debug("FFD: col='%s', d*=%.2f, lookback=%d obs.", col, d_star, lookback)
 
     X_train = X_transformed.iloc[train_idx].copy()
     X_test = X_transformed.iloc[test_idx].copy()
@@ -245,12 +244,12 @@ def ffd_transform(
     X_test = X_test.loc[test_mask]
 
     if n_train_dropped > 0 or n_test_dropped > 0:
-        logger.info(
+        logger.debug(
             "FFD: dropped %d train, %d test NaN rows from FFD lookback.",
             n_train_dropped, n_test_dropped,
         )
 
-    logger.info("FFD transform complete: %s", ffd_info)
+    logger.debug("FFD transform complete: %s", ffd_info)
     return X_train, X_test, ffd_info
 
 
@@ -288,7 +287,7 @@ def scale_features(
             columns=X_test.columns,
         )
 
-    logger.info("Scaling: RobustScaler fitted on %d training rows.", len(X_train))
+    logger.debug("Scaling: RobustScaler fitted on %d training rows.", len(X_train))
     return X_train_scaled, X_test_scaled, scaler
 
 
@@ -501,17 +500,18 @@ def select_features(
         max_features = max(int(n_total * top_k_frac), MIN_FEATURES)
         if len(selected_df) > max_features:
             selected_df = selected_df.head(max_features)
-            logger.info(
+            logger.debug(
                 "MDA pool capped: %d → %d features (top_k_frac=%.2f).",
                 n_passed, max_features, top_k_frac,
             )
 
     selected = sorted(selected_df.index.tolist())
 
-    # ── Log full rankings ─────────────────────────────────────────────
+    # ── Log full rankings at DEBUG (kept available for diagnostics, but
+    # not flooded into the notebook by default; raise the logger to DEBUG
+    # to see them again).
     mda_results["selected"] = mda_results.index.isin(selected)
-
-    logger.info(
+    logger.debug(
         "Feature selection rankings:\n%s", mda_results.to_string()
     )
 
@@ -522,9 +522,10 @@ def select_features(
     if n_passed > len(selected):
         print(f"  Capped at {len(selected)} features (top_k_frac={top_k_frac})")
     print(f"  Selected ({len(selected)}): {selected}")
-    dropped = sorted(set(X_train.columns) - set(selected))
-    if dropped:
-        print(f"  Dropped  ({len(dropped)}): {dropped}")
+    # The dropped-features list is the complement of `selected`; it adds 44
+    # names per split with no new information and dominates notebook output
+    # size. Use `set(X_train.columns) - set(selected)` if you ever need it
+    # outside the pipeline output.
 
     return selected
 
@@ -606,10 +607,11 @@ def preprocess_fold(
         selected = select_features(X_train, y_train, w_train, t1_train, top_k_frac)
 
     n_cal = int(len(X_train) * 0.2)
-    print(
-        f"  Preprocessing: {len(selected)} features selected, "
-        f"train={len(X_train) - n_cal} + cal={n_cal}, test={len(X_test)}"
-    )
+    # Note: the per-fold sample sizes (train + cal + test) are stored in
+    # `info` and surfaced once per split by the calling pipeline, so we no
+    # longer print them here per call. Two `preprocess_fold` invocations
+    # per split (one per model in some configurations) was producing two
+    # near-identical lines that bloated the cell output.
 
     info = {
         "ffd": ffd_info,

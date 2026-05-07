@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from sklearn.metrics import f1_score, log_loss, roc_auc_score
+from tqdm.auto import tqdm
 
 from src.cpcv.cv import (
     build_path_matrix,
@@ -351,11 +352,24 @@ def run_cpcv_pipeline(
     task_counter = 0
 
     # ── main CPCV loop ────────────────────────────────────────────────
-    for split_idx, (train_idx, test_idx) in enumerate(splits):
+    # tqdm renders a single self-updating progress bar that collapses to
+    # one summary line in the saved notebook output. Per-split details
+    # (selected features, best params, per-seed metrics) still print as
+    # ordinary stdout lines underneath the bar; tqdm flushes the bar
+    # above them automatically.
+    pbar_label = (
+        f"CPCV ({', '.join(models)})" if len(models) <= 3
+        else f"CPCV ({len(models)} models)"
+    )
+    pbar = tqdm(
+        enumerate(splits),
+        total=len(splits),
+        desc=pbar_label,
+        unit="split",
+    )
+    for split_idx, (train_idx, test_idx) in pbar:
         split_start = time.time()
-        print(f"\n{'─'*60}")
-        print(f"Split {split_idx + 1}/{len(splits)}")
-        print(f"{'─'*60}")
+        pbar.set_postfix_str(f"split {split_idx + 1}/{len(splits)}")
 
         # ── extract fold data ─────────────────────────────────────────
         y_tr = y_mapped.iloc[train_idx]
@@ -419,7 +433,8 @@ def run_cpcv_pipeline(
             from src.cpcv.tuning import tune_all_models
 
             tune_start = time.time()
-            print(f"\n  Tuning (Optuna TPE + Purged K-Fold) on training fold...")
+            # tune_all_models prints its own "Tuning (N models) — ..."
+            # header now; we don't need to announce it separately here.
 
             split_tune_results = tune_all_models(
                 X_tr_sel, y_tr, w_tr,
@@ -435,10 +450,12 @@ def run_cpcv_pipeline(
             # which KANModel.__init__ reads at call time)
             applied = _apply_tuned_params(split_tune_results)
 
-            tune_elapsed = time.time() - tune_start
-            print(f"  Tuning done in {tune_elapsed:.1f}s")
+            # tune_all_models already prints its own "Tuning total: X.Xs"
+            # line, so we just track the elapsed and surface the applied
+            # params (which are not redundant).
+            _ = time.time() - tune_start
             for m, p in applied.items():
-                print(f"    {m}: {p}")
+                print(f"    applied {m}: {p}")
 
             all_tuning_results[split_idx] = split_tune_results
 
@@ -558,8 +575,10 @@ def run_cpcv_pipeline(
                     f"({elapsed:.1f}s)"
                 )
 
-        split_elapsed = time.time() - split_start
-        print(f"  Split {split_idx + 1} completed in {split_elapsed:.1f}s")
+        # Per-split elapsed is captured by tqdm's bar (it/s, ETA); the
+        # explicit "Split N completed in Xs" line that previously printed
+        # here is now redundant and was contributing to notebook bloat.
+        _ = time.time() - split_start
 
     # ── summary ───────────────────────────────────────────────────────
     total_elapsed = time.time() - pipeline_start

@@ -87,7 +87,7 @@ class ARLogistic(BaseModel):
         )
         self.model.fit(X_lagged, y_aligned, sample_weight=w_aligned)
 
-        logger.info(
+        logger.debug(
             "ARLogistic fitted on %d samples with lags %s.",
             len(y_aligned), self.ar_lags,
         )
@@ -166,7 +166,7 @@ class ARLogistic(BaseModel):
             valid_mask = lagged.notna().all(axis=1)
             n_dropped = int((~valid_mask).sum())
             if n_dropped > 0:
-                logger.info(
+                logger.debug(
                     "ARLogistic: dropped %d row(s) with NaN lag features "
                     "from training fold.",
                     n_dropped,
@@ -238,7 +238,7 @@ class LogisticRegressionModel(BaseModel):
         )
         self.model.fit(X, y, sample_weight=w)
 
-        logger.info(
+        logger.debug(
             "LogisticRegression fitted on %d samples, %d features.",
             X.shape[0], X.shape[1],
         )
