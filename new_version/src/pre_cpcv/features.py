@@ -83,7 +83,18 @@ AR_LAGS = [1, 2, 3, 7, 14, 30]
 LAG_COLUMN_PREFIX = "log_returns_lag"
 
 # ── Log transform targets ─────────────────────────────────────────────
-LOG_TRANSFORM_COLUMNS = ["atr", "obv"]
+# Log-transform configuration (used by ``apply_log_transforms``).
+# Columns that need a symmetric (sign-preserving) log compression
+# because their raw values can be either positive or negative and
+# their magnitudes span many orders of magnitude on BTC daily data.
+# Applied as ``sign(x) * log(|x| + 1)``, which preserves zero, sign,
+# and rank ordering while pulling extreme tail values back into a
+# range that linear models can interpret without producing 10⁻¹⁰
+# coefficients on otherwise informative features.
+SIGNED_LOG_COLUMNS = ["obv", "chaikin_osc"]
+# Columns that are always positive and just need range compression;
+# applied as ``log(|x| + 1e-8)``.
+UNSIGNED_LOG_COLUMNS = ["atr"]
 
 # ── Cache ─────────────────────────────────────────────────────────────
 CACHE_DIR = "cache/"
@@ -878,22 +889,41 @@ def compute_lag_features(
 def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
     """Apply log transforms to scale-compress specified columns.
 
-    - ATR: ``log(|x| + 1e-8)`` (always positive)
-    - OBV: ``sign(x) * log(|x| + 1)`` (preserves sign)
+    Two transform families:
 
-    Returns a modified copy of *features*.
+    - **Signed log** (``SIGNED_LOG_COLUMNS``): ``sign(x) * log(|x| + 1)``.
+      Used for features that can be either positive or negative and
+      whose magnitudes span many orders of magnitude (e.g. ``obv``,
+      ``chaikin_osc``). Preserves sign, zero, and rank ordering while
+      pulling extreme tails back into a range that linear models can
+      interpret. Applied here at feature-engineering time so MDA
+      selection and downstream tuning see compressed values rather
+      than raw 10⁷-10¹⁰ scales that produce vanishing coefficients.
+
+    - **Unsigned log** (``UNSIGNED_LOG_COLUMNS``): ``log(|x| + 1e-8)``.
+      Used for strictly non-negative features such as ``atr`` where
+      sign preservation is unnecessary; the small additive constant
+      avoids ``log(0)``.
+
+    Returns a modified copy of *features*. Columns not in either list
+    are returned unchanged.
     """
     features = features.copy()
 
-    for col in LOG_TRANSFORM_COLUMNS:
+    for col in SIGNED_LOG_COLUMNS:
         if col not in features.columns:
             continue
-        if col == "obv":
-            features[col] = np.sign(features[col]) * np.log(features[col].abs() + 1)
-        else:
-            features[col] = np.log(features[col].abs() + 1e-8)
+        features[col] = np.sign(features[col]) * np.log(features[col].abs() + 1)
 
-    logger.info("Log-transformed columns: %s", LOG_TRANSFORM_COLUMNS)
+    for col in UNSIGNED_LOG_COLUMNS:
+        if col not in features.columns:
+            continue
+        features[col] = np.log(features[col].abs() + 1e-8)
+
+    logger.info(
+        "Log-transformed columns: signed=%s, unsigned=%s",
+        SIGNED_LOG_COLUMNS, UNSIGNED_LOG_COLUMNS,
+    )
     return features
 
 
