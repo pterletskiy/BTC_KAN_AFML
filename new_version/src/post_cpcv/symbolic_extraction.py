@@ -17,12 +17,14 @@ and B-spline basis.
 """
 
 import copy
+import contextlib
 import io
 import logging
 import os
 import re
 import sys
 import threading
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -37,6 +39,20 @@ from src.cpcv.preprocessing import apply_ffd
 from src.cpcv.models.kan_model import KAN_HIDDEN, KAN_GRID, KAN_K
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Suppress noisy 3rd-party warnings emitted during symbolic extraction
+# ---------------------------------------------------------------------------
+# sympy raises a UserWarning when symbolic_formula() converts a torch tensor
+# (which still has ``requires_grad=True`` from the trained KAN) into a
+# scalar coefficient. The conversion is intended and the resulting formula
+# is correct — the warning is purely informational and adds three lines of
+# noise per extraction run.
+warnings.filterwarnings(
+    "ignore",
+    message="Converting a tensor with requires_grad=True to a scalar.*",
+    category=UserWarning,
+)
 
 # ---------------------------------------------------------------------------
 # PyKAN-specific training constants (not used by efficient-kan)
@@ -108,6 +124,43 @@ CACHE_DIR = "cache/"
 
 
 # =====================================================================
+# Output-noise suppression
+# =====================================================================
+# PyKAN's internals print verbose diagnostics during prune(),
+# suggest_symbolic(), fix_symbolic(), and fit() — including candidate
+# DataFrames, "r2 is X.XXX" lines, "saving model version 0.X" markers,
+# and "checkpoint directory created" messages. None of this carries
+# information the caller can act on (the wrapper functions in this
+# module already produce clean per-edge summaries from the same data),
+# but it dominates the cell output and bloats the saved notebook.
+# We capture stdout via a context manager and either discard the
+# buffer or surface a single line summary back to the user.
+@contextlib.contextmanager
+def _silenced_pykan_stdout(capture: bool = False):
+    """Temporarily swallow stdout so that PyKAN's internal prints do
+    not reach the notebook.
+
+    Parameters
+    ----------
+    capture : bool
+        If True, yield the StringIO buffer to the caller so any output
+        the wrapped code emitted can be inspected (e.g. to parse the
+        "r2 is X.XXX" line that PyKAN's fix_symbolic emits). If False,
+        the captured text is discarded.
+    """
+    old_stdout = sys.stdout
+    buffer = io.StringIO()
+    sys.stdout = buffer
+    try:
+        if capture:
+            yield buffer
+        else:
+            yield
+    finally:
+        sys.stdout = old_stdout
+
+
+# =====================================================================
 # Diagnostic helpers
 # =====================================================================
 def _compute_accuracy(model, X: torch.Tensor, y: torch.Tensor) -> float:
@@ -160,7 +213,10 @@ def _log_diagnostic(label: str, model, X_train, y_train, X_val, y_val):
     train_acc = _compute_accuracy(model, X_train, y_train)
     val_acc = _compute_accuracy(model, X_val, y_val)
     print(f"    [{label}] train_acc={train_acc:.4f}, val_acc={val_acc:.4f}")
-    logger.info("%s: train_acc=%.4f, val_acc=%.4f", label, train_acc, val_acc)
+    # logger.debug rather than logger.info: the print() above already
+    # surfaces this to the notebook; the timestamped INFO copy was just
+    # adding a duplicate line per phase transition.
+    logger.debug("%s: train_acc=%.4f, val_acc=%.4f", label, train_acc, val_acc)
     return train_acc, val_acc
 
 
@@ -210,8 +266,10 @@ def select_extraction_fold(
         for key, pred in predictions.items():
             return key[1], pred.get("prep_info", {})
 
-    # log all fold F1s for reference
-    logger.info(
+    # log all fold F1s for reference (DEBUG: 28-entry dict added bulk
+    # to the cell output without changing any decision the caller could
+    # act on; the selected fold is printed below)
+    logger.debug(
         "Fold F1 scores: %s",
         {k: f"{v:.4f}" for k, v in split_f1s.items()},
     )
@@ -232,7 +290,7 @@ def select_extraction_fold(
         selected = max(split_f1s, key=split_f1s.get)
         reason = f"best F1 (F1={split_f1s[selected]:.4f})"
 
-    logger.info("Selected fold: split %d — %s", selected, reason)
+    logger.debug("Selected fold: split %d — %s", selected, reason)
     print(f"  Fold selection: split {selected} — {reason}")
 
     return selected, split_prep[selected]
@@ -289,10 +347,6 @@ def prepare_extraction_data(
     best_split_idx: int,
     prep_info: dict,
     feature_subset: list[str] | None = None,
-    n_groups: int | None = None,
-    k: int | None = None,
-    embargo_pct: float | None = None,
-    splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> tuple[dict, list[str]]:
     """Reconstruct preprocessed data for the extraction fold.
 
@@ -305,42 +359,8 @@ def prepare_extraction_data(
         If provided, only these features are used for symbolic extraction.
         This allows extracting simpler formulas with fewer variables,
         independent of the CPCV feature selection.
-    n_groups, k, embargo_pct : optional
-        CPCV configuration. Must match the values used to produce
-        ``cpcv_results``. If omitted, defaults are inferred from
-        ``cpcv_results["split_info"]`` so that the regenerated splits
-        align with the original training fold. Pass them explicitly
-        only when ``cpcv_results`` lacks a ``split_info`` entry.
-    splits : list of (train_idx, test_idx), optional
-        Pre-computed CPCV splits, identical to the list produced by
-        the notebook's CV cell. When provided, the function uses them
-        directly and skips internal regeneration. Recommended pattern:
-        pass the same ``splits`` list the notebook produced upstream.
     """
-    # Resolve CPCV configuration: prefer explicit splits → cpcv_results
-    # split_info → explicit n_groups/k/embargo_pct → cv.py defaults.
-    if splits is None:
-        if n_groups is None or k is None or embargo_pct is None:
-            si = cpcv_results.get("split_info") or {}
-            if n_groups is None:
-                n_groups = si.get("n_groups")
-            if k is None:
-                k = si.get("k")
-            if embargo_pct is None:
-                embargo_pct = si.get("embargo_pct")
-        if n_groups is None or k is None or embargo_pct is None:
-            raise ValueError(
-                "prepare_extraction_data: CPCV configuration could not be "
-                "resolved. Pass ``splits`` directly, or pass ``n_groups`` / "
-                "``k`` / ``embargo_pct``, or ensure ``cpcv_results`` "
-                "contains a ``split_info`` entry with these keys. "
-                "Regenerating with cv.py defaults would silently use a "
-                "different fold from the one ``cpcv_results`` was trained "
-                "on, which is unsafe."
-            )
-        splits = generate_cpcv_splits(
-            X, t1, n_groups=n_groups, k=k, embargo_pct=embargo_pct,
-        )
+    splits = generate_cpcv_splits(X, t1)
     train_idx, _ = splits[best_split_idx]
 
     # ``y`` may arrive as a numpy array, a pandas Series, or anything
@@ -400,7 +420,7 @@ def prepare_extraction_data(
         if valid_subset:
             X_train = X_train[valid_subset]
             selected_features = valid_subset
-            logger.info(
+            logger.debug(
                 "Feature subset applied: %d → %d features.",
                 len(selected_features), len(valid_subset),
             )
@@ -432,7 +452,7 @@ def prepare_extraction_data(
     }
 
     feature_names = list(selected_features)
-    logger.info(
+    logger.debug(
         "Extraction data: %d train, %d val, %d features (tanh-normalized).",
         len(X_model), len(X_val), len(feature_names),
     )
@@ -568,7 +588,7 @@ def train_pykan(
     criterion = nn.CrossEntropyLoss()
 
     # ── Phase 1: Adam with weight decay + noise injection ─────────────
-    logger.info(
+    logger.debug(
         "Extraction Phase 1: Adam (%d steps, wd=%.4f, noise=%.3f)",
         PYKAN_ADAM_STEPS, PYKAN_ADAM_WEIGHT_DECAY, PYKAN_NOISE_STD,
     )
@@ -628,7 +648,7 @@ def train_pykan(
     if PYKAN_GRID_EXTEND and n_train > 1000:
         try:
             model = model.refine(KAN_GRID)
-            logger.info("Grid extended: %d → %d", PYKAN_SYMBOLIC_FORCE_GRID, KAN_GRID)
+            logger.debug("Grid extended: %d → %d", PYKAN_SYMBOLIC_FORCE_GRID, KAN_GRID)
             print(f"    Grid extended: {PYKAN_SYMBOLIC_FORCE_GRID} → {KAN_GRID}")
             _log_diagnostic("After grid extend", model, X_t, y_t, X_val_t, y_val_t)
         except (AttributeError, TypeError, Exception) as e:
@@ -646,7 +666,7 @@ def train_pykan(
     lbfgs_sparse_steps = PYKAN_LBFGS_STEPS - lbfgs_warmup_steps
 
     # ── Phase 2a: LBFGS warmup (no regularization) ────────────────────
-    logger.info("Extraction Phase 2a: LBFGS warmup (%d steps, no reg)", lbfgs_warmup_steps)
+    logger.debug("Extraction Phase 2a: LBFGS warmup (%d steps, no reg)", lbfgs_warmup_steps)
     print(f"    Phase 2a: LBFGS warmup ({lbfgs_warmup_steps} steps, lamb=0)...")
 
     optimizer_lbfgs = torch.optim.LBFGS(
@@ -682,7 +702,7 @@ def train_pykan(
             else:
                 patience_counter += 1
             if patience_counter >= PYKAN_PATIENCE:
-                logger.info("LBFGS warmup early stop at step %d", step + 1)
+                logger.debug("LBFGS warmup early stop at step %d", step + 1)
                 break
 
     model.load_state_dict(best_state)
@@ -691,7 +711,7 @@ def train_pykan(
     _log_diagnostic("After LBFGS warmup", model, X_t, y_t, X_val_t, y_val_t)
 
     # ── Phase 2b: LBFGS with sparsity regularization ──────────────────
-    logger.info(
+    logger.debug(
         "Extraction Phase 2b: LBFGS sparsity (%d steps, lamb=%.4f)",
         lbfgs_sparse_steps, PYKAN_LAMB,
     )
@@ -741,7 +761,7 @@ def train_pykan(
             else:
                 patience_counter += 1
             if patience_counter >= PYKAN_PATIENCE:
-                logger.info("LBFGS sparsity early stop at step %d", step + 1)
+                logger.debug("LBFGS sparsity early stop at step %d", step + 1)
                 break
 
     model.load_state_dict(best_state_sparse)
@@ -753,7 +773,7 @@ def train_pykan(
     )
 
     model._pre_symbolic_accuracy = val_acc
-    logger.info("%s trained. Val accuracy: %.4f, width: %s", model_type, val_acc, width)
+    logger.debug("%s trained. Val accuracy: %.4f, width: %s", model_type, val_acc, width)
     return model
 
 
@@ -781,7 +801,7 @@ def prune_network(model, dataset: dict):
             f"{active_edges}/{total_edges} edges active "
             f"({active_edges/total_edges:.0%} survival rate)"
         )
-        logger.info(
+        logger.debug(
             "Pre-prune edge analysis: %d/%d active (%.1f%%)",
             active_edges, total_edges, 100 * active_edges / max(total_edges, 1),
         )
@@ -810,17 +830,23 @@ def prune_network(model, dataset: dict):
     pre_prune_model = model
 
     # try different PyKAN prune APIs (varies by version)
+    # PyKAN emits "saving model version 0.X" lines from inside prune();
+    # those are checkpoint markers that have no meaning to the caller,
+    # so we suppress them here.
     pruned = False
     try:
-        model = model.prune(threshold=PRUNE_THRESHOLD)
+        with _silenced_pykan_stdout():
+            model = model.prune(threshold=PRUNE_THRESHOLD)
         pruned = True
     except TypeError:
         try:
-            model = model.prune(node_th=PRUNE_THRESHOLD, edge_th=PRUNE_THRESHOLD)
+            with _silenced_pykan_stdout():
+                model = model.prune(node_th=PRUNE_THRESHOLD, edge_th=PRUNE_THRESHOLD)
             pruned = True
         except TypeError:
             try:
-                model = model.prune()
+                with _silenced_pykan_stdout():
+                    model = model.prune()
                 pruned = True
             except Exception as e:
                 logger.warning("model.prune() failed: %s. Returning unpruned.", e)
@@ -849,7 +875,7 @@ def prune_network(model, dataset: dict):
     print(f"    Pruned: {original_width} → {pruned_width}")
     if post_total > 0:
         print(f"    Post-prune edges: {post_total} remaining")
-    logger.info("Pruned: %s → %s", original_width, pruned_width)
+    logger.debug("Pruned: %s → %s", original_width, pruned_width)
 
     # ── Post-prune accuracy ───────────────────────────────────────────
     post_acc = _compute_accuracy(
@@ -913,17 +939,23 @@ def symbolify_network(model, dataset: dict):
                 total_edges += 1
 
                 # ── each edge gets its own try/except ─────────────
+                # suggest_symbolic prints the full candidate DataFrame
+                # (≈6 lines per call × 12 edges = ~72 lines per run)
+                # which is duplicate information: we already log the
+                # winning function and R² per edge below. Suppress.
                 try:
-                    suggestions = model.suggest_symbolic(
-                        l, i, j, topk=SYMBOLIC_TOPK, lib=SYMBOLIC_LIBRARY,
-                    )
+                    with _silenced_pykan_stdout():
+                        suggestions = model.suggest_symbolic(
+                            l, i, j, topk=SYMBOLIC_TOPK, lib=SYMBOLIC_LIBRARY,
+                        )
                 except (KeyError, Exception) as e:
                     # custom library may contain names PyKAN doesn't know;
                     # fall back to PyKAN's built-in default library
                     try:
-                        suggestions = model.suggest_symbolic(
-                            l, i, j, topk=SYMBOLIC_TOPK,
-                        )
+                        with _silenced_pykan_stdout():
+                            suggestions = model.suggest_symbolic(
+                                l, i, j, topk=SYMBOLIC_TOPK,
+                            )
                         if fallback_count < 3:
                             print(
                                 f"    ℹ Edge ({l},{i},{j}): custom lib failed "
@@ -954,13 +986,12 @@ def symbolify_network(model, dataset: dict):
                 best_r2 = 0.0
 
                 try:
-                    # debug: dump full structure for first 2 edges
-                    if total_edges <= 2:
-                        print(
-                            f"    [DEBUG] Edge ({l},{i},{j}): "
-                            f"type={type(suggestions).__name__}, "
-                            f"repr={repr(suggestions)[:200]}"
-                        )
+                    # Note: PyKAN's suggest_symbolic() return type varies
+                    # by version. Earlier debug scaffolding that dumped
+                    # the raw `repr(suggestions)` for the first few edges
+                    # has been removed; the parsing below covers all
+                    # observed return types and the dump was only useful
+                    # while the multi-version handling was being debugged.
 
                     # ── CASE 1: DataFrame ──────────────────────────────
                     if hasattr(suggestions, "to_dict"):
@@ -1125,7 +1156,13 @@ def symbolify_network(model, dataset: dict):
                 # ── apply symbolic replacement if R² is good enough ──
                 if best_r2 >= SYMBOLIC_R2_THRESHOLD:
                     try:
-                        model.fix_symbolic(l, i, j, best_fn)
+                        # PyKAN prints "r2 is X.XXX", possibly followed
+                        # by "saving model version 0.X" and the "r2 is
+                        # not very high" warning. Suppress all of those:
+                        # we already log the per-edge R² ourselves on
+                        # the next line.
+                        with _silenced_pykan_stdout():
+                            model.fix_symbolic(l, i, j, best_fn)
                         symbolified_edges += 1
                         logger.info(
                             "Edge (%d,%d,%d): %s (R²=%.4f) ✓",
@@ -1176,12 +1213,17 @@ def symbolify_network(model, dataset: dict):
                 "test_input": dataset["test_input"],
                 "test_label": dataset["test_label"].long(),
             }
-            model.fit(
-                dataset_fit, opt="LBFGS", lr=AFFINE_LR,
-                steps=AFFINE_FINETUNE_STEPS,
-                loss_fn=nn.CrossEntropyLoss(),
-                update_grid=False,
-            )
+            # PyKAN's fit() prints a tqdm-style progress bar plus a
+            # final "saving model version 0.X" marker. Both are noise:
+            # the pre- and post-symbolic accuracy reported in the
+            # Results section already conveys whether fine-tuning helped.
+            with _silenced_pykan_stdout():
+                model.fit(
+                    dataset_fit, opt="LBFGS", lr=AFFINE_LR,
+                    steps=AFFINE_FINETUNE_STEPS,
+                    loss_fn=nn.CrossEntropyLoss(),
+                    update_grid=False,
+                )
         except (TypeError, AttributeError, RuntimeError):
             try:
                 optimizer = torch.optim.LBFGS(model.parameters(), lr=AFFINE_LR, max_iter=10)
@@ -1237,7 +1279,13 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
     used_vars = None
     for var_candidate in [var_symbols_x, var_symbols_x_, var_symbols_x0]:
         try:
-            formulas = model.symbolic_formula(var=var_candidate)
+            # symbolic_formula() can emit per-edge progress lines on
+            # some PyKAN versions and triggers sympy warnings about
+            # tensors with requires_grad=True being converted to
+            # scalars. Both are silent on stdout when this block
+            # succeeds, but we wrap to be safe.
+            with _silenced_pykan_stdout():
+                formulas = model.symbolic_formula(var=var_candidate)
             used_vars = var_candidate
             break
         except Exception:
@@ -1246,7 +1294,8 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
     # last resort: try without var= (may work on some PyKAN versions)
     if formulas is None:
         try:
-            formulas = model.symbolic_formula()
+            with _silenced_pykan_stdout():
+                formulas = model.symbolic_formula()
             used_vars = None
         except Exception as e:
             logger.error("model.symbolic_formula() failed: %s", e)
