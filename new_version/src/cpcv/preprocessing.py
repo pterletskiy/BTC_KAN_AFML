@@ -410,7 +410,7 @@ def compute_multi_model_mda(
         random_state=42,
         n_jobs=-1,
     )
-    print("[preprocessing] Computing MDA (Random Forest)...")
+    logger.info("Computing MDA (Random Forest)...")
     mda_rf = _compute_mda_single_model(rf_clf, X_train, y_train, w_train, t1_train)
 
     # ── Logistic Regression MDA ───────────────────────────────────────
@@ -419,7 +419,7 @@ def compute_multi_model_mda(
         max_iter=1000,
         random_state=42,
     )
-    print("[preprocessing] Computing MDA (Logistic Regression)...")
+    logger.info("Computing MDA (Logistic Regression)...")
     mda_lr = _compute_mda_single_model(lr_clf, X_train, y_train, w_train, t1_train)
 
     # ── Average ───────────────────────────────────────────────────────
@@ -515,17 +515,20 @@ def select_features(
         "Feature selection rankings:\n%s", mda_results.to_string()
     )
 
-    print(
-        f"[preprocessing] Multi-model MDA: {n_passed}/{n_total} passed "
-        f"(MDA > 0), {n_eliminated} eliminated"
+    logger.info(
+        "Multi-model MDA: %d/%d passed (MDA > 0), %d eliminated",
+        n_passed, n_total, n_eliminated,
     )
     if n_passed > len(selected):
-        print(f"  Capped at {len(selected)} features (top_k_frac={top_k_frac})")
-    print(f"  Selected ({len(selected)}): {selected}")
-    # The dropped-features list is the complement of `selected`; it adds 44
-    # names per split with no new information and dominates notebook output
-    # size. Use `set(X_train.columns) - set(selected)` if you ever need it
-    # outside the pipeline output.
+        logger.info(
+            "  Capped at %d features (top_k_frac=%s)",
+            len(selected), top_k_frac,
+        )
+    logger.info("  Selected (%d): %s", len(selected), selected)
+    # The dropped-features list is the complement of `selected`; it adds
+    # ~44 names per split with no new information and dominates notebook
+    # output size. Use `set(X_train.columns) - set(selected)` if you
+    # ever need it outside the pipeline output.
 
     return selected
 
@@ -602,7 +605,7 @@ def preprocess_fold(
     # 4. Select features
     if skip_selection:
         selected = sorted(X_train.columns.tolist())
-        print("[preprocessing] Feature selection skipped (AR Logistic uses lagged returns only)")
+        logger.info("Feature selection skipped (AR Logistic uses lagged returns only)")
     else:
         selected = select_features(X_train, y_train, w_train, t1_train, top_k_frac)
 

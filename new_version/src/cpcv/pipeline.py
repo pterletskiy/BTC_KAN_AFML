@@ -327,20 +327,25 @@ def run_cpcv_pipeline(
     k = split_info["k"]
     embargo_pct = split_info["embargo_pct"]
 
-    print("=" * 60)
-    print("CPCV Pipeline")
-    print("=" * 60)
-    print(f"  Models:         {models}")
-    print(f"  Seeds/fold:     {n_seeds}")
-    print(f"  Groups (N):     {n_groups}")
-    print(f"  Test groups (k):{k}")
-    print(f"  Embargo:        {embargo_pct*100:.1f}%")
-    print(f"  FFD columns:    {ffd_columns}")
-    print(f"  Samples:        {len(X)}")
-    print(f"  Features:       {X.shape[1]}")
-    print(f"  Splits:         {len(splits)}, Paths: {n_paths}")
-    print(f"  Tuning:         {'NESTED (per-split) — ' + str(tune_models) + (' [' + str(n_trials) + ' trials]' if n_trials else '') if tune else 'OFF'}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("CPCV Pipeline")
+    logger.info("=" * 60)
+    logger.info("  Models:         %s", models)
+    logger.info("  Seeds/fold:     %d", n_seeds)
+    logger.info("  Groups (N):     %d", n_groups)
+    logger.info("  Test groups (k):%d", k)
+    logger.info("  Embargo:        %.1f%%", embargo_pct * 100)
+    logger.info("  FFD columns:    %s", ffd_columns)
+    logger.info("  Samples:        %d", len(X))
+    logger.info("  Features:       %d", X.shape[1])
+    logger.info("  Splits:         %d, Paths: %d", len(splits), n_paths)
+    logger.info(
+        "  Tuning:         %s",
+        ('NESTED (per-split) — ' + str(tune_models)
+         + (' [' + str(n_trials) + ' trials]' if n_trials else ''))
+        if tune else 'OFF',
+    )
+    logger.info("=" * 60)
 
     # ── map labels: {-1, +1} → {0, 1} ────────────────────────────────
     y_mapped = ((y + 1) // 2).astype(int)
@@ -352,11 +357,12 @@ def run_cpcv_pipeline(
     task_counter = 0
 
     # ── main CPCV loop ────────────────────────────────────────────────
-    # tqdm renders a single self-updating progress bar that collapses to
-    # one summary line in the saved notebook output. Per-split details
-    # (selected features, best params, per-seed metrics) still print as
-    # ordinary stdout lines underneath the bar; tqdm flushes the bar
-    # above them automatically.
+    # Per-split detail (selected features, best params, per-seed metrics)
+    # is routed through Python's logging module to a FileHandler. The
+    # notebook cell shows only this self-updating tqdm bar plus a final
+    # summary line, which keeps the saved notebook small enough to
+    # avoid the "array buffer allocation failed" error in Jupyter when
+    # serialising cell output to JSON.
     pbar_label = (
         f"CPCV ({', '.join(models)})" if len(models) <= 3
         else f"CPCV ({len(models)} models)"
@@ -367,9 +373,16 @@ def run_cpcv_pipeline(
         desc=pbar_label,
         unit="split",
     )
+    # Track aggregate stats so we can show them in the tqdm postfix and
+    # in the final summary line.
+    last_f1 = float("nan")
+    last_auc = float("nan")
     for split_idx, (train_idx, test_idx) in pbar:
         split_start = time.time()
-        pbar.set_postfix_str(f"split {split_idx + 1}/{len(splits)}")
+        pbar.set_postfix_str(
+            f"split {split_idx + 1}/{len(splits)} "
+            f"| last F1={last_f1:.3f} AUC={last_auc:.3f}"
+        )
 
         # ── extract fold data ─────────────────────────────────────────
         y_tr = y_mapped.iloc[train_idx]
@@ -410,19 +423,19 @@ def run_cpcv_pipeline(
         w_model = w_tr.iloc[:cal_boundary]
 
         if needs_selection:
-            print(
-                f"  Preprocessing: {len(selected)} features selected, "
-                f"train={len(X_model)} + cal={len(X_cal)}, "
-                f"test={len(X_te_sel)}"
+            logger.info(
+                "  Preprocessing: %d features selected, "
+                "train=%d + cal=%d, test=%d",
+                len(selected), len(X_model), len(X_cal), len(X_te_sel),
             )
         else:
             from src.cpcv.models.benchmarks import AR_LAGS
-            print(
-                f"  Preprocessing: FFD + scaling only (no feature selection), "
-                f"train={len(X_model)} + cal={len(X_cal)}, "
-                f"test={len(X_te_full)}"
+            logger.info(
+                "  Preprocessing: FFD + scaling only (no feature selection), "
+                "train=%d + cal=%d, test=%d",
+                len(X_model), len(X_cal), len(X_te_full),
             )
-            print(f"  AR Logistic lags: {AR_LAGS}")
+            logger.info("  AR Logistic lags: %s", AR_LAGS)
 
         # ── per-split hyperparameter tuning (nested) ─────────────────
         # Tune on the FULL training fold (X_tr_sel), not the 80% model
@@ -455,7 +468,7 @@ def run_cpcv_pipeline(
             # params (which are not redundant).
             _ = time.time() - tune_start
             for m, p in applied.items():
-                print(f"    applied {m}: {p}")
+                logger.info("    applied %s: %s", m, p)
 
             all_tuning_results[split_idx] = split_tune_results
 
@@ -568,12 +581,15 @@ def run_cpcv_pipeline(
                 }
 
                 elapsed = time.time() - task_start
-                print(
-                    f"  [{task_counter:>3d}/{total_tasks}] "
-                    f"{model_name:>20s} (seed={seed}) "
-                    f"F1={f1:.3f}  AUC={auc:.3f}  LL={ll:.4f} "
-                    f"({elapsed:.1f}s)"
+                logger.info(
+                    "  [%3d/%d] %20s (seed=%d) F1=%.3f  AUC=%.3f  LL=%.4f (%.1fs)",
+                    task_counter, total_tasks, model_name, seed,
+                    f1, auc, ll, elapsed,
                 )
+                # keep latest stats so the tqdm postfix reflects what's
+                # going on right now without flooding cell output
+                last_f1 = f1
+                last_auc = auc
 
         # Per-split elapsed is captured by tqdm's bar (it/s, ETA); the
         # explicit "Split N completed in Xs" line that previously printed
@@ -585,17 +601,30 @@ def run_cpcv_pipeline(
     n_successful = len(all_predictions)
     n_failed = total_tasks - n_successful
 
-    print(f"\n{'='*60}")
-    print(f"CPCV Pipeline Complete")
-    print(f"{'='*60}")
-    print(f"  Total time:     {total_elapsed:.1f}s ({total_elapsed/60:.1f}m)")
-    print(f"  Tasks:          {n_successful} succeeded, {n_failed} failed")
-    print(f"  Results keys:   {n_successful} (model, split, seed) entries")
-    print(f"  Backtest paths: {n_paths}")
+    # Detailed summary lives in the log file; the cell shows a single
+    # one-line completion notice so the saved notebook stays small.
+    logger.info("=" * 60)
+    logger.info("CPCV Pipeline Complete")
+    logger.info("=" * 60)
+    logger.info("  Total time:     %.1fs (%.1fm)", total_elapsed, total_elapsed / 60)
+    logger.info("  Tasks:          %d succeeded, %d failed", n_successful, n_failed)
+    logger.info("  Results keys:   %d (model, split, seed) entries", n_successful)
+    logger.info("  Backtest paths: %d", n_paths)
     if tune and all_tuning_results:
-        print(f"  Tuning:         nested (per-split), {len(all_tuning_results)} "
-              f"splits tuned, models={tune_models}")
-    print(f"{'='*60}")
+        logger.info(
+            "  Tuning:         nested (per-split), %d splits tuned, models=%s",
+            len(all_tuning_results), tune_models,
+        )
+    logger.info("=" * 60)
+
+    # One concise visible line in the cell:
+    summary_msg = (
+        f"\n✅ CPCV complete: {n_successful}/{total_tasks} tasks succeeded "
+        f"in {total_elapsed/60:.1f}m."
+    )
+    if n_failed:
+        summary_msg += f" ({n_failed} failed)"
+    print(summary_msg)
 
     if n_failed > 0:
         logger.warning("%d model fits failed during pipeline execution.", n_failed)

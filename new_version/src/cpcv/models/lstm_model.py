@@ -25,7 +25,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from tqdm.auto import tqdm
 
 from src.cpcv.models.base import BaseModel
 
@@ -299,22 +298,18 @@ class LSTMModel(BaseModel):
         )
 
         # ── training loop ─────────────────────────────────────────────
-        # The epoch loop is wrapped with tqdm so that interactive runs
-        # render a Keras-style progress bar with per-epoch train/val loss.
-        # ``leave=False`` collapses the bar after training completes so
-        # the notebook does not accumulate 28 leftover bars (one per
-        # outer CPCV split).
+        # The inner per-epoch progress bar was removed because per-split
+        # LSTM bars accumulate hundreds of stream events across 28 outer
+        # CPCV splits, contributing to the "array buffer allocation
+        # failed" error when saving the notebook. Per-epoch convergence
+        # is logged at DEBUG for inspection in the run's log file. Outer
+        # pipeline-level progress is shown by the tqdm bar in
+        # pipeline.py.
         best_val_loss = float("inf")
         best_state = None
         patience_counter = 0
 
-        epoch_pbar = tqdm(
-            range(LSTM_EPOCHS),
-            desc=f"  LSTM training",
-            leave=False,
-            unit="epoch",
-        )
-        for epoch in epoch_pbar:
+        for epoch in range(LSTM_EPOCHS):
             self.net.train()
             epoch_loss = 0.0
             n_batches = 0
@@ -351,12 +346,10 @@ class LSTMModel(BaseModel):
                 else:
                     patience_counter += 1
 
-                # Update bar postfix with the latest losses so the user
-                # can monitor convergence in real time.
-                epoch_pbar.set_postfix(
-                    train=f"{avg_train_loss:.4f}",
-                    val=f"{val_loss:.4f}",
-                    best=f"{best_val_loss:.4f}",
+                logger.debug(
+                    "LSTM epoch %d/%d: train=%.4f val=%.4f best=%.4f patience=%d/%d",
+                    epoch + 1, LSTM_EPOCHS, avg_train_loss, val_loss,
+                    best_val_loss, patience_counter, LSTM_PATIENCE,
                 )
 
                 if patience_counter >= LSTM_PATIENCE:
@@ -364,10 +357,12 @@ class LSTMModel(BaseModel):
                         "LSTM early stopping at epoch %d (best val loss: %.4f).",
                         epoch + 1, best_val_loss,
                     )
-                    epoch_pbar.close()
                     break
             else:
-                epoch_pbar.set_postfix(train=f"{avg_train_loss:.4f}")
+                logger.debug(
+                    "LSTM epoch %d/%d: train=%.4f (no validation)",
+                    epoch + 1, LSTM_EPOCHS, avg_train_loss,
+                )
 
         # restore best weights
         if best_state is not None:

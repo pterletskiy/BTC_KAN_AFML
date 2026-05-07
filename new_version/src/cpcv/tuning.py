@@ -184,9 +184,9 @@ def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True, n_trial
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
-        print(
-            f"    [tuning] logistic: {len(splits)} purged K-fold splits, "
-            f"{_n} Optuna trials (TPE)"
+        logger.info(
+            "  [tuning] logistic: %d purged K-fold splits, %d Optuna trials (TPE)",
+            len(splits), _n,
         )
 
     all_results = []
@@ -252,9 +252,9 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
-        print(
-            f"    [tuning] random_forest: {len(splits)} purged K-fold splits, "
-            f"{_n} Optuna trials (TPE)"
+        logger.info(
+            "  [tuning] random_forest: %d purged K-fold splits, %d Optuna trials (TPE)",
+            len(splits), _n,
         )
 
     all_results = []
@@ -337,9 +337,9 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
-        print(
-            f"    [tuning] xgboost: {len(splits)} purged K-fold splits, "
-            f"{_n} Optuna trials (TPE)"
+        logger.info(
+            "  [tuning] xgboost: %d purged K-fold splits, %d Optuna trials (TPE)",
+            len(splits), _n,
         )
 
     all_results = []
@@ -510,9 +510,9 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     _n = n_trials if n_trials is not None else N_TRIALS_NEURAL
 
     if verbose:
-        print(
-            f"    [tuning] lstm: {len(seq_splits)} purged K-fold splits, "
-            f"{_n} Optuna trials (TPE)"
+        logger.info(
+            "  [tuning] lstm: %d purged K-fold splits, %d Optuna trials (TPE)",
+            len(seq_splits), _n,
         )
 
     all_results = []
@@ -717,10 +717,9 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     _n = n_trials if n_trials is not None else N_TRIALS_NEURAL
 
     if verbose:
-        print(
-            f"    [tuning] kan (efficient-kan + AdamW): "
-            f"{len(splits)} purged K-fold splits, "
-            f"{_n} Optuna trials (TPE)"
+        logger.info(
+            "  [tuning] kan (efficient-kan + AdamW): %d purged K-fold splits, %d Optuna trials (TPE)",
+            len(splits), _n,
         )
 
     all_results = []
@@ -941,10 +940,11 @@ def tune_all_models(
     total_start = time.time()
 
     if verbose:
-        print(
-            f"\n  Tuning ({len(models)} model{'s' if len(models) != 1 else ''}) "
-            f"— Optuna TPE + Purged K-Fold "
-            f"(inner: {N_INNER_FOLDS} folds, embargo={PURGE_EMBARGO} obs)"
+        logger.info(
+            "Tuning (%d model%s) — Optuna TPE + Purged K-Fold "
+            "(inner: %d folds, embargo=%d obs)",
+            len(models), 's' if len(models) != 1 else '',
+            N_INNER_FOLDS, PURGE_EMBARGO,
         )
 
     for model_name in models:
@@ -959,15 +959,15 @@ def tune_all_models(
         all_results[model_name] = result
 
         if verbose and result["best_params"]:
-            print(
-                f"    [tuning] {model_name} done in {elapsed:.1f}s"
-                f" — best log_loss={result['best_log_loss']:.4f}"
+            logger.info(
+                "  [tuning] %s done in %.1fs — best log_loss=%.4f",
+                model_name, elapsed, result['best_log_loss'],
             )
 
     elapsed_total = time.time() - total_start
 
     if verbose:
-        print(f"  Tuning total: {elapsed_total:.1f}s")
+        logger.info("Tuning total: %.1fs", elapsed_total)
 
     return all_results
 
@@ -990,8 +990,9 @@ def _print_study_summary(study, df, model_name):
     n_pruned = len([t for t in study.trials
                     if t.state == optuna.trial.TrialState.PRUNED])
 
-    print(
-        f"      {model_name}: {n_complete} completed, {n_pruned} pruned "
-        f"(of {len(study.trials)} total) — "
-        f"best log_loss={study.best_value:.4f}, params={study.best_params}"
+    logger.info(
+        "    %s: %d completed, %d pruned (of %d total) — "
+        "best log_loss=%.4f, params=%s",
+        model_name, n_complete, n_pruned, len(study.trials),
+        study.best_value, study.best_params,
     )
