@@ -456,6 +456,8 @@ def run_cpcv_pipeline(
         X_tr_proc, X_te_proc, selected, prep_info = preprocess_fold(
             X, train_idx, test_idx, y_tr, w_tr, t1_tr, ffd_columns, top_k_frac,
             skip_selection=not needs_selection,
+            split_idx=split_idx,
+            n_splits=len(splits),
         )
 
         # re-align y, w, t1, ret after FFD may have dropped NaN rows

@@ -438,6 +438,9 @@ def select_features(
     w_train: pd.Series,
     t1_train: pd.Series,
     top_k_frac: float | None = None,
+    *,
+    split_idx: int | None = None,
+    n_splits: int | None = None,
 ) -> list[str]:
     """Select features via multi-model MDA (AFML §8.4).
 
@@ -465,6 +468,15 @@ def select_features(
     top_k_frac : float, optional
         Cap selection at this fraction of total features.
         Default from MDA_TOP_K_FRAC module constant.
+    split_idx : int, optional
+        Zero-based index of the current CPCV split. When provided,
+        any warning emitted by this function is prefixed with the
+        split identifier so the deferred-warning summary printed by
+        ``run_cpcv_pipeline`` can show which fold(s) actually
+        triggered the warning. Pass via keyword only.
+    n_splits : int, optional
+        Total number of CPCV splits. Used together with ``split_idx``
+        to render the prefix as ``[split K/N]``.
 
     Returns
     -------
@@ -475,6 +487,17 @@ def select_features(
         top_k_frac = MDA_TOP_K_FRAC
 
     n_total = X_train.shape[1]
+
+    # Build a per-fold prefix for warning messages so the post-run
+    # summary printed by ``run_cpcv_pipeline`` identifies which split
+    # triggered the warning rather than leaving the reader to assume
+    # the issue applied to every fold.
+    if split_idx is not None and n_splits is not None:
+        split_prefix = f"[split {split_idx + 1}/{n_splits}] "
+    elif split_idx is not None:
+        split_prefix = f"[split {split_idx + 1}] "
+    else:
+        split_prefix = ""
 
     # ── Compute multi-model MDA on the full feature universe ──────────
     mda_results = compute_multi_model_mda(X_train, y_train, w_train, t1_train)
@@ -488,8 +511,8 @@ def select_features(
     # fallback: if too few pass, take top MIN_FEATURES by MDA
     if n_passed < MIN_FEATURES:
         logger.warning(
-            "Only %d features with MDA > 0. Taking top %d by MDA value.",
-            n_passed, MIN_FEATURES,
+            "%sOnly %d features with MDA > 0. Taking top %d by MDA value.",
+            split_prefix, n_passed, MIN_FEATURES,
         )
         selected_df = mda_results.head(MIN_FEATURES)
     else:
@@ -546,6 +569,9 @@ def preprocess_fold(
     ffd_columns: list[str],
     top_k_frac: float | None = None,
     skip_selection: bool = False,
+    *,
+    split_idx: int | None = None,
+    n_splits: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict]:
     """Full preprocessing for one CPCV fold: FFD → scaling → selection.
 
@@ -576,6 +602,13 @@ def preprocess_fold(
     skip_selection : bool
         If True, skip feature selection and return all columns.
         Used when only AR Logistic is being evaluated.
+    split_idx : int, optional
+        Zero-based index of the current CPCV split. Forwarded to
+        ``select_features`` so any warning it emits identifies the
+        fold that triggered it. Pass via keyword only.
+    n_splits : int, optional
+        Total number of CPCV splits. Forwarded together with
+        ``split_idx`` to render warning prefixes as ``[split K/N]``.
 
     Returns
     -------
@@ -607,7 +640,10 @@ def preprocess_fold(
         selected = sorted(X_train.columns.tolist())
         logger.info("Feature selection skipped (AR Logistic uses lagged returns only)")
     else:
-        selected = select_features(X_train, y_train, w_train, t1_train, top_k_frac)
+        selected = select_features(
+            X_train, y_train, w_train, t1_train, top_k_frac,
+            split_idx=split_idx, n_splits=n_splits,
+        )
 
     n_cal = int(len(X_train) * 0.2)
     # Note: the per-fold sample sizes (train + cal + test) are stored in
