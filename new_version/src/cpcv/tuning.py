@@ -448,22 +448,32 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
               seed=42, verbose=True, n_trials=None):
     """Tune LSTM via Optuna TPE + Purged K-Fold.
 
-    Search space:
-        hidden_size:   int [16, 32] step 16
-        num_layers:    fixed at 1 (not searched)
-        dropout:       uniform [0.1, 0.5]
-        learning_rate: log-uniform [1e-4, 5e-2]
+    Search space (Round 4 expansion, May 2026):
+        hidden_size:   int [16, 64] step 16  (was [16, 32], i.e. {16, 32})
+        num_layers:    int [1, 2]            (was hardcoded 1)
+        dropout:       uniform [0.0, 0.5]    (was [0.1, 0.5])
+        learning_rate: log-uniform [1e-4, 5e-2] (unchanged)
 
-    The hidden_size cap of 32 (vs an earlier 128 ceiling) was tightened
-    to prevent memorisation on ~700-sample purged folds. ``num_layers``
-    was hardcoded to 1 in the final configuration: two- and three-layer
-    LSTMs on ~1,250 events are deep-overfit territory, the second layer
-    added variance to path-Sharpes without improving accuracy, and
-    removing the hyperparameter from the search frees Optuna trials for
-    finer exploration of dropout and learning_rate. Tuning runs fewer
-    epochs and a shorter patience window than production (epochs=50,
-    patience=7) to keep the per-trial cost bounded; the production fit
-    re-runs at epochs=100, patience=15.
+    Rationale: paired with the Round 4 KAN tuning expansion to keep
+    the comparison between the two PyTorch models methodologically
+    symmetric. After the chaikin_osc symmetric-log transform changed
+    the feature distributions, both KAN and LSTM benefit from a
+    slightly wider tuning budget so Optuna can find configurations
+    suited to the new feature space.
+
+    Caveat from prior rounds: an earlier sensitivity analysis found
+    that hidden_size > 32 and num_layers > 1 led to memorisation on
+    ~1,250 events, with the model losing to a 6-lag AR baseline at
+    higher capacities. The expanded ranges here re-open that risk.
+    Optuna's purged K-fold scoring should still penalise overfit
+    configurations during tuning, but per-fold tuning may land on
+    deeper LSTMs that pass tuning yet generalise poorly to the held-out
+    CPCV test fold. Watch the per-split path-Sharpe std after the run;
+    if it climbs from the previous ~1.5 toward 2+, narrow the ranges
+    back down for the locked thesis run.
+
+    Fixed: window=14 (BTC bi-week), batch_size=64, epochs=50,
+    patience=7. Production fit re-runs at epochs=100, patience=15.
     """
     from torch.utils.data import TensorDataset, DataLoader
     from src.cpcv.models.lstm_model import LSTMClassifier, create_sequences
@@ -518,16 +528,18 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        # Search space tightened further: hidden_size capped at 32 (not 64)
-        # to prevent overfitting given (a) LSTM_WINDOW=14 reducing effective
-        # training sequences, (b) ~700-sample folds, and (c) the model lost
-        # to a 6-lag AR baseline at higher capacities — smaller models are
-        # the right direction. num_layers is hardcoded to 1 (no longer
-        # searched): two- and three-layer LSTMs on ~1,250 events overfit
-        # without improving accuracy.
-        hidden_size = trial.suggest_int("hidden_size", 16, 32, step=16)
-        num_layers = 1  # hardcoded; not searched
-        dropout = trial.suggest_float("dropout", 0.1, 0.5)
+        # Round 4 expansion (May 2026): paired with the Round 4 KAN
+        # expansion. hidden_size raised to {16, 32, 48, 64}, num_layers
+        # unhardcoded and searched in [1, 2], dropout floor lowered
+        # from 0.1 to 0.0 (allows Optuna to explore zero-dropout
+        # configurations). The earlier rationale for capping hidden
+        # size at 32 and num_layers at 1 (memorisation on small folds)
+        # is documented in the function docstring; the expansion is
+        # accepted as a calculated risk paired with KAN's expansion
+        # for methodological symmetry.
+        hidden_size = trial.suggest_int("hidden_size", 16, 48, step=16)
+        num_layers = trial.suggest_int("num_layers", 1, 2)
+        dropout = trial.suggest_float("dropout", 0.0, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
 
         split_losses = []
@@ -661,7 +673,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     return {
         "best_params": {
             "hidden_size": best["hidden_size"],
-            "num_layers": 1,  # hardcoded; not searched
+            "num_layers": best["num_layers"],  # now searched, not hardcoded
             "dropout": best["dropout"],
             "learning_rate": best["learning_rate"],
         },
@@ -677,29 +689,27 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
              seed=42, verbose=True, n_trials=None):
     """Tune KAN via Optuna TPE + Purged K-Fold.
 
-    Search space:
-        width1:       int [2, 6]           (1st hidden layer)
-        width2:       fixed at 0            (2nd hidden; not searched)
-        lr:           log-uniform [5e-4, 5e-2]
-        weight_decay: log-uniform [1e-5, 5e-3]
-        grid:         categorical {3, 5}
+    Search space (Round 4 expansion, May 2026):
+        width1:       int [3, 8]            (was [2, 6])
+        width2:       int [0, 3]            (was hardcoded 0)
+        grid:         categorical {3, 5, 7} (was {3, 5})
+        lr:           log-uniform [5e-4, 5e-3]   (was [5e-4, 5e-2])
+        weight_decay: log-uniform [1e-5, 5e-3]   (unchanged)
 
-    The width1 ceiling was tightened from an earlier 12 down to 6 to
-    align with the Phase 3 symbolic-extraction deliverable: a wider
-    KAN produces a closed-form formula with that many input-derived
-    terms, and width > 6 begins to produce formulas that are no
-    longer humanly readable. ``width2`` is hardcoded to 0 (single
-    hidden layer) for the same reason: a two-hidden-layer formula
-    nests trigonometric primitives in trigonometric primitives,
-    yielding fourth-order compositions that lose interpretability.
-    Hardcoding ``width2`` at 0 also ensures that the architecture
-    used for CPCV evaluation matches the architecture extracted in
-    Phase 3, so the symbolic formula reflects the actual benchmark
-    model rather than an unrelated KAN topology. The grid=8 option
-    was dropped from the categorical set to prevent memorisation on
-    ~700-sample purged folds.
+    Rationale for the expansion: the previous tighter ranges were
+    chosen to keep the symbolic-extraction formula readable (single
+    hidden layer, narrow width) and to prevent memorisation on
+    purged folds. After the chaikin_osc symmetric-log transform
+    landed in features.py, the feature distributions changed and
+    KAN's previous-round Sharpe ranking collapsed from #2 to #6.
+    The wider tuning ranges give Optuna more room to find a KAN
+    configuration that handles the new feature space; the cost is
+    that if the optimiser picks width2 > 0, the resulting symbolic
+    formula will have nested trigonometric compositions (e.g.
+    sin(cos(x))) that are harder to read in Phase 3 of the thesis.
 
-    Fixed: k=3, epochs=200, patience=20, full-batch, tanh normalization.
+    Fixed: k=3 (B-spline order), epochs=200, patience=20, full-batch,
+    tanh normalization.
     """
     from efficient_kan import KAN
 
@@ -725,19 +735,22 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        # Search space tightened for thesis-deliverable interpretability:
-        # width1 narrowed to [2, 6] so the extracted symbolic formula
-        # has at most 6 input-derived terms (humanly readable), and
-        # width2 hardcoded at 0 so the formula has one hidden layer
-        # (no nested trigonometric compositions). grid restricted to
-        # {3, 5} (drop 8 to prevent memorization on ~700-sample folds).
-        width1 = trial.suggest_int("width1", 2, 6)
-        width2 = 0  # hardcoded; not searched
-        lr = trial.suggest_float("lr", 5e-4, 5e-2, log=True)
+        # Round 4 expansion (May 2026): widened from the previous
+        # interpretability-tightened ranges. width1 raised to [3, 8],
+        # width2 unhardcoded and searched in [0, 3], grid expanded to
+        # include 7 alongside {3, 5}, lr range tightened on the upper
+        # end. Trade-off documented in the function docstring.
+        width1 = trial.suggest_int("width1", 3, 8)
+        width2 = trial.suggest_int("width2", 0, 3)
+        lr = trial.suggest_float("lr", 5e-4, 5e-3, log=True)
         wd = trial.suggest_float("weight_decay", 1e-5, 5e-3, log=True)
-        grid = trial.suggest_categorical("grid", [3, 5])
+        grid = trial.suggest_categorical("grid", [3, 5, 7])
 
-        widths = [n_features, width1, 2]
+        # build width list: drop the second hidden layer when width2 == 0
+        if width2 > 0:
+            widths = [n_features, width1, width2, 2]
+        else:
+            widths = [n_features, width1, 2]
 
         split_losses = []
 
@@ -886,7 +899,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     return {
         "best_params": {
             "width1": best["width1"],
-            "width2": 0,  # hardcoded; not searched
+            "width2": best["width2"],  # now searched, not hardcoded
             "grid": best["grid"],
             "lr": best["lr"],
             "weight_decay": best["weight_decay"],

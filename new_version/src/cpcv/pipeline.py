@@ -38,6 +38,32 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
+# Warning capture for clean tqdm output
+# =====================================================================
+# When a WARNING-level log record is emitted mid-run (e.g. preprocessing
+# saying "Only 3 features with MDA > 0"), it breaks the tqdm progress
+# bar by writing a line above the bar. The bar then re-renders below,
+# producing the visual impression of two progress bars in the cell. To
+# keep the cell aesthetic, this handler captures WARNING+ records into
+# a list during the pipeline run; the run prints them after the ✅
+# completion notice, so they appear as a clean post-run summary instead
+# of interrupting the bar. The file handler in the imports cell still
+# captures everything in real time, so the log file is unaffected.
+class _WarningBuffer(logging.Handler):
+    """Capture WARNING+ log records into a list for deferred display."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.records: list[str] = []
+        self.setFormatter(logging.Formatter(
+            "%(name)s  %(levelname)s  %(message)s",
+        ))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(self.format(record))
+
+
+# =====================================================================
 # Pristine module-default capture and reset
 # =====================================================================
 # ``_apply_tuned_params`` mutates module-level constants on the model
@@ -302,6 +328,27 @@ def run_cpcv_pipeline(
     # Applied here so it takes effect every time this function is
     # called, regardless of what happened earlier in the notebook.
     warnings.simplefilter("ignore")
+
+    # ── warning capture (for clean tqdm output) ───────────────────────
+    # Install a buffer handler that collects WARNING-level messages
+    # during the pipeline run, and temporarily raise the console
+    # handler's level so those warnings don't break the tqdm bar
+    # mid-run. Captured warnings are printed after the ✅ completion
+    # message at the bottom of this function. The FileHandler set up
+    # in the imports cell is left at its original level so the log
+    # file still records everything in real time.
+    warning_buffer = _WarningBuffer()
+    root_logger = logging.getLogger()
+    root_logger.addHandler(warning_buffer)
+    suppressed_handlers: list[tuple[logging.Handler, int]] = []
+    for h in list(root_logger.handlers):
+        if h is warning_buffer:
+            continue
+        if isinstance(h, logging.FileHandler):
+            continue  # leave the file handler alone
+        if isinstance(h, logging.StreamHandler):
+            suppressed_handlers.append((h, h.level))
+            h.setLevel(logging.ERROR)
 
     # Restore pristine module constants. Prevents one run's tuned
     # hyperparameters from leaking into a later run that does not
@@ -641,6 +688,28 @@ def run_cpcv_pipeline(
 
     if n_failed > 0:
         logger.warning("%d model fits failed during pipeline execution.", n_failed)
+
+    # ── deferred warning replay ───────────────────────────────────────
+    # Print any WARNING-level messages collected during the run, AFTER
+    # the ✅ completion notice. This keeps the tqdm bar visually clean
+    # during the run (no warning lines breaking the bar) while still
+    # surfacing the warnings at the end so the user knows what happened.
+    if warning_buffer.records:
+        print(
+            f"\n⚠ {len(warning_buffer.records)} "
+            f"warning{'s' if len(warning_buffer.records) != 1 else ''} "
+            f"during pipeline run:"
+        )
+        for line in warning_buffer.records:
+            print(f"   {line}")
+
+    # ── restore handler state ─────────────────────────────────────────
+    # Put back the console handler levels and remove the WARNING buffer
+    # so a subsequent pipeline call (or any other notebook code) sees
+    # the original logger configuration.
+    for h, level in suppressed_handlers:
+        h.setLevel(level)
+    root_logger.removeHandler(warning_buffer)
 
     result = {
         "predictions": all_predictions,
