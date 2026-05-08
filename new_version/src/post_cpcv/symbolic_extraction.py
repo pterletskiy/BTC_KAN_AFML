@@ -67,16 +67,39 @@ PYKAN_GRID_EXTEND = False          # DISABLED — with 358 samples, grid extensi
 PYKAN_MIN_SAMPLES_PER_PARAM = 5    # want at least 5 samples per parameter
 PYKAN_HIDDEN_OVERRIDE = None       # set dynamically in train_pykan()
 
-# Symbolic extraction simplifications (when using tuned CPCV KAN params)
-PYKAN_SYMBOLIC_WIDTH_CAP = 8       # soft ceiling on width1; tuned KAN width1 is
-                                   # capped at this to keep formulas readable.
-                                   # A width=12 KAN produces ~24 summed terms
-                                   # pre-pruning, which overwhelms sympy.
-PYKAN_SYMBOLIC_DROP_WIDTH2 = True  # force single hidden layer for extraction.
-                                   # Two hidden layers produce nested f(g(x))
-                                   # compositions that sympy struggles with.
-PYKAN_SYMBOLIC_FORCE_GRID = 3      # force coarse grid for extraction. Coarser
-                                   # splines → cleaner symbolic matches.
+# Symbolic extraction architecture handling
+#
+# After Round 4 of tuning (May 2026), the CPCV step searches both
+# ``width2 ∈ [0, 3]`` and ``grid ∈ {3, 5, 7}``. To keep the symbolic
+# formula a faithful representation of the CPCV-evaluated KAN, the
+# extraction step now honors the tuned values for the chosen fold by
+# default. The old "simplified for readability" behavior is still
+# available by toggling the override constants below.
+PYKAN_SYMBOLIC_WIDTH_CAP = 8       # Safety ceiling on width1. Matches the
+                                   # current tuning maximum (width1 ∈ [3, 8])
+                                   # so it never bites in practice; remains
+                                   # in place as a guard against future
+                                   # tuning expansions producing widths the
+                                   # symbolic step cannot handle.
+PYKAN_SYMBOLIC_DROP_WIDTH2 = False # If True, force ``width2=0`` regardless
+                                   # of the tuned value (legacy behavior:
+                                   # produces a single-hidden-layer formula
+                                   # for cleaner sympy output). Default
+                                   # False = honor tuned width2 so the
+                                   # symbolic formula reflects the CPCV
+                                   # winner. Set True only when the tuned
+                                   # depth is producing nested compositions
+                                   # sympy cannot simplify in 30s.
+PYKAN_SYMBOLIC_FORCE_GRID = None   # If an int (e.g. 3), force this grid
+                                   # density regardless of the tuned value
+                                   # (legacy behavior: coarser splines
+                                   # produce cleaner symbolic matches).
+                                   # Default None = honor tuned grid.
+PYKAN_FALLBACK_GRID = 3            # Used as a last resort only when:
+                                   # (a) ``PYKAN_SYMBOLIC_FORCE_GRID`` is
+                                   #     ``None`` AND
+                                   # (b) no tuned grid is available
+                                   #     (e.g. CPCV ran without tuning).
 
 # Minimum accuracy gate — skip symbolification if PyKAN can't predict
 PYKAN_MIN_ACCURACY = 0.53          # must beat random (50%) by a margin
@@ -441,17 +464,23 @@ def train_pykan(
 ):
     """Train a fresh PyKAN model for symbolic extraction.
 
-    Architecture selection priority:
-    1. If ``tuned_kan_params`` is provided (from CPCV tuning), uses the tuned
-       ``width1`` (capped at ``PYKAN_SYMBOLIC_WIDTH_CAP``) with simplifications:
-       drops ``width2`` and forces ``grid=PYKAN_SYMBOLIC_FORCE_GRID``. This
-       keeps the symbolic model architecturally linked to the benchmarked
-       CPCV KAN while ensuring formulas remain tractable for sympy.
-    2. Otherwise, falls back to data-aware sizing: hidden width chosen so
-       ``n_train / total_params >= PYKAN_MIN_SAMPLES_PER_PARAM``.
-
-    In either case, the final width is additionally clamped by the
-    data-aware safety floor to prevent memorization.
+    Architecture selection (Round 4, May 2026 onward — faithful-by-default):
+    1. If ``tuned_kan_params`` is provided (from CPCV tuning), the symbolic
+       extraction model uses the tuned ``width1``, ``width2``, and ``grid``
+       directly so the symbolic formula represents the model that actually
+       won the CPCV evaluation for the chosen fold. ``width1`` is still
+       capped at ``PYKAN_SYMBOLIC_WIDTH_CAP`` and clamped by a data-aware
+       safety floor (so memorisation-prone configurations are rejected).
+       ``width2`` and ``grid`` are honored verbatim.
+    2. Set ``PYKAN_SYMBOLIC_DROP_WIDTH2 = True`` to revert to the legacy
+       single-hidden-layer behavior (use this only when sympy times out
+       on nested compositions). Set ``PYKAN_SYMBOLIC_FORCE_GRID`` to a
+       specific integer to force a particular grid density regardless of
+       what the tuner picked.
+    3. Otherwise (no tuned params), falls back to data-aware sizing:
+       hidden width chosen so ``n_train / total_params >=
+       PYKAN_MIN_SAMPLES_PER_PARAM``, single hidden layer, ``grid =
+       PYKAN_FALLBACK_GRID``.
 
     Parameters
     ----------
@@ -485,59 +514,95 @@ def train_pykan(
     y_val_t = dataset["test_label"].long()
     n_train = X_t.shape[0]
 
+    # ── Resolve grid (faithful-to-tuning by default) ─────────────────
+    # The grid density must be resolved BEFORE the safety floor is
+    # computed because params_per_edge depends on it.
+    if PYKAN_SYMBOLIC_FORCE_GRID is not None:
+        extraction_grid = int(PYKAN_SYMBOLIC_FORCE_GRID)
+        grid_source = (
+            f"forced (PYKAN_SYMBOLIC_FORCE_GRID={extraction_grid})"
+        )
+    elif tuned_kan_params is not None and tuned_kan_params.get("grid") is not None:
+        extraction_grid = int(tuned_kan_params["grid"])
+        grid_source = f"tuned (matches CPCV-fold setting)"
+    else:
+        extraction_grid = int(PYKAN_FALLBACK_GRID)
+        grid_source = (
+            f"fallback (no tuned grid; PYKAN_FALLBACK_GRID={extraction_grid})"
+        )
+
     # ── Data-aware safety floor ───────────────────────────────────────
     # Regardless of source, we want n_train / total_params >= PYKAN_MIN_SAMPLES_PER_PARAM.
     # Used both as fallback sizing and as a clamp on tuned widths.
-    params_per_edge = PYKAN_SYMBOLIC_FORCE_GRID + KAN_K
+    params_per_edge = extraction_grid + KAN_K
     max_edges = n_train // PYKAN_MIN_SAMPLES_PER_PARAM
     max_hidden_safety = max_edges // (params_per_edge * (n_features + n_classes))
     max_hidden_safety = max(2, max_hidden_safety)  # never below 2
 
     # ── Architecture selection ────────────────────────────────────────
     tuned_w1 = None
+    tuned_w2 = None
     if tuned_kan_params is not None:
         tuned_w1 = tuned_kan_params.get("width1")
+        tuned_w2 = tuned_kan_params.get("width2", 0) or 0
 
     if tuned_w1 is not None:
         # Use tuned width1, but apply simplifications + safety clamp
         hidden = min(tuned_w1, PYKAN_SYMBOLIC_WIDTH_CAP, max_hidden_safety)
         hidden = max(2, hidden)  # enforce minimum
-        arch_source = (
-            f"tuned (raw width1={tuned_w1} → "
-            f"capped at {PYKAN_SYMBOLIC_WIDTH_CAP}, safety floor {max_hidden_safety})"
-        )
+        clamp_notes = []
+        if tuned_w1 > PYKAN_SYMBOLIC_WIDTH_CAP:
+            clamp_notes.append(f"capped at {PYKAN_SYMBOLIC_WIDTH_CAP}")
+        if tuned_w1 > max_hidden_safety:
+            clamp_notes.append(f"safety floor {max_hidden_safety}")
+        if clamp_notes:
+            arch_source = (
+                f"tuned width1={tuned_w1} → {hidden} ({', '.join(clamp_notes)})"
+            )
+        else:
+            arch_source = f"tuned width1={tuned_w1} (no clamping needed)"
     else:
         # Fallback: data-aware sizing (original behavior), clamped by KAN_HIDDEN
         hidden = min(max_hidden_safety, KAN_HIDDEN)
         hidden = max(2, hidden)
         arch_source = "data-aware fallback (no tuned params)"
 
-    width = [n_features, hidden, n_classes]
-    total_edges = n_features * hidden + hidden * n_classes
+    # ── Resolve width2 (faithful-to-tuning by default) ───────────────
+    if PYKAN_SYMBOLIC_DROP_WIDTH2:
+        extraction_w2 = 0
+        if tuned_w2 and tuned_w2 > 0:
+            width2_source = (
+                f"forced 0 (PYKAN_SYMBOLIC_DROP_WIDTH2=True; "
+                f"tuned width2={tuned_w2} ignored)"
+            )
+        else:
+            width2_source = "forced 0 (PYKAN_SYMBOLIC_DROP_WIDTH2=True)"
+    else:
+        extraction_w2 = int(tuned_w2) if tuned_w2 else 0
+        if extraction_w2 > 0:
+            width2_source = f"tuned (width2={extraction_w2}, two hidden layers)"
+        elif tuned_kan_params is not None:
+            width2_source = "tuned (width2=0, single hidden layer)"
+        else:
+            width2_source = "default 0 (no tuned params)"
+
+    # ── Build width list ──────────────────────────────────────────────
+    if extraction_w2 > 0:
+        width = [n_features, hidden, extraction_w2, n_classes]
+        total_edges = n_features * hidden + hidden * extraction_w2 + extraction_w2 * n_classes
+    else:
+        width = [n_features, hidden, n_classes]
+        total_edges = n_features * hidden + hidden * n_classes
     total_params_est = total_edges * params_per_edge
 
-    print(
-        f"    {model_type} architecture: {width} "
-        f"[{arch_source}]"
-    )
+    print(f"    {model_type} architecture: {width}")
+    print(f"      width1: {hidden} [{arch_source}]")
+    print(f"      width2: {extraction_w2} [{width2_source}]")
+    print(f"      grid:   {extraction_grid} [{grid_source}]")
     print(
         f"    {total_edges} edges, ~{total_params_est} params for {n_train} samples, "
         f"ratio={n_train/max(total_params_est,1):.1f}x"
     )
-    if PYKAN_SYMBOLIC_DROP_WIDTH2 and tuned_kan_params is not None:
-        tuned_w2 = tuned_kan_params.get("width2", 0) or 0
-        if tuned_w2 > 0:
-            print(
-                f"    Note: dropped tuned width2={tuned_w2} "
-                f"(PYKAN_SYMBOLIC_DROP_WIDTH2=True for tractable formulas)."
-            )
-    if tuned_kan_params is not None:
-        tuned_grid = tuned_kan_params.get("grid")
-        if tuned_grid is not None and tuned_grid != PYKAN_SYMBOLIC_FORCE_GRID:
-            print(
-                f"    Note: forcing grid={PYKAN_SYMBOLIC_FORCE_GRID} "
-                f"(tuned grid={tuned_grid} overridden for symbolic clarity)."
-            )
 
     if n_train / max(total_params_est, 1) < 2:
         print(
@@ -547,12 +612,12 @@ def train_pykan(
 
     if use_multkan:
         model = KANClass(
-            width=width, grid=PYKAN_SYMBOLIC_FORCE_GRID, k=KAN_K,
+            width=width, grid=extraction_grid, k=KAN_K,
             seed=42, mult_arity=2,
         )
     else:
         model = KANClass(
-            width=width, grid=PYKAN_SYMBOLIC_FORCE_GRID, k=KAN_K, seed=42,
+            width=width, grid=extraction_grid, k=KAN_K, seed=42,
         )
 
     criterion = nn.CrossEntropyLoss()
@@ -618,8 +683,8 @@ def train_pykan(
     if PYKAN_GRID_EXTEND and n_train > 1000:
         try:
             model = model.refine(KAN_GRID)
-            logger.info("Grid extended: %d → %d", PYKAN_SYMBOLIC_FORCE_GRID, KAN_GRID)
-            print(f"    Grid extended: {PYKAN_SYMBOLIC_FORCE_GRID} → {KAN_GRID}")
+            logger.info("Grid extended: %d → %d", extraction_grid, KAN_GRID)
+            print(f"    Grid extended: {extraction_grid} → {KAN_GRID}")
             _log_diagnostic("After grid extend", model, X_t, y_t, X_val_t, y_val_t)
         except (AttributeError, TypeError, Exception) as e:
             logger.warning("Grid extension failed (%s).", e)
@@ -627,7 +692,7 @@ def train_pykan(
     else:
         print(
             f"    Grid extension SKIPPED (n_train={n_train}, "
-            f"grid stays at {PYKAN_SYMBOLIC_FORCE_GRID}). "
+            f"grid stays at {extraction_grid}). "
             f"Too few samples for finer grid."
         )
 
