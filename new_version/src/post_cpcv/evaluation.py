@@ -149,6 +149,47 @@ def compute_strategy_returns(
 
 
 # =====================================================================
+# Bootstrap utilities
+# =====================================================================
+def bootstrap_median_ci(
+    values,
+    n_bootstrap: int = 1000,
+    alpha: float = 0.05,
+    seed: int = 42,
+) -> tuple[float, float]:
+    """Bootstrap a (1 - alpha) confidence interval for the median.
+
+    Resamples ``values`` with replacement ``n_bootstrap`` times, computes
+    the median for each bootstrap sample, then returns the alpha/2 and
+    (1 - alpha/2) percentiles of the resulting median distribution.
+    Non-finite entries (NaN, inf) are dropped before resampling so paths
+    with undefined Sharpe (e.g. zero-trade paths producing NaN) don't
+    poison the percentile estimate.
+
+    Returns
+    -------
+    (lower, upper) : tuple of float
+        The two-sided confidence bounds. Returns (NaN, NaN) when fewer
+        than 2 finite values are available.
+    """
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if len(arr) < 2:
+        return (float("nan"), float("nan"))
+
+    rng = np.random.default_rng(seed)
+    n = len(arr)
+    medians = np.empty(n_bootstrap, dtype=float)
+    for i in range(n_bootstrap):
+        sample = rng.choice(arr, size=n, replace=True)
+        medians[i] = np.median(sample)
+
+    lower = float(np.percentile(medians, 100.0 * alpha / 2))
+    upper = float(np.percentile(medians, 100.0 * (1 - alpha / 2)))
+    return (lower, upper)
+
+
+# =====================================================================
 # Path-level financial performance
 # =====================================================================
 def compute_path_performance(
@@ -222,6 +263,39 @@ def compute_path_performance(
     # average bet size
     avg_bet = np.mean(np.abs(bet_sizes[traded_mask])) if n_trades > 0 else 0.0
 
+    # ── Sortino ratio ─────────────────────────────────────────────────
+    # Penalises only downside volatility. Convention: target = 0 (any
+    # loss is downside). Uses the root-mean-square of negative returns
+    # rather than the std of negatives, which is the standard Sortino
+    # construction (Sortino & Price 1994). Annualised by sqrt of the
+    # event sampling factor, matching Sharpe.
+    downside = returns[returns < 0]
+    if len(downside) == 0:
+        # No losing days at all on this path: Sortino is undefined
+        # above (positive numerator over zero denominator). Convention:
+        # return inf for a winning streak with positive mean, 0 for
+        # exactly-zero mean.
+        sortino = np.inf if mean_r > 0 else 0.0
+    else:
+        downside_rms = np.sqrt(np.mean(downside ** 2))
+        if downside_rms < 1e-10:
+            sortino = np.inf if mean_r > 0 else 0.0
+        else:
+            sortino = (
+                (mean_r - RISK_FREE_RATE / ANNUALIZATION_FACTOR)
+                / downside_rms
+                * np.sqrt(ANNUALIZATION_FACTOR)
+            )
+
+    # ── Calmar ratio ──────────────────────────────────────────────────
+    # Annualised return divided by absolute max drawdown. Common
+    # tail-risk-aware alternative to Sharpe. Convention: ratio is
+    # undefined when max_dd is exactly zero (no drawdown observed).
+    if abs(max_dd) < 1e-10:
+        calmar = np.inf if ann_ret > 0 else 0.0
+    else:
+        calmar = ann_ret / abs(max_dd)
+
     # distributional (constant arrays → NaN from scipy, clamp to 0.0)
     skewness = float(stats.skew(returns)) if n > 2 else 0.0
     kurtosis = float(stats.kurtosis(returns)) if n > 3 else 0.0
@@ -232,6 +306,8 @@ def compute_path_performance(
 
     return {
         "annualized_sharpe": sharpe,
+        "annualized_sortino": sortino,
+        "calmar": calmar,
         "cumulative_return": cum_ret,
         "annualized_return": ann_ret,
         "max_drawdown": max_dd,
@@ -249,7 +325,8 @@ def compute_path_performance(
 
 def _empty_performance() -> dict:
     return {
-        "annualized_sharpe": 0.0, "cumulative_return": 0.0,
+        "annualized_sharpe": 0.0, "annualized_sortino": 0.0, "calmar": 0.0,
+        "cumulative_return": 0.0,
         "annualized_return": 0.0, "max_drawdown": 0.0,
         "time_under_water": 0, "win_rate": 0.0,
         "profit_factor": np.nan, "n_trades": 0,
@@ -809,12 +886,42 @@ def compute_model_summary(
     else:
         median_pf = float(np.nanmedian(pf_arr))
 
+    # Sortino and Calmar: use nanmedian since both can be inf on
+    # winning-streak paths, and np.median misbehaves with mixed
+    # finite + inf inputs in some edge cases.
+    sortino_arr = np.asarray(
+        [p["annualized_sortino"] for p in path_performances], dtype=float,
+    )
+    calmar_arr = np.asarray(
+        [p["calmar"] for p in path_performances], dtype=float,
+    )
+    median_sortino = (
+        float(np.nanmedian(sortino_arr[np.isfinite(sortino_arr)]))
+        if np.any(np.isfinite(sortino_arr)) else np.nan
+    )
+    median_calmar = (
+        float(np.nanmedian(calmar_arr[np.isfinite(calmar_arr)]))
+        if np.any(np.isfinite(calmar_arr)) else np.nan
+    )
+
+    # Bootstrap 95% CI on the median Sharpe across paths. Adds rigour
+    # to the comparison by quantifying how much the median estimate
+    # would shift under resampling. Particularly informative when std
+    # is large relative to median (e.g. KAN with std_sharpe ~1.4).
+    sharpe_ci_lower, sharpe_ci_upper = bootstrap_median_ci(
+        sharpes, n_bootstrap=1000, alpha=0.05, seed=42,
+    )
+
     return {
         "model_name": model_name,
         "median_sharpe": median_sharpe,
         "mean_sharpe": mean_sharpe,
         "std_sharpe": std_sharpe,
+        "sharpe_ci_lower": sharpe_ci_lower,
+        "sharpe_ci_upper": sharpe_ci_upper,
         "dsr": dsr,
+        "median_sortino": median_sortino,
+        "median_calmar": median_calmar,
         "median_max_dd": float(np.median([p["max_drawdown"] for p in path_performances])),
         "median_cum_return": float(np.median([p["cumulative_return"] for p in path_performances])),
         "median_win_rate": float(np.median([p["win_rate"] for p in path_performances])),
@@ -830,8 +937,154 @@ def compute_model_summary(
 
 
 # =====================================================================
-# Model comparison table
+# Buy-and-hold benchmark
 # =====================================================================
+def compute_buy_and_hold_summary(
+    predictions: dict,
+    path_map: dict,
+    n_paths: int,
+    reference_model: str,
+    seed: int = 0,
+) -> dict:
+    """Compute a buy-and-hold benchmark using the same CPCV path
+    structure the models see.
+
+    For each path, the function reconstructs the chronological sequence
+    of test-fold returns from ``predictions[reference_model]`` (the
+    timestamps and per-event returns are model-invariant for a given
+    split/seed, so any model serves as a reference). The benchmark
+    holds a long position of size 1.0 over every event in the path,
+    incurring transaction cost only on the initial buy. Path-level
+    metrics are computed identically to the model paths so the
+    benchmark row is directly comparable.
+
+    The benchmark is a more aggressive position-size baseline than the
+    models, which cap at MAX_BET_SIZE = 0.75 via the S-curve. This
+    asymmetry is conservative for the model side: a fully-leveraged
+    long benchmark is harder to beat than a 0.75-leveraged one.
+
+    Parameters
+    ----------
+    predictions : dict
+        The full predictions dict from CPCV (the same one fed to
+        ``stitch_paths``). Used only as a source of timestamps and
+        event returns; the probabilities are ignored.
+    path_map : dict
+        CPCV path-to-(group, split) assignment map.
+    n_paths : int
+        Number of CPCV paths.
+    reference_model : str
+        Any model name present in ``predictions``. The benchmark uses
+        this model's stored timestamps and returns as the canonical
+        path index (the values are identical across models for the
+        same split/seed under standard CPCV preprocessing).
+    seed : int
+        Which seed of the reference model to read from. Default 0.
+
+    Returns
+    -------
+    dict
+        A model-summary-compatible dictionary with model_name set to
+        ``"buy_and_hold"``. Predictive metrics (F1, accuracy, AUC, log
+        loss, Brier) are NaN since buy-and-hold makes no probabilistic
+        predictions; these will render as blank cells in the comparison
+        table without affecting the financial-metric ranking.
+    """
+    path_performances = []
+
+    for path_id in range(n_paths):
+        assignments = path_map[path_id]
+
+        all_timestamps = []
+        all_ret = []
+
+        for group_id, split_id in sorted(assignments, key=lambda x: x[0]):
+            key = (reference_model, split_id, seed)
+            if key not in predictions:
+                continue
+            pred = predictions[key]
+            all_timestamps.append(pred["timestamps"])
+            all_ret.append(pred["ret"])
+
+        if not all_timestamps:
+            path_performances.append(_empty_performance())
+            continue
+
+        # concatenate and sort chronologically
+        timestamps = np.concatenate(all_timestamps)
+        ret_concat = np.concatenate(all_ret)
+        sort_idx = np.argsort(timestamps)
+        timestamps = pd.DatetimeIndex(timestamps[sort_idx])
+        ret_concat = ret_concat[sort_idx]
+
+        # always-long full-size position
+        bet_sizes = np.ones(len(ret_concat), dtype=float)
+
+        # strategy returns: gross long minus tx cost on initial buy
+        strat_returns = compute_strategy_returns(
+            bet_sizes, ret_concat, timestamps,
+        )
+
+        perf = compute_path_performance(strat_returns, bet_sizes)
+        path_performances.append(perf)
+
+    # Aggregate across paths using the same reductions as
+    # compute_model_summary so the row formats identically.
+    sharpes = [p["annualized_sharpe"] for p in path_performances]
+    median_sharpe = float(np.median(sharpes))
+    mean_sharpe = float(np.mean(sharpes))
+    std_sharpe = float(np.std(sharpes, ddof=1)) if len(sharpes) > 1 else 0.0
+
+    pf_arr = np.asarray(
+        [p["profit_factor"] for p in path_performances], dtype=float,
+    )
+    if np.all(np.isnan(pf_arr)):
+        median_pf = np.nan
+    else:
+        median_pf = float(np.nanmedian(pf_arr))
+
+    sortino_arr = np.asarray(
+        [p["annualized_sortino"] for p in path_performances], dtype=float,
+    )
+    calmar_arr = np.asarray(
+        [p["calmar"] for p in path_performances], dtype=float,
+    )
+    median_sortino = (
+        float(np.nanmedian(sortino_arr[np.isfinite(sortino_arr)]))
+        if np.any(np.isfinite(sortino_arr)) else np.nan
+    )
+    median_calmar = (
+        float(np.nanmedian(calmar_arr[np.isfinite(calmar_arr)]))
+        if np.any(np.isfinite(calmar_arr)) else np.nan
+    )
+
+    sharpe_ci_lower, sharpe_ci_upper = bootstrap_median_ci(
+        sharpes, n_bootstrap=1000, alpha=0.05, seed=42,
+    )
+
+    return {
+        "model_name": "buy_and_hold",
+        "median_sharpe": median_sharpe,
+        "mean_sharpe": mean_sharpe,
+        "std_sharpe": std_sharpe,
+        "sharpe_ci_lower": sharpe_ci_lower,
+        "sharpe_ci_upper": sharpe_ci_upper,
+        "dsr": np.nan,  # DSR requires a Sharpe under multiple-trials selection
+        "median_sortino": median_sortino,
+        "median_calmar": median_calmar,
+        "median_max_dd": float(np.median([p["max_drawdown"] for p in path_performances])),
+        "median_cum_return": float(np.median([p["cumulative_return"] for p in path_performances])),
+        "median_win_rate": float(np.median([p["win_rate"] for p in path_performances])),
+        "median_profit_factor": median_pf,
+        "mean_f1": np.nan,
+        "mean_accuracy": np.nan,
+        "mean_log_loss": np.nan,
+        "mean_auc_roc": np.nan,
+        "mean_brier": np.nan,
+        "pooled_skew": float(np.mean([p["skewness"] for p in path_performances])),
+        "pooled_kurt": float(np.mean([p["kurtosis"] for p in path_performances])),
+        "_path_performances": path_performances,  # for downstream plotting
+    }
 def compare_models(all_summaries: list[dict]) -> pd.DataFrame:
     """Produce a ranked model comparison DataFrame."""
     df = pd.DataFrame(all_summaries)
@@ -843,7 +1096,11 @@ def compare_models(all_summaries: list[dict]) -> pd.DataFrame:
     df["rank"] = range(1, len(df) + 1)
 
     display_cols = [
-        "rank", "model_name", "median_sharpe", "std_sharpe", "dsr",
+        "rank", "model_name",
+        "median_sharpe", "std_sharpe",
+        "sharpe_ci_lower", "sharpe_ci_upper",
+        "dsr",
+        "median_sortino", "median_calmar",
         "mean_f1", "mean_accuracy", "mean_auc_roc",
         "median_max_dd", "median_cum_return",
         "median_win_rate", "median_profit_factor",

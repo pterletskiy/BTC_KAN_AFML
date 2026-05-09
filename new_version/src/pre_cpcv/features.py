@@ -82,18 +82,36 @@ GAUSS_ENT_WINDOW = 30            # ~1 crypto month
 AR_LAGS = [1, 2, 3, 7, 14, 30]
 LAG_COLUMN_PREFIX = "log_returns_lag"
 
-# ── Log transform targets ─────────────────────────────────────────────
-# Log-transform configuration (used by ``apply_log_transforms``).
-# Columns that need a symmetric (sign-preserving) log compression
-# because their raw values can be either positive or negative and
-# their magnitudes span many orders of magnitude on BTC daily data.
-# Applied as ``sign(x) * log(|x| + 1)``, which preserves zero, sign,
-# and rank ordering while pulling extreme tail values back into a
-# range that linear models can interpret without producing 10⁻¹⁰
-# coefficients on otherwise informative features.
-SIGNED_LOG_COLUMNS = ["obv", "chaikin_osc"]
-# Columns that are always positive and just need range compression;
-# applied as ``log(|x| + 1e-8)``.
+# ── Compression transform targets ─────────────────────────────────────
+# Configuration for ``apply_log_transforms``. Two families of columns:
+#
+# 1. Signed columns whose raw values can be either positive or negative
+#    and whose magnitudes span many orders of magnitude on BTC daily
+#    data (e.g. ``obv``, ``chaikin_osc`` reach 10⁷-10¹⁰ during high-
+#    volume regimes). These need a smooth, sign-preserving compression
+#    that pulls the tails into a range linear models can use without
+#    producing 10⁻¹⁰ coefficients.
+#
+#    Applied transform: the inverse hyperbolic sine, ``np.arcsinh(x)``,
+#    which equals ``log(x + sqrt(x² + 1))``. Properties:
+#      - smooth at zero (no kink unlike ``sign(x)·log(|x|+1)``);
+#      - parameter-free (no constant offset to choose);
+#      - asymptotically log-like for large ``|x|``: behaves like
+#        ``sign(x)·log(2|x|)``, so it compresses the tails as
+#        aggressively as the previous symmetric-log transform;
+#      - approximately identity near zero: ``asinh(x) ≈ x`` for small
+#        ``|x|``, so it preserves more of the small-value structure
+#        than ``sign(x)·log(|x|+1)`` does.
+#
+#    Reference: Burbidge, Magee & Robb (1988), "Alternative
+#    Transformations to Handle Extreme Values of the Dependent
+#    Variable", JASA 83.
+#
+# 2. Unsigned (strictly non-negative) columns where range compression
+#    is needed but sign preservation is irrelevant. Applied transform:
+#    ``log(|x| + 1e-8)``. The small additive constant prevents
+#    ``log(0)`` for the rare zero-volatility bar.
+SIGNED_ASINH_COLUMNS = ["obv", "chaikin_osc"]
 UNSIGNED_LOG_COLUMNS = ["atr"]
 
 # ── Cache ─────────────────────────────────────────────────────────────
@@ -887,33 +905,42 @@ def compute_lag_features(
 # Log transforms
 # =====================================================================
 def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
-    """Apply log transforms to scale-compress specified columns.
+    """Apply scale-compression transforms to the configured columns.
 
     Two transform families:
 
-    - **Signed log** (``SIGNED_LOG_COLUMNS``): ``sign(x) * log(|x| + 1)``.
-      Used for features that can be either positive or negative and
-      whose magnitudes span many orders of magnitude (e.g. ``obv``,
-      ``chaikin_osc``). Preserves sign, zero, and rank ordering while
-      pulling extreme tails back into a range that linear models can
-      interpret. Applied here at feature-engineering time so MDA
-      selection and downstream tuning see compressed values rather
-      than raw 10⁷-10¹⁰ scales that produce vanishing coefficients.
+    - **Signed asinh** (``SIGNED_ASINH_COLUMNS``): ``np.arcsinh(x)``,
+      which equals ``log(x + sqrt(x² + 1))``. Used for features that
+      can be either positive or negative and whose magnitudes span
+      many orders of magnitude (e.g. ``obv``, ``chaikin_osc``). asinh
+      is preferred over the symmetric ``sign(x) * log(|x| + 1)``
+      transform on three theoretical grounds: it is smooth at zero
+      (no kink), it is parameter-free (no additive constant to
+      choose), and it preserves more of the small-value structure
+      because ``asinh(x) ≈ x`` for small ``|x|``. For large ``|x|``
+      it is asymptotically equivalent to symmetric log, so the tail
+      compression is the same. Reference: Burbidge, Magee & Robb
+      (1988).
 
     - **Unsigned log** (``UNSIGNED_LOG_COLUMNS``): ``log(|x| + 1e-8)``.
       Used for strictly non-negative features such as ``atr`` where
       sign preservation is unnecessary; the small additive constant
       avoids ``log(0)``.
 
+    The function name is retained from the previous symmetric-log
+    iteration of the pipeline for caller compatibility (notebook
+    cells already call ``apply_log_transforms``); a future revision
+    could rename to ``apply_compression_transforms``.
+
     Returns a modified copy of *features*. Columns not in either list
     are returned unchanged.
     """
     features = features.copy()
 
-    for col in SIGNED_LOG_COLUMNS:
+    for col in SIGNED_ASINH_COLUMNS:
         if col not in features.columns:
             continue
-        features[col] = np.sign(features[col]) * np.log(features[col].abs() + 1)
+        features[col] = np.arcsinh(features[col])
 
     for col in UNSIGNED_LOG_COLUMNS:
         if col not in features.columns:
@@ -921,8 +948,8 @@ def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
         features[col] = np.log(features[col].abs() + 1e-8)
 
     logger.info(
-        "Log-transformed columns: signed=%s, unsigned=%s",
-        SIGNED_LOG_COLUMNS, UNSIGNED_LOG_COLUMNS,
+        "Compression transforms applied: signed-asinh=%s, unsigned-log=%s",
+        SIGNED_ASINH_COLUMNS, UNSIGNED_LOG_COLUMNS,
     )
     return features
 
