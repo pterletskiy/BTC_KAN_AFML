@@ -793,6 +793,22 @@ def compute_model_summary(
         vals = [m[key] for m in split_metrics if key in m and not np.isnan(m[key])]
         return float(np.mean(vals)) if vals else np.nan
 
+    # Profit factor uses np.nanmedian rather than np.median because
+    # ``compute_path_performance`` returns NaN for paths with zero
+    # trades (the metric is undefined when there are no trades). Plain
+    # np.median propagates NaN: if any single path has NaN, the median
+    # collapses to NaN even when the other six paths have valid finite
+    # values. np.nanmedian skips the NaN entries and computes the
+    # median over the paths that actually traded. Inf entries (winning
+    # streaks with no losing trades) are kept and treated as legitimate
+    # large values during the median calculation.
+    pf_values = [p["profit_factor"] for p in path_performances]
+    pf_arr = np.asarray(pf_values, dtype=float)
+    if np.all(np.isnan(pf_arr)):
+        median_pf = np.nan
+    else:
+        median_pf = float(np.nanmedian(pf_arr))
+
     return {
         "model_name": model_name,
         "median_sharpe": median_sharpe,
@@ -802,7 +818,7 @@ def compute_model_summary(
         "median_max_dd": float(np.median([p["max_drawdown"] for p in path_performances])),
         "median_cum_return": float(np.median([p["cumulative_return"] for p in path_performances])),
         "median_win_rate": float(np.median([p["win_rate"] for p in path_performances])),
-        "median_profit_factor": float(np.median([p["profit_factor"] for p in path_performances])),
+        "median_profit_factor": median_pf,
         "mean_f1": safe_mean("f1_macro"),
         "mean_accuracy": safe_mean("accuracy"),
         "mean_log_loss": safe_mean("log_loss"),
@@ -968,10 +984,7 @@ def analyze_results(cpcv_results: dict) -> dict:
     # ``stitch_paths`` needs these to filter each split's stored
     # predictions down to the events belonging to the requested group.
     # Computing once and reusing avoids repeating work for every model.
-    n_groups = cpcv_results.get("n_groups")
-    if n_groups is None:
-        split_info = cpcv_results.get("split_info", {})
-        n_groups = split_info.get("n_groups", 6)    
+    n_groups = cpcv_results.get("n_groups", 6)
     event_index = _derive_event_index(predictions)
     group_bounds = _compute_group_bounds(len(event_index), n_groups)
 
