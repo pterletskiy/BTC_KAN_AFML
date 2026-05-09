@@ -1346,3 +1346,153 @@ def analyze_results(cpcv_results: dict) -> dict:
         "ffd_stability": ffd_stability,
         "auc_significance": auc_significance,
     }
+
+
+# =====================================================================
+# Statistical-robustness display helpers
+# =====================================================================
+# These three functions take ``analysis`` (the dict returned by
+# ``analyze_results``) and ``results`` (the dict returned by
+# ``run_cpcv_pipeline``) and print formatted tables to the notebook
+# output. They factor out the FFD-stability / DSR / PBO rendering
+# logic that was previously inlined as a long notebook cell, so the
+# notebook now reads as three calls instead of forty lines of print
+# formatting.
+
+def render_ffd_stability(analysis: dict) -> None:
+    """Print a formatted table of FFD d* values across CPCV training folds.
+
+    The table summarises, per FFD-transformed column, the mean and
+    standard deviation of the chosen differentiation order ``d*``
+    across folds, plus the min and max observed ``d*``. A wide
+    min-max spread suggests the FFD parameter is regime-dependent;
+    a tight spread indicates that the column's stationarity threshold
+    is robustly identified across the training history.
+
+    Parameters
+    ----------
+    analysis : dict
+        The output of ``analyze_results``. Must contain
+        ``ffd_stability`` with keys ``d_star_by_column``,
+        ``mean_d_star``, ``std_d_star``.
+    """
+    ffd_stab = analysis["ffd_stability"]
+    print("FFD d* across CPCV training folds:")
+    print("-" * 60)
+    print(f"  {'Column':<15s}  {'Mean d*':>9s}  {'Std d*':>9s}  "
+          f"{'Min':>7s}  {'Max':>7s}")
+    print("-" * 60)
+    for col in ffd_stab["d_star_by_column"]:
+        vals = np.asarray(ffd_stab["d_star_by_column"][col])
+        print(f"  {col:<15s}  "
+              f"{ffd_stab['mean_d_star'][col]:>9.3f}  "
+              f"{ffd_stab['std_d_star'][col]:>9.3f}  "
+              f"{vals.min():>7.3f}  "
+              f"{vals.max():>7.3f}")
+    print("-" * 60)
+
+
+def render_deflated_sharpe_table(analysis: dict, threshold: float = 0.95) -> None:
+    """Print a formatted DSR-per-model table sorted descending.
+
+    DSR (Deflated Sharpe Ratio, Bailey & Lopez de Prado 2014) penalises
+    each model's Sharpe ratio for non-normality of returns and for the
+    multiple-comparisons selection bias produced by considering N
+    candidate models. A DSR exceeding ``threshold`` (default 0.95)
+    indicates a result that survives the AFML correction and can be
+    treated as statistically significant.
+
+    Models with NaN DSR (e.g. the buy-and-hold benchmark, which is not
+    selected from a candidate pool) are rendered as ``n/a`` and sorted
+    last. The footer line names the AFML chapter so a reader unfamiliar
+    with DSR knows what the threshold means.
+
+    Parameters
+    ----------
+    analysis : dict
+        The output of ``analyze_results``. Must contain
+        ``all_summaries`` with per-model ``dsr`` field.
+    threshold : float, default 0.95
+        The cutoff above which DSR indicates significance.
+    """
+    print("Deflated Sharpe Ratios:")
+    print("-" * 55)
+    print(f"  {'Model':<15s}  {'DSR':>10s}  "
+          f"{'>' + format(threshold, '.2f') + '?':>15s}")
+    print("-" * 55)
+
+    sorted_summaries = sorted(
+        analysis["all_summaries"],
+        key=lambda s: s["dsr"] if not np.isnan(s["dsr"]) else -np.inf,
+        reverse=True,
+    )
+    for s in sorted_summaries:
+        if np.isnan(s["dsr"]):
+            print(f"  {s['model_name']:<15s}  {'n/a':>10s}  "
+                  f"{'(undefined)':>15s}")
+        else:
+            verdict = "✓ pass" if s["dsr"] > threshold else "fail"
+            print(f"  {s['model_name']:<15s}  {s['dsr']:>10.4f}  "
+                  f"{verdict:>15s}")
+    print("-" * 55)
+    print(
+        f"  Threshold {threshold}: result survives multiple-testing "
+        f"correction (AFML Ch. 14)."
+    )
+
+
+def render_pbo_summary(
+    analysis: dict, results: dict, drop_padding_blank_lines: bool = True,
+) -> None:
+    """Print baseline PBO and a leave-one-out PBO sensitivity table.
+
+    The leave-one-out PBO recomputes the Probability of Backtest
+    Overfitting after excluding each model in turn, ranking the
+    excluded model by the magnitude of the resulting PBO change. A
+    large negative ``Δ vs baseline`` means the model's exclusion
+    sharply reduces overall pool overfitting (the model contributes
+    PBO when present); a small or zero ``Δ`` means the model is a
+    minor contributor; a positive ``Δ`` means removing the model
+    actually worsens the pool's stability.
+
+    Parameters
+    ----------
+    analysis : dict
+        Output of ``analyze_results``. Reads ``pbo`` and ``path_sharpes``.
+    results : dict
+        Output of ``run_cpcv_pipeline``. Reads ``models``.
+    drop_padding_blank_lines : bool, default True
+        When ``True``, the function suppresses the leading
+        double-newline; useful when called as the third item in a
+        sequence of renderers so vertical spacing is consistent.
+    """
+    models_list = results["models"]
+    path_sharpes = analysis["path_sharpes"]
+    pbo_all = analysis["pbo"]
+
+    if not drop_padding_blank_lines:
+        print()
+    print(f"Baseline PBO (all {len(models_list)} models): {pbo_all:.3f}")
+    print()
+    print("Leave-one-out PBO:")
+    print("-" * 55)
+    print(f"  {'Model excluded':<15s}  "
+          f"{'PBO (n=' + str(len(models_list) - 1) + ')':>10s}  "
+          f"{'Δ vs baseline':>15s}")
+    print("-" * 55)
+
+    loo_results = []
+    for i, m in enumerate(models_list):
+        mask = np.arange(len(models_list)) != i
+        sub_sharpes = path_sharpes[mask, :]
+        pbo_loo = compute_pbo(sub_sharpes)
+        delta = pbo_loo - pbo_all
+        loo_results.append((m, pbo_loo, delta))
+
+    # sort ascending: model whose exclusion most reduces PBO appears first
+    loo_results.sort(key=lambda r: r[1])
+
+    for m, pbo_loo, delta in loo_results:
+        print(f"  {m:<15s}  {pbo_loo:>10.3f}  {delta:>+15.3f}")
+
+    print("-" * 55)

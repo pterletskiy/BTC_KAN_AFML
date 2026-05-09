@@ -29,7 +29,7 @@ import pandas as pd
 # =====================================================================
 # 1) Calibration audit
 # =====================================================================
-def pool_predictions(model_name, results, n_seeds=2, n_splits=15):
+def pool_predictions(model_name, results, n_seeds=None, n_splits=None):
     """Pool calibrated P(y=1) and true labels across splits and seeds.
 
     Parameters
@@ -38,10 +38,15 @@ def pool_predictions(model_name, results, n_seeds=2, n_splits=15):
         One of the model keys used in ``results["predictions"]``.
     results : dict
         Output of ``run_cpcv_pipeline``.
-    n_seeds : int, default 2
-        Number of seeds the model was trained with.
-    n_splits : int, default 15
-        Number of CPCV splits.
+    n_seeds : int, optional
+        Number of seeds the model was trained with. If ``None``
+        (default), reads ``results["n_seeds"]`` so the diagnostic
+        always uses the actual run's seed count without requiring
+        the caller to track it. Pass an explicit integer to override
+        (e.g. for sensitivity checks that pool a subset of seeds).
+    n_splits : int, optional
+        Number of CPCV splits. If ``None`` (default), reads
+        ``results["n_splits"]``.
 
     Returns
     -------
@@ -50,6 +55,11 @@ def pool_predictions(model_name, results, n_seeds=2, n_splits=15):
     y_pool : np.ndarray
         Concatenated ground-truth labels (0 or 1).
     """
+    if n_seeds is None:
+        n_seeds = int(results.get("n_seeds", 1))
+    if n_splits is None:
+        n_splits = int(results.get("n_splits", 15))
+
     proba_pool, y_pool = [], []
     for split_idx in range(n_splits):
         for seed in range(n_seeds):
@@ -63,12 +73,16 @@ def pool_predictions(model_name, results, n_seeds=2, n_splits=15):
     return proba_pool, y_pool
 
 
-def calibration_audit(model_name, results, n_seeds=2, n_splits=15, n_bins=10):
+def calibration_audit(model_name, results, n_seeds=None, n_splits=None, n_bins=10):
     """Print a calibration table comparing predicted P(y=1) to empirical
     P(y=1) within fixed-width probability bins.
 
     Diagnoses systematic directional bias, miscalibrated sharpness, or
     distributional collapse. Reports only bins with at least 10 samples.
+
+    ``n_seeds`` and ``n_splits`` default to ``None``; when not passed,
+    they are read from ``results["n_seeds"]`` and ``results["n_splits"]``
+    so the diagnostic stays in sync with the pipeline configuration.
     """
     proba_pool, y_pool = pool_predictions(model_name, results, n_seeds, n_splits)
 
@@ -298,14 +312,18 @@ def collect_bet_sizes(analysis: dict, model_name: str) -> np.ndarray:
 # =====================================================================
 def compute_reliability_curve(
     model_name: str, results: dict,
-    n_seeds: int = 2, n_splits: int = 15, n_bins: int = 10,
-    min_count: int = 10,
+    n_seeds: int | None = None, n_splits: int | None = None,
+    n_bins: int = 10, min_count: int = 10,
 ) -> pd.DataFrame:
     """Compute the binned (predicted, empirical) pairs for a reliability
     diagram.
 
     Parameters
     ----------
+    n_seeds : int, optional
+        Defaults to ``results["n_seeds"]`` when ``None``.
+    n_splits : int, optional
+        Defaults to ``results["n_splits"]`` when ``None``.
     n_bins : int, default 10
         Number of equal-width bins on [0, 1].
     min_count : int, default 10

@@ -79,40 +79,8 @@ JB_WINDOW = 90                   # ~1 crypto quarter
 GAUSS_ENT_WINDOW = 30            # ~1 crypto month
 
 # ── Lag features (consumed only by AR Logistic baseline) ──────────────
-AR_LAGS = [1, 2, 3, 7, 14, 30]
+AR_LAGS = [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
 LAG_COLUMN_PREFIX = "log_returns_lag"
-
-# ── Compression transform targets ─────────────────────────────────────
-# Configuration for ``apply_log_transforms``. Two families of columns:
-#
-# 1. Signed columns whose raw values can be either positive or negative
-#    and whose magnitudes span many orders of magnitude on BTC daily
-#    data (e.g. ``obv``, ``chaikin_osc`` reach 10⁷-10¹⁰ during high-
-#    volume regimes). These need a smooth, sign-preserving compression
-#    that pulls the tails into a range linear models can use without
-#    producing 10⁻¹⁰ coefficients.
-#
-#    Applied transform: the inverse hyperbolic sine, ``np.arcsinh(x)``,
-#    which equals ``log(x + sqrt(x² + 1))``. Properties:
-#      - smooth at zero (no kink unlike ``sign(x)·log(|x|+1)``);
-#      - parameter-free (no constant offset to choose);
-#      - asymptotically log-like for large ``|x|``: behaves like
-#        ``sign(x)·log(2|x|)``, so it compresses the tails as
-#        aggressively as the previous symmetric-log transform;
-#      - approximately identity near zero: ``asinh(x) ≈ x`` for small
-#        ``|x|``, so it preserves more of the small-value structure
-#        than ``sign(x)·log(|x|+1)`` does.
-#
-#    Reference: Burbidge, Magee & Robb (1988), "Alternative
-#    Transformations to Handle Extreme Values of the Dependent
-#    Variable", JASA 83.
-#
-# 2. Unsigned (strictly non-negative) columns where range compression
-#    is needed but sign preservation is irrelevant. Applied transform:
-#    ``log(|x| + 1e-8)``. The small additive constant prevents
-#    ``log(0)`` for the rare zero-volatility bar.
-SIGNED_ASINH_COLUMNS = ["obv", "chaikin_osc"]
-UNSIGNED_LOG_COLUMNS = ["atr"]
 
 # ── Cache ─────────────────────────────────────────────────────────────
 CACHE_DIR = "cache/"
@@ -904,53 +872,101 @@ def compute_lag_features(
 # =====================================================================
 # Log transforms
 # =====================================================================
-def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
-    """Apply scale-compression transforms to the configured columns.
+def apply_sym_log(features: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Apply the symmetric log transform to listed columns.
 
-    Two transform families:
+    ``sign(x) * log(|x| + 1)`` — the sign-preserving variant of the
+    natural log. Used for signed quantities whose raw values can be
+    either positive or negative and whose magnitudes span many orders
+    of magnitude (e.g. ``obv``, ``chaikin_osc`` reach 10⁷-10¹⁰
+    during high-volume regimes).
 
-    - **Signed asinh** (``SIGNED_ASINH_COLUMNS``): ``np.arcsinh(x)``,
-      which equals ``log(x + sqrt(x² + 1))``. Used for features that
-      can be either positive or negative and whose magnitudes span
-      many orders of magnitude (e.g. ``obv``, ``chaikin_osc``). asinh
-      is preferred over the symmetric ``sign(x) * log(|x| + 1)``
-      transform on three theoretical grounds: it is smooth at zero
-      (no kink), it is parameter-free (no additive constant to
-      choose), and it preserves more of the small-value structure
-      because ``asinh(x) ≈ x`` for small ``|x|``. For large ``|x|``
-      it is asymptotically equivalent to symmetric log, so the tail
-      compression is the same. Reference: Burbidge, Magee & Robb
-      (1988).
+    Properties:
 
-    - **Unsigned log** (``UNSIGNED_LOG_COLUMNS``): ``log(|x| + 1e-8)``.
-      Used for strictly non-negative features such as ``atr`` where
-      sign preservation is unnecessary; the small additive constant
-      avoids ``log(0)``.
+    - preserves sign and zero (``sym_log(0) = 0``);
+    - preserves rank ordering;
+    - asymptotically log-like: for ``|x| ≫ 1`` it behaves like
+      ``sign(x) · log(|x|)``, compressing the tails by orders of
+      magnitude;
+    - has a derivative discontinuity at zero (``+1`` from the right,
+      ``-1`` from the left), which is acceptable in a feature-engineering
+      context where the transformed values feed downstream MDA, FFD,
+      and scaling steps rather than a gradient-based optimiser.
 
-    The function name is retained from the previous symmetric-log
-    iteration of the pipeline for caller compatibility (notebook
-    cells already call ``apply_log_transforms``); a future revision
-    could rename to ``apply_compression_transforms``.
+    An asinh-based variant (``np.arcsinh``) was tested in May 2026 as
+    a smoother alternative; in sensitivity analysis it produced higher
+    out-of-sample variance on the neural-network models and was reverted
+    to the symmetric log transform here, which matches the convention
+    used in earlier rounds of the pipeline.
 
-    Returns a modified copy of *features*. Columns not in either list
-    are returned unchanged.
+    Parameters
+    ----------
+    features : pd.DataFrame
+        Feature matrix. A modified copy is returned; the original is
+        not mutated.
+    columns : list of str
+        Column names to transform. Columns not present in ``features``
+        are silently skipped, so the same target list can be reused
+        across feature-set variants.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``features`` with the symmetric log applied to the
+        named columns.
     """
     features = features.copy()
-
-    for col in SIGNED_ASINH_COLUMNS:
+    applied = []
+    for col in columns:
         if col not in features.columns:
             continue
-        features[col] = np.arcsinh(features[col])
+        features[col] = np.sign(features[col]) * np.log(features[col].abs() + 1)
+        applied.append(col)
+    if applied:
+        logger.info("symmetric log applied to: %s", applied)
+    return features
 
-    for col in UNSIGNED_LOG_COLUMNS:
+
+def apply_log(
+    features: pd.DataFrame,
+    columns: list[str],
+    eps: float = 1e-8,
+) -> pd.DataFrame:
+    """Apply ``log(|x| + eps)`` to listed columns.
+
+    Standard variance-stabilising transform for strictly non-negative
+    quantities whose magnitudes span many orders of magnitude (e.g.
+    ATR, realised volatility, dollar volume). The small additive
+    constant ``eps`` prevents ``log(0)`` for the rare exact-zero
+    observation. ``|x|`` is taken so that any spurious negative input
+    (which would not be expected for the target columns) does not
+    crash the transform.
+
+    Parameters
+    ----------
+    features : pd.DataFrame
+        Feature matrix. Returned a modified copy; original is not
+        mutated.
+    columns : list of str
+        Column names to transform. Columns not present in
+        ``features`` are silently skipped.
+    eps : float, default 1e-8
+        Additive constant to keep the transform finite at zero.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``features`` with log applied to ``columns``.
+    """
+    features = features.copy()
+    applied = []
+    for col in columns:
         if col not in features.columns:
             continue
-        features[col] = np.log(features[col].abs() + 1e-8)
-
-    logger.info(
-        "Compression transforms applied: signed-asinh=%s, unsigned-log=%s",
-        SIGNED_ASINH_COLUMNS, UNSIGNED_LOG_COLUMNS,
-    )
+        features[col] = np.log(features[col].abs() + eps)
+        applied.append(col)
+    if applied:
+        logger.info("log applied to: %s (eps=%g)", applied, eps)
     return features
 
 
@@ -958,7 +974,17 @@ def apply_log_transforms(features: pd.DataFrame) -> pd.DataFrame:
 # Orchestration
 # =====================================================================
 def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    """Chain TA features, math features, and log transforms.
+    """Chain TA features and math features into a single DataFrame.
+
+    Compression transforms (symmetric log for signed wide-range
+    columns, log for unsigned wide-range columns) are NOT applied
+    here. They are applied in the notebook via ``apply_sym_log``
+    and ``apply_log`` so the choice of which columns get which
+    transform is visible at the call site rather than hidden inside
+    this function. Earlier iterations of this pipeline applied a
+    combined ``apply_log_transforms`` (and briefly an asinh variant
+    in ``apply_asinh``) here; both were removed in favour of explicit
+    notebook-level transform application.
 
     External features and lag features are added separately in the
     notebook (they have their own loaders / fetchers and are kept in
@@ -972,12 +998,12 @@ def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        TA + math feature columns covering every daily bar.
+        TA + math feature columns covering every daily bar, with no
+        compression transforms applied.
     """
     ta = compute_ta_features(df)
     math = compute_math_features(df)
     features = pd.concat([ta, math], axis=1)
-    features = apply_log_transforms(features)
 
     print(
         f"[features] {features.shape[1]} features, {features.shape[0]} rows | "

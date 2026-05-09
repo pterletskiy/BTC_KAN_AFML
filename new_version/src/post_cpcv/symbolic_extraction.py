@@ -1608,3 +1608,385 @@ def _empty_result(model, feature_names: list[str]) -> dict:
         "pruned_architecture": [],
         "surviving_features": [],
     }
+
+
+# =====================================================================
+# Notebook display / analysis helpers
+# =====================================================================
+# These helpers consume the dict returned by ``run_symbolic_extraction``
+# and produce the formatted output / plots that the notebook used to
+# generate inline. Factoring them here keeps the notebook readable and
+# centralises the singularity-handling logic for derivative evaluation
+# (see ``_safe_eval_at_point`` and ``compute_feature_sensitivity``).
+
+def _safe_eval_at_point(deriv, point: dict) -> float:
+    """Evaluate a sympy derivative at a substitution point, returning NaN
+    if the result is non-finite or if substitution raises.
+
+    PyKAN's symbolic library includes reciprocal and logarithmic
+    primitives that can produce poles in the learned activation. When
+    a derivative is evaluated at a point near such a pole (which is
+    common for heavily right-skewed features whose mean lands far from
+    the bulk of the distribution), ``float(deriv.subs(point))`` returns
+    `inf`, `-inf`, or raises `ZeroDivisionError`. This helper detects
+    those cases and returns NaN, which downstream display formatters
+    treat as "gradient undefined at this point" rather than propagating
+    a misleading infinite value to the sensitivity table.
+
+    Parameters
+    ----------
+    deriv : sympy expression
+        Symbolic derivative produced by ``sympy.diff``.
+    point : dict[Symbol -> float]
+        Substitution map for all free symbols in ``deriv``.
+
+    Returns
+    -------
+    float
+        The numeric value of ``deriv`` at ``point``, or NaN if
+        non-finite or if substitution failed.
+    """
+    try:
+        val = float(deriv.subs(point))
+    except (ZeroDivisionError, TypeError, ValueError, OverflowError):
+        return float("nan")
+    if not np.isfinite(val):
+        return float("nan")
+    return val
+
+
+def print_symbolic_decision(symbolic: dict) -> None:
+    """Print the decision function, P(up) formula, and surviving features.
+
+    These are the headline outputs of ``run_symbolic_extraction`` and
+    are the items most likely to be quoted directly in the thesis text.
+    """
+    print("Decision function:")
+    print(f"  {symbolic['decision_function']}")
+    print(f"\nP(up) = {symbolic['p_up_formula']}")
+    print(f"\nSurviving features: {symbolic['surviving_features']}")
+
+
+def print_extraction_metrics(symbolic: dict) -> None:
+    """Print pre/post symbolic accuracy, symbolification rate, and the
+    pruned architecture.
+
+    The accuracy gap (pre minus post) measures the cost of replacing
+    spline activations with closed-form symbolic primitives; near-zero
+    means the symbolic substitution faithfully captures the spline.
+    """
+    pre = symbolic.get("pre_symbolic_accuracy", float("nan"))
+    post = symbolic.get("post_symbolic_accuracy", float("nan"))
+    rate = symbolic.get("symbolification_rate", float("nan"))
+    arch = symbolic.get("pruned_architecture", "N/A")
+    print(f"Pre-symbolic accuracy:  {pre:.4f}")
+    print(f"Post-symbolic accuracy: {post:.4f}")
+    if isinstance(rate, (int, float)) and np.isfinite(rate):
+        print(f"Symbolification rate:   {rate:.0%}")
+    else:
+        print(f"Symbolification rate:   N/A")
+    print(f"Pruned architecture:    {arch}")
+
+
+def print_partial_derivatives(symbolic: dict) -> None:
+    """Print the closed-form partial derivative of the decision function
+    with respect to each surviving feature.
+
+    Useful as a thesis appendix item; the gradient expressions tell the
+    reader which polynomial / trigonometric / reciprocal primitives the
+    symbolic step landed on for each input dimension.
+    """
+    decision_expr = symbolic["sympy_objects"]["decision"]
+    features = symbolic["surviving_features"]
+
+    if decision_expr is None or decision_expr == "extraction_failed":
+        print("Symbolic extraction failed; no partial derivatives to display.")
+        return
+
+    print("Partial derivatives (symbolic form):\n")
+    for feat in features:
+        sensitivity = sympy.diff(decision_expr, sympy.Symbol(feat))
+        print(f"  ∂(decision)/∂({feat}) =")
+        print(f"    {sensitivity}\n")
+
+
+def compute_feature_sensitivity(
+    symbolic: dict,
+    X: pd.DataFrame,
+    eval_point: str = "mean",
+) -> pd.DataFrame:
+    """Compute marginal sensitivity of the decision function to each
+    surviving feature.
+
+    For each feature, returns the symbolic derivative evaluated at the
+    chosen point (default: dataset mean), the per-σ effect on the
+    decision logit, and the approximate per-σ change in P(up) using
+    the sigmoid slope at p=0.5.
+
+    Robustness to singular gradients
+    --------------------------------
+    PyKAN's symbolic library includes ``1/x``, ``log(x)``, and similar
+    primitives that produce poles in the learned activation. When such
+    a pole sits close to the chosen evaluation point (e.g. for heavily
+    right-skewed features like ``jarque_bera`` whose mean lies far from
+    the distribution's bulk), the symbolic gradient is non-finite at
+    that point. This function detects non-finite gradients via
+    ``_safe_eval_at_point`` and reports them as NaN rather than
+    propagating ``inf`` / ``-inf`` to the table; downstream consumers
+    interpret NaN as "gradient undefined at evaluation point". Set
+    ``eval_point="median"`` to evaluate at the per-feature median,
+    which is more robust for skewed distributions and typically avoids
+    the singularity but may not match the "canonical mean" framing
+    the thesis uses.
+
+    Parameters
+    ----------
+    symbolic : dict
+        Output of ``run_symbolic_extraction`` with a non-failed
+        ``sympy_objects["decision"]``.
+    X : pd.DataFrame
+        Feature matrix containing at least all columns named in
+        ``symbolic["surviving_features"]``.
+    eval_point : {"mean", "median"}, default "mean"
+        Which per-feature centrality measure to evaluate the gradient
+        at.
+
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by feature name, with columns ``mean_value``,
+        ``std_value``, ``d_decision/d_feature_at_mean``,
+        ``sigma_effect_on_decision``, and ``approx_sigma_delta_p``.
+        NaN entries indicate a non-finite gradient at the evaluation
+        point.
+    """
+    decision_expr = symbolic["sympy_objects"]["decision"]
+    features = symbolic["surviving_features"]
+
+    if decision_expr is None or decision_expr == "extraction_failed":
+        return pd.DataFrame()
+
+    sym_vars = {f: sympy.Symbol(f) for f in features}
+    X_features = X[features]
+    means = X_features.mean()
+    stds = X_features.std()
+
+    # build the substitution dict at the chosen evaluation point
+    if eval_point == "median":
+        center = X_features.median()
+    elif eval_point == "mean":
+        center = means
+    else:
+        raise ValueError(f"eval_point must be 'mean' or 'median'; got {eval_point!r}")
+
+    point = {sym_vars[f]: center[f] for f in features}
+
+    rows = []
+    n_singular = 0
+    for feat in features:
+        deriv = sympy.diff(decision_expr, sym_vars[feat])
+        deriv_at_point = _safe_eval_at_point(deriv, point)
+
+        if np.isnan(deriv_at_point):
+            n_singular += 1
+            sigma_effect = float("nan")
+            approx_delta_p = float("nan")
+        else:
+            sigma_effect = deriv_at_point * stds[feat]
+            approx_delta_p = sigma_effect / 4.0  # sigmoid slope at p=0.5
+
+        rows.append({
+            "feature": feat,
+            "mean_value": means[feat],
+            "std_value": stds[feat],
+            "d_decision/d_feature_at_mean": deriv_at_point,
+            "sigma_effect_on_decision": sigma_effect,
+            "approx_sigma_delta_p": approx_delta_p,
+        })
+
+    if n_singular > 0:
+        logger.warning(
+            "Sensitivity table: %d/%d features have non-finite gradient at "
+            "the %s; reported as NaN. Consider eval_point='median' or "
+            "inspect the symbolic formula for poles near these features' %s.",
+            n_singular, len(features), eval_point, eval_point,
+        )
+
+    return pd.DataFrame(rows).set_index("feature")
+
+
+def print_feature_sensitivity(sensitivity_df: pd.DataFrame) -> None:
+    """Print a feature-sensitivity DataFrame with NaN-aware formatting.
+
+    NaN gradients (typically from a symbolic-formula pole near the
+    feature's evaluation point) are rendered as the literal string
+    ``"   N/A   "`` rather than ``"+nan"`` for readability.
+    """
+    if sensitivity_df.empty:
+        print("Sensitivity table is empty (extraction failed).")
+        return
+
+    def fmt(x: float) -> str:
+        if not np.isfinite(x):
+            return "    N/A "
+        return f"{x:+.4f}"
+
+    print("Feature sensitivity at the dataset mean:\n")
+    print(sensitivity_df.to_string(float_format=fmt))
+
+    n_singular = int((~np.isfinite(sensitivity_df.values)).any(axis=1).sum())
+    if n_singular > 0:
+        print(
+            f"\n  Note: {n_singular} feature(s) have a non-finite gradient at "
+            f"the dataset mean (symbolic formula has a pole near that point); "
+            f"rendered as N/A. Try eval_point='median' for a more robust point."
+        )
+
+
+def plot_marginal_effects(
+    symbolic: dict,
+    X: pd.DataFrame,
+    n_points: int = 100,
+    quantile_low: float = 0.05,
+    quantile_high: float = 0.95,
+    figsize_per_panel: tuple = (4.5, 4.0),
+):
+    """Plot the marginal effect of each surviving feature on P(up).
+
+    For each feature, sweeps it across the empirical [q_low, q_high]
+    range while holding the other surviving features at their dataset
+    medians, evaluates the symbolic decision function, and plots the
+    sigmoid-transformed P(up). The other features are pinned to the
+    median rather than the mean because the median is more robust for
+    the skewed distributions produced by features like ``jarque_bera``.
+
+    Parameters
+    ----------
+    symbolic : dict
+        Output of ``run_symbolic_extraction``.
+    X : pd.DataFrame
+        Feature matrix containing the surviving features.
+    n_points : int, default 100
+        Density of the sweep along each feature's range.
+    quantile_low, quantile_high : float, default 0.05, 0.95
+        Sweep range expressed as quantiles of the empirical distribution.
+        The default trims the extreme 5% on each side to avoid plotting
+        the tails of skewed features that would otherwise dominate the
+        x-axis.
+    figsize_per_panel : tuple of float, default (4.5, 4.0)
+        Per-feature subplot size in inches.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure object. Caller is expected to ``plt.show()``.
+    """
+    import matplotlib.pyplot as plt
+
+    decision_expr = symbolic["sympy_objects"]["decision"]
+    features = symbolic["surviving_features"]
+
+    if decision_expr is None or decision_expr == "extraction_failed":
+        raise ValueError("Symbolic extraction failed; no decision function to plot.")
+
+    sym_vars = {f: sympy.Symbol(f) for f in features}
+    decision_fn = sympy.lambdify(
+        [sym_vars[f] for f in features],
+        decision_expr,
+        modules="numpy",
+    )
+
+    X_features = X[features]
+    n_feat = len(features)
+    fig, axes = plt.subplots(
+        1, n_feat,
+        figsize=(figsize_per_panel[0] * n_feat, figsize_per_panel[1]),
+        sharey=True,
+    )
+    if n_feat == 1:
+        axes = [axes]
+
+    for ax, feat in zip(axes, features):
+        sweep = np.linspace(
+            X_features[feat].quantile(quantile_low),
+            X_features[feat].quantile(quantile_high),
+            n_points,
+        )
+
+        fixed = {f: X_features[f].median() for f in features}
+        p_up = []
+        for v in sweep:
+            fixed[feat] = v
+            d = decision_fn(*[fixed[f] for f in features])
+            # guard against NaN/Inf from the lambdified function
+            if not np.isfinite(d):
+                p_up.append(np.nan)
+            else:
+                p_up.append(1.0 / (1.0 + np.exp(-d)))
+
+        ax.plot(sweep, p_up, linewidth=2)
+        ax.axhline(0.5, color="grey", linestyle="--", alpha=0.5,
+                   label="P=0.5 (abstention)")
+        ax.axvline(X_features[feat].median(), color="red", linestyle=":",
+                   alpha=0.5, label="Median")
+        ax.set_xlabel(feat)
+        ax.set_title(f"Marginal effect: {feat}")
+        ax.grid(alpha=0.3)
+        ax.set_ylim(0, 1)
+
+    axes[0].set_ylabel("P(up)")
+    axes[0].legend(loc="best", fontsize=9)
+    fig.suptitle(
+        "Marginal effect of each feature on P(up)\n"
+        "(other features held at their median)",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+    return fig
+
+
+def print_term_structure_summary(
+    sensitivity_df: pd.DataFrame,
+    symbolic: dict,
+) -> None:
+    """Print the per-feature term-count summary alongside the sensitivity
+    table.
+
+    Counts how many times each feature's name appears in the closed-form
+    decision expression (a proxy for the feature's structural importance
+    in the formula independent of its numerical sensitivity), then
+    concatenates with the per-feature sensitivity dataframe for a single
+    summary view.
+
+    Parameters
+    ----------
+    sensitivity_df : pd.DataFrame
+        Output of ``compute_feature_sensitivity``.
+    symbolic : dict
+        Output of ``run_symbolic_extraction``.
+    """
+    decision_expr = symbolic["sympy_objects"]["decision"]
+    features = symbolic["surviving_features"]
+
+    if decision_expr is None or decision_expr == "extraction_failed":
+        print("Symbolic extraction failed; no term-structure summary available.")
+        return
+
+    formula_str = str(decision_expr)
+    term_counts = {feat: formula_str.count(feat) for feat in features}
+
+    summary = sensitivity_df.copy()
+    summary["n_terms_in_formula"] = pd.Series(term_counts)
+    summary = summary[[
+        "mean_value", "std_value", "n_terms_in_formula",
+        "d_decision/d_feature_at_mean", "sigma_effect_on_decision",
+        "approx_sigma_delta_p",
+    ]]
+
+    def fmt(x: float) -> str:
+        if not np.isfinite(x):
+            return "    N/A "
+        return f"{x:+.4f}"
+
+    print("Formula term-structure summary:\n")
+    print(summary.to_string(float_format=fmt))
