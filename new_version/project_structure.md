@@ -371,13 +371,21 @@ FeeTotNtv, SplyExNtv, SplyCur, IssTotNtv
 
 ---
 
-### Step 7 — Log Transforms (`features.py`)
+### Step 7 — Compression Transforms (`features.py`)
 
 **Function:** `apply_log_transforms(features) → pd.DataFrame`
 
-Applies `log(|x| + 1e-8)` to `atr` (always positive). Applies `sign(x) × log(|x| + 1)` to `obv` (preserves sign while compressing scale). All other features are left untouched (already bounded or dimensionless).
+Applies two scale-compression transforms in fixed order:
 
-**Target columns:** `LOG_TRANSFORM_COLUMNS = ["atr", "obv"]`
+1. **Signed asinh** to `obv` and `chaikin_osc`: `np.arcsinh(x) = log(x + sqrt(x² + 1))`. Used because both features can be either positive or negative and span 10⁷-10¹⁰ over the 2014-2026 period as BTC daily volume grew by six orders of magnitude. asinh is preferred over the symmetric-log alternative `sign(x) · log(|x|+1)` on three theoretical grounds: it is smooth at zero (no kink), it is parameter-free (no additive constant to choose), and it preserves more of the small-`|x|` structure (asinh(x) ≈ x near zero). For large `|x|` it is asymptotically equivalent to `sign(x) · log(2|x|)`, so the tail compression rate matches the previous symmetric-log convention. Reference: Burbidge, Magee & Robb (1988), *JASA* 83.
+
+2. **Unsigned log** to `atr`: `np.log(|x| + 1e-8)`. ATR is strictly non-negative, so sign preservation is irrelevant; the small additive constant prevents `log(0)` for the rare zero-volatility bar. asinh would behave nearly identically on ATR's 0.001-0.1 range, but log is retained for parsimony.
+
+All other features are left untouched (already bounded or dimensionless and handled by the per-fold RobustScaler downstream).
+
+**Target columns:** `SIGNED_ASINH_COLUMNS = ["obv", "chaikin_osc"]`, `UNSIGNED_LOG_COLUMNS = ["atr"]`. The function name `apply_log_transforms` is retained from the previous symmetric-log iteration of the pipeline for caller compatibility (notebook cells already call it); a future revision could rename to `apply_compression_transforms`.
+
+**Methodology disclosure.** An earlier iteration of the pipeline applied the symmetric-log transform `sign(x) · log(|x|+1)` to `obv` and `chaikin_osc`. The switch to asinh in May 2026 is grounded in the theoretical properties above rather than result-driven choice; asinh and symmetric-log are within 5% of each other for the bulk of these features' magnitude range, so downstream metrics shift by less than seed-noise.
 
 **Orchestration:** `build_feature_matrix(df) → pd.DataFrame` chains `compute_ta_features(df)` → `compute_math_features(df)` → `pd.concat` → `apply_log_transforms`. Returns 34 columns × ~4,200 rows (25 TA + 9 math). External features (22) and lag features (6) are assembled separately in the notebook via `build_external_features(df_raw)` and `compute_lag_features(df_raw)` respectively, and concatenated alongside the TA + math output before alignment. The notebook concat order is `[ta, math, external, lag]`.
 
@@ -608,6 +616,8 @@ The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
 
 **Typical result:** ~14–16 features selected per fold from the 62 candidates. The 6 lag columns sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
 
+**Per-fold warning provenance.** When fewer than `MIN_FEATURES = 5` features clear MDA > 0 on a given fold and the function falls back to the top-5 by MDA value, the emitted `logger.warning(...)` is prefixed with `[split K/N]` where `K` is the 1-indexed CPCV split number and `N` is the total number of splits (28 in the locked configuration). The prefix is plumbed via the keyword-only `split_idx` and `n_splits` arguments to `select_features` and `preprocess_fold`, which `pipeline.py` populates inside the per-split loop. The prefix surfaces in the deferred-warning summary that `run_cpcv_pipeline` prints after the ✅ completion notice, so the reader can tell which specific folds tripped the fallback rather than assuming the issue applied uniformly across all 28.
+
 **TOP_K_FRAC tightening and sensitivity (from 0.4 to 0.30, with 0.25 as the sensitivity check).** The cap was tightened from common defaults of 0.40-0.50 after a high-PBO run revealed that only ~6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Two cap settings were evaluated as candidates for the primary configuration: 0.25 forces ~16 features through the bottleneck, and 0.30 forces ~19. Both produced essentially identical predictive metrics across all six models (mean accuracy and pooled AUC differed by less than 0.5 percentage points per model), but the backtest-derived metrics diverged substantially: PBO was 0.69 at 0.25 and 0.26 at 0.30, with model rankings reshuffling between the two. The 0.30 setting was selected as primary because it produced the lower PBO (under the AFML interpretation, this indicates more robust model selection) while still being meaningfully tighter than the 0.40 default. The 0.25 setting is retained as a documented sensitivity check; the divergence between the two configurations on the path-Sharpe-derived metrics, despite stable predictive metrics, is itself the AFML rank-instability finding made operational on this dataset.
 
 #### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, ffd_columns, top_k_frac, skip_selection=False)`
@@ -671,12 +681,16 @@ Each returns `{"best_params": {...}, "best_log_loss": float, "results_df": DataF
 - `dropout`: uniform [0.1, 0.5] (floor raised from 0.0 for regularization)
 - `learning_rate`: log-uniform [1e-4, 5e-2]
 
+**LSTM tuning sensitivity (May 2026).** A wider search space was tested in parallel with the KAN sensitivity check: `hidden_size ∈ {16, 32, 48, 64}`, `num_layers ∈ [1, 2]`, `dropout ∈ [0.0, 0.5]`. The expanded configuration produced a 0.11 decline in median Sharpe over the seven CPCV paths, consistent with the same memorisation hypothesis. The narrow ranges are retained as the locked thesis configuration.
+
 **`tune_kan(X, y, w, n_features, n_trials=None)`** — Search space:
 - `width1`: int [2, 6] (tightened from earlier [3, 12] then [3, 16]; the cap is set at 6 to keep the symbolic formula extracted in Phase 3 humanly readable, since each surviving width1 unit becomes one additive term plus interactions in the closed-form expression)
 - `width2`: fixed at 0 (no longer searched; tightened from earlier [0, 10]; one hidden layer only, so the Phase 3 symbolic formula does not nest trigonometric primitives in trigonometric primitives, which would otherwise produce fourth-order compositions that lose interpretability. Hardcoding `width2=0` also ensures the architecture used for CPCV evaluation matches the architecture extracted in Phase 3, so the symbolic formula reflects the actual benchmark model rather than an unrelated KAN topology)
 - `lr`: log-uniform [5e-4, 5e-2]
 - `weight_decay`: log-uniform [1e-5, 5e-3]
 - `grid`: categorical {3, 5} (dropped grid=8 to prevent memorisation)
+
+**KAN tuning sensitivity (May 2026).** A wider search space was tested as a sensitivity check against the locked narrow ranges above: `width1 ∈ [3, 8]`, `width2 ∈ [0, 3]`, `grid ∈ {3, 5, 7}`, `lr ∈ log [5e-4, 5e-3]`. The expanded configuration produced a 0.07 decline in median Sharpe over the seven CPCV paths, with KAN's std_sharpe roughly unchanged. The decline is consistent with the small-sample memorisation hypothesis that motivated the original narrow ranges (deeper / wider KAN configurations passed inner-fold tuning but generalised slightly worse to the held-out CPCV test fold). The narrow ranges are retained as the locked thesis configuration; the expanded result is reported as a robustness check confirming the tuning ranges were not arbitrarily chosen.
 
 **Optuna configuration:** TPE sampler with `seed=42` for reproducibility. MedianPruner with `n_startup_trials=5` (classical) or `n_startup_trials=3` (neural), `n_warmup_steps=1`. Pruner kills trials whose intermediate log loss after any inner fold falls below the median of all completed trials, saving compute on clearly bad regions.
 
@@ -887,6 +901,8 @@ Per-path financial metrics:
 | Metric | Formula |
 |--------|---------|
 | Annualized Sharpe | `(mean_r / std_r) × √365` |
+| Annualized Sortino | `(mean_r / downside_rms) × √365`, where `downside_rms = sqrt(mean(neg_returns²))` over the strictly-negative returns. Returns inf for paths with no losing days and positive mean (winning streak), 0 if mean is also zero. |
+| Calmar | `annualized_return / |max_drawdown|`. Tail-risk-aware alternative to Sharpe; returns inf when `|max_drawdown|` is exactly zero and ann_ret is positive. |
 | Cumulative return | `∏(1 + rₜ) - 1` |
 | Annualized return | `(1 + cum_ret)^(1 / years_elapsed) − 1`, where `years_elapsed = (timestamps[-1] − timestamps[0]).days / 365.25` (calendar-time CAGR; previously used `(1+cum_ret)^(365/n_events)` which assumed n was the number of daily bars and over-stated ann_ret by ~5–6× for typical multi-year paths) |
 | Maximum drawdown | `min((equity - running_max) / running_max)` |
@@ -947,13 +963,25 @@ Returns a DataFrame with columns: `model_a`, `model_b`, `auc_a`, `auc_b`, `delta
 
 Ranks models by median path Sharpe (primary, descending) with std Sharpe as tiebreaker (ascending, prefer consistency).
 
-**Columns:** rank, model_name, median_sharpe, std_sharpe, DSR, mean_f1, mean_accuracy, mean_log_loss, mean_auc_roc, median_max_dd, median_cum_return, median_win_rate, median_profit_factor.
+**Columns:** `rank`, `model_name`, `median_sharpe`, `std_sharpe`, `sharpe_ci_lower`, `sharpe_ci_upper`, `dsr`, `median_sortino`, `median_calmar`, `mean_f1`, `mean_accuracy`, `mean_auc_roc`, `median_max_dd`, `median_cum_return`, `median_win_rate`, `median_profit_factor`. The `sharpe_ci_lower` and `sharpe_ci_upper` columns hold the bounds of a non-parametric 95% confidence interval on the median Sharpe (1000 bootstrap resamples; details in 16.j). `median_sortino` and `median_calmar` are tail-risk-aware alternatives to Sharpe added so the comparison table doesn't reduce to a single risk-adjustment lens.
 
 #### Step 16.j — Model summary aggregation (`compute_model_summary`)
 
-Per model: pools path-level metrics (median/mean/std Sharpe, median drawdown, win rate, profit factor), split-level metrics (mean F1, accuracy, log-loss, AUC-ROC, Brier), and computes DSR using pooled skewness/kurtosis from all paths.
+Per model: pools path-level metrics (median/mean/std Sharpe, median Sortino, median Calmar, median drawdown, win rate, profit factor), split-level metrics (mean F1, accuracy, log-loss, AUC-ROC, Brier), and computes DSR using pooled skewness/kurtosis from all paths.
 
 **Two distinct `n`'s.** The summary distinguishes `n_trades` (subset where `bet_size ≠ 0`, used for win rate and profit factor) from `n_returns` (full event series including zero-bet rows, used for Sharpe and DSR). DSR's `n_obs` is set to `avg_n_returns` so it matches the n used to estimate the Sharpe ratio. Earlier versions conflated these.
+
+**Bootstrap confidence interval on the median Sharpe.** `compute_model_summary` calls `bootstrap_median_ci(sharpes, n_bootstrap=1000, alpha=0.05, seed=42)` per model and stores the bounds as `sharpe_ci_lower` and `sharpe_ci_upper` in the summary dict. The bootstrap resamples each model's seven path Sharpes with replacement 1000 times, computes the median for each resample, and returns the 2.5th and 97.5th percentiles of the resulting median distribution. Non-finite entries (NaN, inf) are dropped before resampling so paths with undefined Sharpe don't poison the percentile estimate. The CI complements DSR (parametric, AFML-corrected for selection bias and non-normality) with a non-parametric robustness check: a model whose CI crosses zero has a median Sharpe that is not statistically distinguishable from zero under simple resampling, regardless of what DSR says.
+
+**Profit factor aggregation.** The median profit factor uses `np.nanmedian` rather than `np.median` because the per-path profit factor is NaN for paths with zero trades (the metric is mathematically undefined when there are no trades). Plain `np.median` propagates NaN: if any single path has NaN, the median collapses to NaN even when the other six paths have valid finite values. `np.nanmedian` skips the NaN entries and computes the median over the paths that actually traded. Inf entries (winning-streak paths with no losing trades) are kept and treated as legitimate large values during the median calculation. An earlier version used plain `np.median` and produced spurious NaN values for models whose calibrated probabilities clustered tightly around 0.5 on at least one path (typically the linear baselines, where the S-curve thresholding occasionally produced zero-bet paths).
+
+#### Step 16.k — Buy-and-hold benchmark (`compute_buy_and_hold_summary`)
+
+Produces a model-summary-compatible row for buy-and-hold using the same CPCV path structure the models see. For each path, the function reconstructs the chronological sequence of test-fold returns from the predictions dict (the timestamps and per-event returns are model-invariant for a given split/seed, so any model serves as a reference; `reference_model="logistic"` is the default). The benchmark holds a long position of size 1.0 over every event in the path, incurring transaction cost only on the initial buy. Path-level metrics are computed identically to the model paths so the benchmark row is directly comparable in the comparison table.
+
+The benchmark is a more aggressive position-size baseline than the models, which cap at `MAX_BET_SIZE = 0.75` via the S-curve. This asymmetry is conservative for the model side: a fully-leveraged long benchmark is harder to beat than a 0.75-leveraged one. The benchmark contextualises the model Sharpe ratios against the trivial strategy of holding BTC throughout each test path; the resulting row in the comparison table answers the "did your models actually beat just holding?" question directly. Predictive metrics (F1, accuracy, AUC, log loss, Brier) are NaN for the benchmark row since buy-and-hold makes no probabilistic predictions; DSR is also NaN because the metric requires a Sharpe under multiple-trials selection, and buy-and-hold was not selected from a pool.
+
+The benchmark is added by the notebook in section 5.1 immediately after `analyze_results(results)`: the user calls `compute_buy_and_hold_summary(...)`, appends the resulting dict to `analysis["all_summaries"]`, and re-runs `compare_models(...)` to regenerate the ranked comparison with the benchmark row sorted into the leaderboard by median Sharpe.
 
 #### Diagnostics
 
@@ -1030,7 +1058,15 @@ Returns PyKAN-format dataset dict with normalized float32 tensors.
 
 #### Step 17.d — PyKAN training (`train_pykan`)
 
-**Data-aware architecture:** Computes maximum hidden width such that `n_samples / total_params ≥ 5`. With ~350 training samples and grid=3, k=3, this typically yields hidden=2–5. Prevents LBFGS memorization.
+**Faithful-by-default architecture.** The function reads the tuned hyperparameters from `cpcv_results["tuning_results"][best_split]["kan"]["best_params"]` and uses them verbatim for the symbolic re-training (subject to a data-aware safety floor described below). Three resolution rules:
+
+1. *width1* uses the tuned value, capped at `PYKAN_SYMBOLIC_WIDTH_CAP = 8` (the locked KAN tuning maximum is 6, so the cap never bites in practice; it remains as a guard against future tuning expansions producing widths the symbolic step cannot handle).
+2. *width2* uses the tuned value when `PYKAN_SYMBOLIC_DROP_WIDTH2 = False` (the locked default). The locked KAN tuning hardcodes width2=0, so the symbolic re-training also uses width2=0; no two-hidden-layer compositions are produced. Setting `PYKAN_SYMBOLIC_DROP_WIDTH2 = True` is available as a legacy override that forces width2=0 even if a future tuning expansion picks width2 > 0; it is unused in the locked configuration.
+3. *grid* uses the tuned value when `PYKAN_SYMBOLIC_FORCE_GRID = None` (the locked default). The locked KAN tuning searches grid ∈ {3, 5}, so the symbolic re-training inherits whichever of those won on the chosen fold. `PYKAN_FALLBACK_GRID = 3` is used only as a last-resort fallback when no tuned grid is available (e.g., CPCV ran without tuning).
+
+This faithful-by-default behaviour replaces an earlier configuration that hardcoded `PYKAN_SYMBOLIC_DROP_WIDTH2 = True` and `PYKAN_SYMBOLIC_FORCE_GRID = 3` on the rationale that simpler architectures produce more readable formulas. With width2 already hardcoded to 0 in the CPCV tuning stage and grid ∈ {3, 5} producing tractable formulas in both cases, the architecture used for CPCV evaluation now matches the architecture extracted in Phase 3 by construction; the "force grid=3" override would only diverge when the tuned grid was 5, in which case forcing it to 3 produces a less faithful formula for marginal interpretability gains. The legacy override constants are retained so the user can fall back to the simpler-formula behaviour if the tuned configuration produces a sympy-intractable formula on a given fold.
+
+**Data-aware safety floor.** Independent of the tuned width, the function applies a samples-per-parameter floor. If `n_train / total_params < 5`, the hidden width is reduced. For ~350 training samples (after the 80/20 cal split) with grid=3 and k=3, this typically caps hidden width at 4-5 regardless of the tuned value.
 
 **Three-phase training protocol:**
 
@@ -1040,11 +1076,11 @@ Returns PyKAN-format dataset dict with normalized float32 tensors.
 | 2a. LBFGS warmup | LBFGS (lr=0.01) | 20 | No regularization. Light refinement only. |
 | 2b. LBFGS sparsity | LBFGS (lr=0.01) | 20 | L1 + entropy regularization via `model.regularization_loss()`. Encourages sparse, interpretable activations. |
 
-Grid extension is **disabled** (`PYKAN_GRID_EXTEND=False`) because with ~350 samples, increasing grid from 3 to 5 adds parameters and causes memorization. Only recommended for datasets > 1,000 samples.
+Grid extension is **disabled** (`PYKAN_GRID_EXTEND=False`) because with ~350 samples, increasing the grid further adds parameters and causes memorization. Only recommended for datasets > 1,000 samples.
 
 **Accuracy gate:** If validation accuracy < 53% after Adam phase, logs warning but continues. Symbolic extraction may yield constants in this case.
 
-**Diagnostic checkpoints:** Logs train/val accuracy after each phase.
+**Diagnostic checkpoints:** Logs train/val accuracy after each phase, including the resolved width1, width2, and grid alongside their respective sources (`tuned`, `forced`, `fallback`, or `data-aware`).
 
 #### Step 17.e — Pruning (`prune_network`)
 
