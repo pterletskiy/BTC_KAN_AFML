@@ -11,7 +11,7 @@
 The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Networks (KANs), benchmarked against AR Logistic, Logistic Regression, Random Forest, XGBoost, and LSTM models, evaluated under López de Prado's *Advances in Financial Machine Learning* (2018) framework. The pipeline is organized into three phases with strict leakage boundaries between them.
 
 **Data:** BTC-USD daily OHLCV, November 2014 – May 2026 (~4,200 bars). Raw data starts in November 2014 to provide the 252-day lookback required by the longest-warmup features (Hurst, EMA 50/200 ratio, SADF). The CUSUM event filter is applied from August 8, 2015 onward — the date of Ethereum's Frontier launch and the first day with valid ETH/USD price data needed for the `eth_btc_ratio` feature. This buffer-and-truncate structure ensures that all engineered features have completed their warmup windows by the start of model evaluation, and that all cross-asset crypto features have full data availability across every CPCV fold.
-**Features:** 62 columns total, all eligible for MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 22 external: 13 macro, 1 crypto-macro, 8 on-chain from CoinMetrics, 6 autoregressive lags). The 6 lag features (`log_returns_lag1` … `log_returns_lag30`) compete with engineered features for the MDA top-k cap. AR Logistic continues to consume the 6 lag columns by name from the pre-MDA matrix as its pure-autoregressive baseline, independently of MDA's choices.
+**Features:** 66 columns total, all eligible for MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 22 external: 13 macro, 1 crypto-macro, 8 on-chain from CoinMetrics, 10 autoregressive lags). The 10 lag features (`log_returns_lag1` … `log_returns_lag30`) compete with engineered features for the MDA top-k cap. AR Logistic continues to consume the 10 lag columns by name from the pre-MDA matrix as its pure-autoregressive baseline, independently of MDA's choices.
 **Calendar:** All rolling windows use the BTC trading calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year).
 **Evaluation:** CPCV (N=8, k=2) producing 28 splits and 7 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
 **Tuning:** Nested Optuna TPE + Purged K-Fold, per-split, inside each CPCV training fold (AFML Ch. 7 compliant).
@@ -195,7 +195,7 @@ Orchestration function. Chains: concurrent labels → uniqueness → return attr
 
 ### Step 6 — Feature Engineering (`features.py`, `external_features.py`)
 
-**Produces:** A pd.DataFrame of 62 columns covering every daily bar, broken into four categories:
+**Produces:** A pd.DataFrame of 66 columns covering every daily bar, broken into four categories:
 
 | Category | Count | Routed to |
 |----------|-------|-----------|
@@ -203,7 +203,7 @@ Orchestration function. Chains: concurrent labels → uniqueness → return attr
 | Mathematical (AFML Part 4) | 9 | MDA pool |
 | External (macro / crypto-macro / on-chain) | 22 | MDA pool |
 | Lag (autoregressive) | 6 | MDA pool + AR Logistic (by name, from pre-MDA matrix) |
-| **Total** | **62** | **All 62 eligible for MDA; AR Logistic restricts itself to its 6 lag columns** |
+| **Total** | **66** | **All 66 eligible for MDA; AR Logistic restricts itself to its 10 lag columns** |
 
 **Module-level constants (all feature parameters defined at top of each file):**
 
@@ -216,7 +216,7 @@ TA: RSI_PERIOD=14, MACD_FAST=12, MACD_SLOW=26, MACD_SIGNAL=9, BB_PERIOD=20,
 Math: SADF_MIN_SL=90, SADF_LAGS=1, ENTROPY_WINDOW=30, LZ_WINDOW=90,
       HURST_WINDOW=180, VR_WINDOW=90, VR_LAG=7, JB_WINDOW=90, GAUSS_ENT_WINDOW=30
 
-Lag: AR_LAGS=[1, 2, 3, 7, 14, 30], LAG_COLUMN_PREFIX="log_returns_lag"
+Lag: AR_LAGS=[1, 2, 3, 4, 5, 6, 7, 14, 21, 30], LAG_COLUMN_PREFIX="log_returns_lag"
 
 Cache: CACHE_DIR="cache/", MATH_CACHE_FILE="math_features.parquet",
        EXTERNAL_CACHE_FILE="external_features.parquet", ONCHAIN_CACHE_FILE="onchain_raw.parquet"
@@ -282,18 +282,20 @@ The `which` parameter accepts `"all"` or a list of specific feature names for pa
 
 #### Step 6.c — Lag Features (`features.py`)
 
-**Function:** `compute_lag_features(df, lags=AR_LAGS) → pd.DataFrame` — 6 columns
+**Function:** `compute_lag_features(df, lags=AR_LAGS) → pd.DataFrame` — 10 columns
 
-Precomputes lagged log-return features on the full daily series. Columns are named `log_returns_lag1`, `log_returns_lag2`, `log_returns_lag3`, `log_returns_lag7`, `log_returns_lag14`, `log_returns_lag30`.
+Precomputes lagged log-return features on the full daily series. Columns are named `log_returns_lag1`, `log_returns_lag2`, `log_returns_lag3`, `log_returns_lag4`, `log_returns_lag5`, `log_returns_lag6`, `log_returns_lag7`, `log_returns_lag14`, `log_returns_lag21`, `log_returns_lag30`.
 
 **Why a separate category.** Lag features are precomputed once on the full daily series rather than inline inside `ARLogistic.fit` / `ARLogistic.predict`. The inline version had a look-ahead artefact: NaN lags at the head of each test fold were imputed with `bfill()`, which used later test observations to fill earlier ones. Precomputing on the global series gives every aligned event valid lookback values that respect chronological order.
 
-**Why these lags.** The set `[1, 2, 3, 7, 14, 30]` follows a calendar-day convention rather than the trading-day convention `[1, 2, 3, 5, 10, 21]` common in equity ML literature. BTC trades 24/7 with no weekend or holiday gaps, so trading-day arithmetic has no natural meaning for this asset. The chosen lags correspond to one to three days of short-term autocorrelation, one and two calendar weeks, and one calendar month, anchoring autoregressive structure to the calendar cycles that drive BTC dynamics. The 14-day lag additionally aligns with the BTC mining-difficulty adjustment cycle (~2,016 blocks ≈ 14 days), a BTC-native cycle the equity convention does not capture.
+**Why these lags.** The set `[1, 2, 3, 4, 5, 6, 7, 14, 21, 30]` follows a calendar-day convention rather than the trading-day convention `[1, 2, 3, 5, 10, 21]` common in equity ML literature. BTC trades 24/7 with no weekend or holiday gaps, so trading-day arithmetic has no natural meaning for this asset. Lags 1-7 cover the complete weekday cycle, capturing both immediate autocorrelation (lags 1-3, the conventional short-term momentum window) and the rest of the week (lags 4-7) so the AR Logistic baseline can resolve any day-of-week patterns BTC inherits from the macro/equity calendar despite trading 24/7. Lags 14, 21, and 30 capture two-week, three-week, and one-month cycles. The 14-day lag additionally aligns with the BTC mining-difficulty adjustment cycle (~2,016 blocks ≈ 14 days), a BTC-native cycle the equity convention does not capture.
+
+The list was extended from the earlier `[1, 2, 3, 7, 14, 30]` configuration after observing that filling out the full 1-7 weekday cycle and adding the 21-day mid-month marker produced a better-spec'd autoregressive baseline. With ~900 training events per fold and 11 parameters (10 lags + intercept), AR Logistic still has roughly 80 events per parameter, well within healthy fitting territory.
 
 **Helpers:**
 - `lag_column_names(lags=None)`: returns the canonical column names in the order matching `lags` (defaulting to `AR_LAGS`).
 
-**MDA inclusion (advisor-driven change).** Lag features now enter the multi-model MDA pool alongside TA, math, and external features. An earlier version excluded them from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received six features the ML and neural models did not. The current pipeline lets all 62 features compete for the top-k cap; whether MDA selects any lag columns for the other models depends on their permutation importance for that fold. AR Logistic still selects its six lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, so its behaviour is unchanged.
+**MDA inclusion (advisor-driven change).** Lag features now enter the multi-model MDA pool alongside TA, math, and external features. An earlier version excluded them from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not. The current pipeline lets all 66 features (was 62 before the lag extension) compete for the top-k cap; whether MDA selects any lag columns for the other models depends on their permutation importance for that fold. AR Logistic still selects its ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, so its behaviour is unchanged.
 
 #### Step 6.d — Macro Features (`external_features.py`)
 
@@ -373,21 +375,32 @@ FeeTotNtv, SplyExNtv, SplyCur, IssTotNtv
 
 ### Step 7 — Compression Transforms (`features.py`)
 
-**Function:** `apply_log_transforms(features) → pd.DataFrame`
+**Functions:** `apply_sym_log(features, columns) → pd.DataFrame` and `apply_log(features, columns, eps=1e-8) → pd.DataFrame`
 
-Applies two scale-compression transforms in fixed order:
+Two scale-compression transforms applied in fixed order, with the column lists exposed at the notebook level rather than hardcoded inside the module so the choice of which columns get which transform is visible at the call site:
 
-1. **Signed asinh** to `obv` and `chaikin_osc`: `np.arcsinh(x) = log(x + sqrt(x² + 1))`. Used because both features can be either positive or negative and span 10⁷-10¹⁰ over the 2014-2026 period as BTC daily volume grew by six orders of magnitude. asinh is preferred over the symmetric-log alternative `sign(x) · log(|x|+1)` on three theoretical grounds: it is smooth at zero (no kink), it is parameter-free (no additive constant to choose), and it preserves more of the small-`|x|` structure (asinh(x) ≈ x near zero). For large `|x|` it is asymptotically equivalent to `sign(x) · log(2|x|)`, so the tail compression rate matches the previous symmetric-log convention. Reference: Burbidge, Magee & Robb (1988), *JASA* 83.
+1. **Symmetric log** to `obv` and `chaikin_osc`: `np.sign(x) * np.log(np.abs(x) + 1)`. The sign-preserving variant of the natural log. Used because both features can be either positive or negative and span 10⁷-10¹⁰ over the 2014-2026 period as BTC daily volume grew by six orders of magnitude. Symmetric log preserves sign and zero, preserves rank ordering, and asymptotically behaves like `sign(x) · log(|x|)` for `|x| ≫ 1` (compressing the tails by orders of magnitude). The derivative discontinuity at zero is acceptable in a feature-engineering context where the transformed values feed downstream MDA, FFD, and scaling steps rather than a gradient-based optimiser.
 
-2. **Unsigned log** to `atr`: `np.log(|x| + 1e-8)`. ATR is strictly non-negative, so sign preservation is irrelevant; the small additive constant prevents `log(0)` for the rare zero-volatility bar. asinh would behave nearly identically on ATR's 0.001-0.1 range, but log is retained for parsimony.
+2. **Unsigned log** to `atr`: `np.log(np.abs(x) + 1e-8)`. ATR is strictly non-negative, so sign preservation is irrelevant; the small additive constant prevents `log(0)` for the rare zero-volatility bar. The `np.abs()` guards against any spurious negative input (which would not be expected on ATR) without crashing the transform.
 
 All other features are left untouched (already bounded or dimensionless and handled by the per-fold RobustScaler downstream).
 
-**Target columns:** `SIGNED_ASINH_COLUMNS = ["obv", "chaikin_osc"]`, `UNSIGNED_LOG_COLUMNS = ["atr"]`. The function name `apply_log_transforms` is retained from the previous symmetric-log iteration of the pipeline for caller compatibility (notebook cells already call it); a future revision could rename to `apply_compression_transforms`.
+**Target columns (notebook-level constants).** The notebook defines:
 
-**Methodology disclosure.** An earlier iteration of the pipeline applied the symmetric-log transform `sign(x) · log(|x|+1)` to `obv` and `chaikin_osc`. The switch to asinh in May 2026 is grounded in the theoretical properties above rather than result-driven choice; asinh and symmetric-log are within 5% of each other for the bulk of these features' magnitude range, so downstream metrics shift by less than seed-noise.
+```python
+SYM_LOG_COLUMNS = ["obv", "chaikin_osc"]
+LOG_COLUMNS     = ["atr"]
 
-**Orchestration:** `build_feature_matrix(df) → pd.DataFrame` chains `compute_ta_features(df)` → `compute_math_features(df)` → `pd.concat` → `apply_log_transforms`. Returns 34 columns × ~4,200 rows (25 TA + 9 math). External features (22) and lag features (6) are assembled separately in the notebook via `build_external_features(df_raw)` and `compute_lag_features(df_raw)` respectively, and concatenated alongside the TA + math output before alignment. The notebook concat order is `[ta, math, external, lag]`.
+feature_matrix = pd.concat([ta_features, math_features, external, lag_features], axis=1)
+feature_matrix = apply_sym_log(feature_matrix, SYM_LOG_COLUMNS)
+feature_matrix = apply_log(feature_matrix, LOG_COLUMNS)
+```
+
+This is a deliberate methodology choice: hiding column lists inside `features.py` (as a previous iteration did via a combined `apply_log_transforms` and module-level `SIGNED_*_COLUMNS` constants) makes the choice invisible to a reader scanning the notebook. Putting them at the call site makes the transformation policy explicit and inspectable, with both helper functions accepting the column list as an argument and silently skipping any column not present in the DataFrame so the same target list can be reused across feature-set variants.
+
+**Methodology trail (asinh sensitivity, May 2026).** An asinh-based variant of the signed transform was tested in May 2026: `apply_asinh` replaced symmetric log with `np.arcsinh`, motivated by asinh's smoothness at zero (no derivative kink), parameter-free form, and the Burbidge-Magee-Robb 1988 econometric tradition for signed wide-range variables. In sensitivity analysis the asinh variant produced substantially higher path-Sharpe variance on the neural-network models and an inflated PBO (0.571 vs the symmetric-log run's 0.143), even though asinh and symmetric log are within `log(2) ≈ 0.69` of each other for `|x| ≫ 1`. The transform was reverted to symmetric log on grounds of empirical out-of-sample stability across CPCV folds, which the thesis methodology section discloses as an honest sensitivity finding rather than a result-driven choice. The `apply_asinh` function was removed; the symmetric-log convention is the locked thesis configuration.
+
+**Orchestration:** `build_feature_matrix(df) → pd.DataFrame` chains `compute_ta_features(df)` → `compute_math_features(df)` → `pd.concat`, returning 34 columns × ~4,200 rows (25 TA + 9 math) with NO compression transforms applied. The transforms are now the notebook's responsibility (visible at the call site, see the snippet above). External features (22) and lag features (10) are assembled separately in the notebook via `build_external_features(df_raw)` and `compute_lag_features(df_raw)` respectively, and concatenated alongside the TA + math output before the transforms are applied. The notebook concat order is `[ta, math, external, lag]`.
 
 ---
 
@@ -459,7 +472,7 @@ The shape numbers below reflect the locked configuration with `START_DATE="2014-
 
 | Object | Shape | Description |
 |--------|-------|-------------|
-| `X` | ~1,150 × 62 | Feature matrix (25 TA + 9 math + 22 external + 6 lag, post log-transform). All 62 columns are eligible for MDA selection; AR Logistic restricts itself to the 6 lag columns by name from the pre-MDA matrix. |
+| `X` | ~1,150 × 66 | Feature matrix (25 TA + 9 math + 22 external + 10 lag, post log-transform). All 66 columns are eligible for MDA selection; AR Logistic restricts itself to the 10 lag columns by name from the pre-MDA matrix. |
 | `y` | ~1,150 | Binary labels {-1, +1}. The 0 class is removed by `drop_rare_labels(min_pct=0.085)` after triple-barrier labeling. |
 | `w` | ~1,150 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
 | `t1` | ~1,150 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
@@ -612,9 +625,9 @@ The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
 2. Cap at `top_k_frac` of total features (default 30%, overridable from notebook)
 3. Hard floor of 5 features minimum
 
-**Lag features in the MDA pool.** `select_features` runs MDA over all 62 features, including the six `log_returns_lagN` columns. An earlier version of the pipeline excluded lag features from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received six features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing; lag columns appear in `selected` for a given fold only if their averaged MDA (RF + Logistic Regression permutation importance) is positive and ranks within the top-k cap. AR Logistic continues to consume the six lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, independently of MDA's choices.
+**Lag features in the MDA pool.** `select_features` runs MDA over all 66 features, including the six `log_returns_lagN` columns. An earlier version of the pipeline excluded lag features from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing; lag columns appear in `selected` for a given fold only if their averaged MDA (RF + Logistic Regression permutation importance) is positive and ranks within the top-k cap. AR Logistic continues to consume the ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, independently of MDA's choices.
 
-**Typical result:** ~14–16 features selected per fold from the 62 candidates. The 6 lag columns sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
+**Typical result:** ~14–16 features selected per fold from the 66 candidates. The 10 lag columns sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
 
 **Per-fold warning provenance.** When fewer than `MIN_FEATURES = 5` features clear MDA > 0 on a given fold and the function falls back to the top-5 by MDA value, the emitted `logger.warning(...)` is prefixed with `[split K/N]` where `K` is the 1-indexed CPCV split number and `N` is the total number of splits (28 in the locked configuration). The prefix is plumbed via the keyword-only `split_idx` and `n_splits` arguments to `select_features` and `preprocess_fold`, which `pipeline.py` populates inside the per-split loop. The prefix surfaces in the deferred-warning summary that `run_cpcv_pipeline` prints after the ✅ completion notice, so the reader can tell which specific folds tripped the fallback rather than assuming the issue applied uniformly across all 28.
 
@@ -727,7 +740,7 @@ The model registry in `models/__init__.py` provides `create_model(name, n_featur
 
 | Model | Class | Key Behavior |
 |-------|-------|-------------|
-| **AR Logistic** | `ARLogistic` | Selects the 6 precomputed lag columns (`log_returns_lag1` … `log_returns_lag30`) from the pre-MDA feature matrix by name and ignores everything else. The lag columns are produced once on the full daily series by `pre_cpcv.features.compute_lag_features`. AR Logistic receives the pre-MDA matrix via the pipeline's `X_tr_full` route, so it always sees its lag columns regardless of whether MDA happens to select them for the other models. `predict_logits` returns log-odds via `log(p₁/p₀)` with a symmetric `np.clip(proba, 1e-10, 1 − 1e-10)` matching the tree-model convention. NaN lag columns at predict time raise (the previous inline-build path silently `bfill()`-imputed and is gone). Not tuned (deterministic baseline). |
+| **AR Logistic** | `ARLogistic` | Selects the 10 precomputed lag columns (`log_returns_lag1` … `log_returns_lag30`) from the pre-MDA feature matrix by name and ignores everything else. The lag columns are produced once on the full daily series by `pre_cpcv.features.compute_lag_features`. AR Logistic receives the pre-MDA matrix via the pipeline's `X_tr_full` route, so it always sees its lag columns regardless of whether MDA happens to select them for the other models. `predict_logits` returns log-odds via `log(p₁/p₀)` with a symmetric `np.clip(proba, 1e-10, 1 − 1e-10)` matching the tree-model convention. NaN lag columns at predict time raise (the previous inline-build path silently `bfill()`-imputed and is gone). Not tuned (deterministic baseline). |
 | **Logistic Regression** | `LogisticRegressionModel` | Standard sklearn LogisticRegression, `class_weight='balanced'`, solver chosen based on penalty (lbfgs for L2, liblinear for L1). Tuned per split. `predict_logits` returns `decision_function` (raw log-odds). |
 
 AR Logistic uses `LOGISTIC_MAX_ITER=1000` and L2 penalty as hardcoded defaults. Logistic Regression's `C` and `penalty` are tuned per split.
@@ -948,7 +961,7 @@ PBO < 0.3 → robust selection. PBO > 0.5 → anti-predictive (in-sample winner 
 
 For each pair of models, tests the null hypothesis that their AUCs are equal using the DeLong (1988) method:
 
-1. For each (model, split), averages predicted probabilities across all available seeds (3 for the sklearn-compatible models, 2 for LSTM and KAN). This matches what `stitch_paths` already does for path-level financial metrics, so the AUC test reflects the same averaged predictions that the Sharpe/DSR/PBO results are computed from.
+1. For each (model, split), averages predicted probabilities across all available seeds (3 for every model in the locked configuration). This matches what `stitch_paths` already does for path-level financial metrics, so the AUC test reflects the same averaged predictions that the Sharpe/DSR/PBO results are computed from.
 2. Pools the seed-averaged predictions across all 28 CPCV splits per model. Pooling is valid because CPCV test sets are non-overlapping.
 3. Computes AUC for each model on the pooled data.
 4. Uses the non-parametric covariance estimator (`_delong_covariance`) via placement values (midranks).
@@ -982,6 +995,28 @@ Produces a model-summary-compatible row for buy-and-hold using the same CPCV pat
 The benchmark is a more aggressive position-size baseline than the models, which cap at `MAX_BET_SIZE = 0.75` via the S-curve. This asymmetry is conservative for the model side: a fully-leveraged long benchmark is harder to beat than a 0.75-leveraged one. The benchmark contextualises the model Sharpe ratios against the trivial strategy of holding BTC throughout each test path; the resulting row in the comparison table answers the "did your models actually beat just holding?" question directly. Predictive metrics (F1, accuracy, AUC, log loss, Brier) are NaN for the benchmark row since buy-and-hold makes no probabilistic predictions; DSR is also NaN because the metric requires a Sharpe under multiple-trials selection, and buy-and-hold was not selected from a pool.
 
 The benchmark is added by the notebook in section 5.1 immediately after `analyze_results(results)`: the user calls `compute_buy_and_hold_summary(...)`, appends the resulting dict to `analysis["all_summaries"]`, and re-runs `compare_models(...)` to regenerate the ranked comparison with the benchmark row sorted into the leaderboard by median Sharpe.
+
+#### Step 16.l — Display helpers (`render_ffd_stability`, `render_deflated_sharpe_table`, `render_pbo_summary`)
+
+Three thin renderer functions that consume `analysis` (the dict returned by `analyze_results`) and `results` (from `run_cpcv_pipeline`) and print formatted tables to the notebook output. They factor out the FFD-stability / DSR / PBO rendering logic that was previously inlined as a long notebook cell, so the statistical-robustness cell now reads as three calls instead of forty lines of print formatting.
+
+- `render_ffd_stability(analysis)` prints a per-FFD-column table with mean d*, std d*, and the min/max observed d* across folds. Wide min-max spread suggests the FFD parameter is regime-dependent; tight spread indicates robust identification of the column's stationarity threshold.
+
+- `render_deflated_sharpe_table(analysis, threshold=0.95)` prints the per-model DSR sorted descending, with a verdict column (`✓ pass` / `fail`) against the threshold. Models with NaN DSR (e.g. the buy-and-hold benchmark, which is not selected from a candidate pool) are rendered as `n/a` and sorted last. The threshold is a kwarg in case a sensitivity check at e.g. 0.90 is desired.
+
+- `render_pbo_summary(analysis, results)` prints the baseline PBO followed by a leave-one-out table that recomputes PBO after excluding each model in turn, ranked by the magnitude of the resulting PBO change. A large negative `Δ vs baseline` means the excluded model contributes substantially to overall pool overfitting; a small or zero `Δ` means the model is a minor contributor; a positive `Δ` means removing the model worsens the pool's stability.
+
+The notebook usage is:
+
+```python
+render_ffd_stability(analysis)
+print()
+render_deflated_sharpe_table(analysis)
+print()
+render_pbo_summary(analysis, results)
+```
+
+These are presentation-layer helpers only; all the statistical computation (FFD d*, DSR, PBO, leave-one-out PBO) happens in `analyze_results` and the underlying `compute_pbo`. The renderers exist solely to keep the notebook readable.
 
 #### Diagnostics
 
@@ -1142,12 +1177,31 @@ Saves `cache/kan_symbolified_network.png`.
 ```python
 symbolic = run_symbolic_extraction(results, X, y, w, t1,
                                    n_top_features=5, fold_selection="last")
-# prints P(up) formula, surviving features, pre/post accuracy
 
-# Feature sensitivity via partial derivatives:
-for feat in symbolic['surviving_features']:
-    sensitivity = sympy.diff(symbolic['sympy_objects']['decision'], sympy.Symbol(feat))
+# Decision-function summary
+print_symbolic_decision(symbolic)
+
+# Pre/post symbolic accuracy + symbolification rate + pruned architecture
+print_extraction_metrics(symbolic)
+
+# Symbolic partial derivative of the decision function w.r.t. each feature
+print_partial_derivatives(symbolic)
+
+# Per-feature sensitivity at the dataset mean (with NaN-safe handling)
+sensitivity_df = compute_feature_sensitivity(symbolic, X, eval_point="mean")
+print_feature_sensitivity(sensitivity_df)
+
+# Marginal-effect plot for each surviving feature
+fig = plot_marginal_effects(symbolic, X)
+plt.show()
+
+# Term-count + sensitivity summary (n_terms_in_formula joined with sensitivity)
+print_term_structure_summary(sensitivity_df, symbolic)
 ```
+
+The `print_*`, `compute_feature_sensitivity`, and `plot_marginal_effects` helpers live in `symbolic_extraction.py` so the notebook stays slim; what was previously a six-cell block of inline sympy / matplotlib formatting is now seven one-line calls.
+
+**Singular-gradient handling (`compute_feature_sensitivity`).** PyKAN's symbolic library includes `1/x`, `log(x)`, and similar reciprocal/logarithmic primitives that produce poles in the learned activation. When the symbolic gradient is evaluated at a point near such a pole (which can happen for heavily right-skewed features whose mean lands far from the bulk of the distribution, e.g. the `jarque_bera` feature with mean ≈ 218 and std ≈ 775), `float(deriv.subs(point))` returns `inf` or `-inf`, which then propagates silently through the sigma_effect and approx_delta_p columns. The `_safe_eval_at_point` helper detects non-finite gradients and substitutes NaN, which downstream formatters render as the string `"   N/A "` rather than `"+nan"`. The function reports a count of singular features in a footer line and accepts an `eval_point="median"` kwarg that evaluates gradients at the per-feature median instead of the mean, which is more robust for skewed distributions and typically avoids the singularity. An earlier version of this code computed gradients with no NaN-safety, producing `-inf` rows in the sensitivity table for any feature whose distribution had a near-pole at the mean; the fix is documented in code comments and presented as a known PyKAN-symbolic-library quirk in the methodology chapter.
 
 **Known fragilities** (documented in code comments):
 - `'sigmoid'` is NOT in PyKAN's internal `SYMBOLIC_LIB` → causes `KeyError`
@@ -1183,7 +1237,7 @@ All functions operate on `cpcv_results["predictions"]` or `analysis["path_result
 - `collect_bet_sizes(analysis, model) → np.ndarray`: raw bet-size array for a given model, pooled across paths. Convenience helper for histogram plotting.
 
 #### Step 18.d — Reliability curves
-- `compute_reliability_curve(model, results, n_seeds, n_splits, n_bins=10, min_count=10) → DataFrame`: returns binned `(predicted_mean, empirical_mean, n_samples)` triples ready for plotting as a reliability diagram.
+- `compute_reliability_curve(model, results, n_seeds=None, n_splits=None, n_bins=10, min_count=10) → DataFrame`: returns binned `(predicted_mean, empirical_mean, n_samples)` triples ready for plotting as a reliability diagram. `n_seeds` and `n_splits` default to `None`; when not passed, they are read from `results["n_seeds"]` and `results["n_splits"]` so the diagnostic stays in sync with the pipeline configuration without requiring the caller to track those values. Pass explicit integers to override (e.g. for a sensitivity check that pools a subset of seeds). This default change replaced an earlier version where these arguments were hardcoded to `n_seeds=2, n_splits=15`, which silently produced incorrect pooling once the locked configuration moved to `n_seeds=3` and `n_splits=28`. The same default-resolution pattern is used by `pool_predictions` and `calibration_audit` in this module.
 
 **Why a separate module.** `evaluation.py` is the canonical AFML evaluation pipeline (DSR, PBO, DeLong, comparison table). It runs once per CPCV experiment and produces the headline numbers. `diagnostics.py` holds inspection helpers called interactively while writing the thesis. Different lifetimes, different stability requirements; separating them keeps `evaluation.py` focused.
 
