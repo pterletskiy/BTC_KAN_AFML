@@ -5,11 +5,27 @@ Fetch, cache, and align external data sources to BTC's daily calendar.
 
 Features are organized into three groups:
 
-Macro (13):
+Macro (20):
   Traditional finance signals reflecting the broader economic environment.
   dxy_roc_30, us2y, us10y, yield_curve_2y10y, yield_curve_10y30y, vix,
-  sp500_ret_30, nasdaq_ret_30, gold_ret_30, silver_ret_30, copper_ret_30,
-  oil_ret_30, natgas_ret_30
+  sp500_ret_30, sp500_ret_14, nasdaq_ret_30, nasdaq_ret_14,
+  gold_ret_30, gold_ret_14, silver_ret_30, silver_ret_14,
+  copper_ret_30, copper_ret_14, oil_ret_30, oil_ret_14,
+  natgas_ret_30, natgas_ret_14
+
+  The seven faster-moving assets (sp500, nasdaq, gold, silver, copper,
+  oil, natgas) are exposed at both 30-day and 14-day return horizons so
+  MDA can pick whichever the per-fold permutation importance prefers.
+  The 14-day variant captures bi-weekly cycles and is more responsive
+  to recent news/macro shocks; the 30-day variant captures monthly
+  cycles and is smoother. Slow-moving variables (DXY, yields, yield
+  curves) keep the 30-day window only because their information content
+  is dominated by monthly settlement and release cycles where a 14-day
+  variant adds noise without signal. The 14d/30d pairs of the same
+  asset are correlated (typically r > 0.7); MDA's permutation-importance
+  scheme handles correlated features by spreading importance across them
+  or, in some folds, dropping the redundant one entirely. Either outcome
+  is acceptable; the methodology is "let MDA decide".
 
 Crypto-Macro (1):
   Market-level cross-crypto signal (not blockchain fundamentals).
@@ -20,7 +36,7 @@ On-Chain (8):
   active_addr_roc_14, tx_count_roc_14, hashrate_roc_30, mvrv,
   net_exchange_flow, fee_per_tx, exchange_supply_pct, issuance_ntv
 
-Total: 22 external features.
+Total: 29 external features.
 
 All external data is forward-filled to BTC's trading calendar via
 pd.merge_asof(direction='backward') so that each BTC day uses the
@@ -58,8 +74,17 @@ MACRO_TICKERS = {
     "natgas": "NG=F",         # Natural gas futures
 }
 
-# rolling return period (~1 crypto month)
-RET_WINDOW = 30
+# Rolling return windows. Both horizons are computed for the seven
+# faster-moving assets (sp500, nasdaq, gold, silver, copper, oil,
+# natgas) so that MDA decides per fold which horizon is more
+# informative. The 14-day window captures bi-weekly cycles and is
+# more responsive to recent macro/news shocks; the 30-day window
+# captures monthly cycles and is smoother. Slow-moving variables
+# (DXY, yields, yield curves) use the 30-day window only because
+# their information content is dominated by monthly settlement and
+# release cycles where a 14-day variant adds noise without signal.
+RET_WINDOW = 30        # ~1 crypto month
+RET_WINDOW_SHORT = 14  # ~2 crypto weeks
 
 # CoinMetrics metrics to fetch (daily, community tier)
 COINMETRICS_METRICS = [
@@ -363,33 +388,40 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     # 6. VIX (level)
     features["vix"] = aligned["vix"]
 
-    # 7. S&P 500 rolling 30-day log return
+    # 7. S&P 500 rolling log returns (30-day and 14-day; MDA picks per fold)
     sp500 = aligned["sp500"]
     features["sp500_ret_30"] = np.log(sp500 / sp500.shift(RET_WINDOW))
+    features["sp500_ret_14"] = np.log(sp500 / sp500.shift(RET_WINDOW_SHORT))
 
-    # 8. Nasdaq rolling 30-day log return
+    # 8. Nasdaq rolling log returns (30-day and 14-day)
     nasdaq = aligned["nasdaq"]
     features["nasdaq_ret_30"] = np.log(nasdaq / nasdaq.shift(RET_WINDOW))
+    features["nasdaq_ret_14"] = np.log(nasdaq / nasdaq.shift(RET_WINDOW_SHORT))
 
-    # 9. Gold rolling 30-day log return
+    # 9. Gold rolling log returns (30-day and 14-day)
     gold = aligned["gold"]
     features["gold_ret_30"] = np.log(gold / gold.shift(RET_WINDOW))
+    features["gold_ret_14"] = np.log(gold / gold.shift(RET_WINDOW_SHORT))
 
-    # 10. Silver rolling 30-day log return
+    # 10. Silver rolling log returns (30-day and 14-day)
     silver = aligned["silver"]
     features["silver_ret_30"] = np.log(silver / silver.shift(RET_WINDOW))
+    features["silver_ret_14"] = np.log(silver / silver.shift(RET_WINDOW_SHORT))
 
-    # 11. Copper rolling 30-day log return
+    # 11. Copper rolling log returns (30-day and 14-day)
     copper = aligned["copper"]
     features["copper_ret_30"] = np.log(copper / copper.shift(RET_WINDOW))
+    features["copper_ret_14"] = np.log(copper / copper.shift(RET_WINDOW_SHORT))
 
-    # 12. Oil rolling 30-day log return
+    # 12. Oil rolling log returns (30-day and 14-day)
     oil = aligned["oil"]
     features["oil_ret_30"] = np.log(oil / oil.shift(RET_WINDOW))
+    features["oil_ret_14"] = np.log(oil / oil.shift(RET_WINDOW_SHORT))
 
-    # 13. Natural gas rolling 30-day log return
+    # 13. Natural gas rolling log returns (30-day and 14-day)
     natgas = aligned["natgas"]
     features["natgas_ret_30"] = np.log(natgas / natgas.shift(RET_WINDOW))
+    features["natgas_ret_14"] = np.log(natgas / natgas.shift(RET_WINDOW_SHORT))
 
     n_valid = features.notna().all(axis=1).sum()
     logger.info("Macro features: %d columns, %d/%d rows fully valid.",
@@ -730,9 +762,13 @@ def _expected_external_columns(
             "dxy_roc_30", "us10y", "us2y",
             "yield_curve_2y10y", "yield_curve_10y30y",
             "vix",
-            "sp500_ret_30", "nasdaq_ret_30",
-            "gold_ret_30", "silver_ret_30", "copper_ret_30",
-            "oil_ret_30", "natgas_ret_30",
+            "sp500_ret_30", "sp500_ret_14",
+            "nasdaq_ret_30", "nasdaq_ret_14",
+            "gold_ret_30", "gold_ret_14",
+            "silver_ret_30", "silver_ret_14",
+            "copper_ret_30", "copper_ret_14",
+            "oil_ret_30", "oil_ret_14",
+            "natgas_ret_30", "natgas_ret_14",
         ]
     if include_crypto_macro:
         cols += ["eth_btc_ratio"]

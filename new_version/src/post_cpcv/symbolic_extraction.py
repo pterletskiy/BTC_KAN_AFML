@@ -300,6 +300,108 @@ def rank_features_by_stability(cpcv_results: dict) -> list[tuple[str, float]]:
     return ranked
 
 
+def select_features_for_extraction(
+    cpcv_results: dict,
+    fold_idx: int,
+    n_top_features: int | None = None,
+    strategy: str = "per_fold",
+) -> list[str]:
+    """Select features for symbolic extraction.
+
+    Two strategies are supported, both methodologically defensible. The
+    choice between them controls whether the symbolic formula represents
+    the specific KAN evaluated on the chosen extraction fold (per_fold)
+    or an idealised KAN trained on the most-consistently-important
+    features across the dataset's history (stability).
+
+    Strategies
+    ----------
+    "per_fold" (default):
+        Use the MDA selection from the chosen extraction fold itself.
+        These are the same features the CPCV-evaluated KAN was trained
+        on for that fold (MDA runs once per fold in ``pipeline.py``
+        and the resulting feature list is shared across all models in
+        that fold). If the per-fold selection contains more features
+        than ``n_top_features``, the cap is enforced by ranking the
+        fold's selection by their stability frequency across all KAN
+        folds (highest stability wins, ties broken alphabetically),
+        which keeps the symbolic formula focused on the features that
+        both this fold valued AND that consistently mattered in other
+        folds. Argument: the symbolic formula represents the actual
+        model whose performance is reported in the comparison table;
+        it should be trained on the same feature set that the CPCV
+        evaluation used.
+
+    "stability" (legacy):
+        Use the top ``n_top_features`` features by selection frequency
+        across all KAN CPCV folds. Argument: the symbolic formula
+        reflects features that were robustly important across the
+        dataset's history rather than features specific to one fold.
+        This was the default in earlier iterations of the pipeline.
+
+    Parameters
+    ----------
+    cpcv_results : dict
+        Output of ``run_cpcv_pipeline``.
+    fold_idx : int
+        The CPCV split index for which extraction is being run.
+        Used by the per_fold strategy; ignored by stability.
+    n_top_features : int, optional
+        Cap on the number of features returned. ``None`` means use all
+        available (which for per_fold is the full per-fold MDA
+        selection, typically 14-16 features).
+    strategy : {"per_fold", "stability"}, default "per_fold"
+        Which selection strategy to apply. Falls back to "stability"
+        if "per_fold" is requested but no MDA selection is available
+        for the chosen fold.
+
+    Returns
+    -------
+    list of str
+        Feature names to use for symbolic extraction.
+    """
+    if strategy == "per_fold":
+        # find prep_info for the chosen fold (any model serves; prep_info
+        # is shared across models within a fold)
+        prep_info_for_fold = None
+        for key, pred in cpcv_results["predictions"].items():
+            if key[1] != fold_idx:
+                continue
+            pi = pred.get("prep_info", {})
+            if pi.get("selected_features"):
+                prep_info_for_fold = pi
+                break
+
+        if prep_info_for_fold is None:
+            logger.warning(
+                "No MDA selection found for fold %d; falling back to "
+                "stability ranking.", fold_idx,
+            )
+            strategy = "stability"
+        else:
+            fold_selected = list(prep_info_for_fold["selected_features"])
+            if n_top_features is None or n_top_features >= len(fold_selected):
+                return fold_selected
+            # cap: rank the fold's selection by cross-fold stability so the
+            # final pick is the intersection of "selected on this fold" and
+            # "consistently selected across folds"
+            stability = dict(rank_features_by_stability(cpcv_results))
+            scored = [
+                (f, stability.get(f, 0.0))
+                for f in fold_selected
+            ]
+            scored.sort(key=lambda x: (-x[1], x[0]))  # desc by freq, then alpha
+            return [f for f, _ in scored[:n_top_features]]
+
+    # strategy == "stability" (either requested directly or falling back)
+    ranked = rank_features_by_stability(cpcv_results)
+    if not ranked:
+        return []
+    if n_top_features is None:
+        return [f for f, _ in ranked]
+    return [f for f, _ in ranked[:n_top_features]]
+
+
 # =====================================================================
 # 3. Prepare extraction data
 # =====================================================================
@@ -1437,6 +1539,7 @@ def run_symbolic_extraction(
     n_top_features: int | None = None,
     use_multkan: bool = False,
     fold_selection: str | int = "best",
+    feature_selection_strategy: str = "per_fold",
 ) -> dict:
     """Run the full symbolic extraction pipeline (Algorithm 1).
 
@@ -1447,10 +1550,11 @@ def run_symbolic_extraction(
     Parameters
     ----------
     n_top_features : int, optional
-        If provided, only the top N most stable features (by CPCV selection
-        frequency) are used for symbolic extraction. Recommended values:
-        5-7 for interpretable formulas, 10 for moderate complexity.
-        If None, all features selected by the best fold are used.
+        If provided, caps the number of features used for symbolic
+        extraction. The cap is enforced according to
+        ``feature_selection_strategy``. Recommended values: 5-7 for
+        interpretable formulas, 10 for moderate complexity. If None,
+        all features available under the chosen strategy are used.
     use_multkan : bool
         If True, use MultKAN (KAN 2.0) with multiplication nodes.
         MultKAN can discover multiplicative feature interactions
@@ -1461,6 +1565,20 @@ def run_symbolic_extraction(
         - "best": fold with highest KAN F1 macro (default)
         - "last": last fold (most recent data, rolling-window style)
         - int: specific fold index (e.g., 0, 5, 14)
+    feature_selection_strategy : {"per_fold", "stability"}, default "per_fold"
+        How to choose features for the symbolic re-training. ``per_fold``
+        uses the MDA selection from the chosen extraction fold itself
+        (the same features the CPCV-evaluated KAN was trained on for
+        that fold), capping at ``n_top_features`` by cross-fold
+        stability if necessary. ``stability`` uses the top
+        ``n_top_features`` by selection frequency across all KAN CPCV
+        folds (the legacy default). The per_fold strategy produces a
+        symbolic formula that represents the actual model whose
+        performance is reported in the comparison table; the stability
+        strategy produces a formula reflecting features robustly
+        important across the dataset's history. Both are defensible;
+        per_fold is the new default because it is more methodologically
+        faithful to the CPCV evaluation.
     """
     model_label = "MultKAN" if use_multkan else "PyKAN"
     print("=" * 60)
@@ -1483,19 +1601,40 @@ def run_symbolic_extraction(
         print(f"\n  No tuned KAN params found for split {best_split} "
               f"(falling back to data-aware sizing).")
 
-    # 2. rank features and select top N if requested
+    # 2. select features for symbolic extraction
     feature_subset = None
-    if n_top_features is not None:
-        ranked = rank_features_by_stability(cpcv_results)
-        if ranked:
-            feature_subset = [f for f, _ in ranked[:n_top_features]]
-            print(f"\n  Feature ranking (top {n_top_features} of {len(ranked)}):")
-            for i, (feat, freq) in enumerate(ranked[:n_top_features]):
-                print(f"    {i+1}. {feat} ({freq:.0%} selection frequency)")
-            if len(ranked) > n_top_features:
-                print(f"    ... ({len(ranked) - n_top_features} features excluded)")
+    if n_top_features is not None or feature_selection_strategy == "per_fold":
+        feature_subset = select_features_for_extraction(
+            cpcv_results=cpcv_results,
+            fold_idx=best_split,
+            n_top_features=n_top_features,
+            strategy=feature_selection_strategy,
+        )
+        if feature_subset:
+            print(
+                f"\n  Feature selection (strategy='{feature_selection_strategy}', "
+                f"fold={best_split}): {len(feature_subset)} features"
+            )
+            if feature_selection_strategy == "per_fold":
+                # show how each chosen feature ranks on cross-fold stability
+                # so the reader sees the trade-off between fold-specific and
+                # broadly-stable selection
+                stability = dict(rank_features_by_stability(cpcv_results))
+                for i, feat in enumerate(feature_subset):
+                    freq = stability.get(feat, 0.0)
+                    print(f"    {i+1}. {feat} ({freq:.0%} cross-fold stability)")
+            else:
+                # stability strategy: show the frequency that drove the rank
+                ranked = rank_features_by_stability(cpcv_results)
+                ranked_dict = dict(ranked)
+                for i, feat in enumerate(feature_subset):
+                    freq = ranked_dict.get(feat, 0.0)
+                    print(f"    {i+1}. {feat} ({freq:.0%} selection frequency)")
+                if n_top_features is not None and len(ranked) > n_top_features:
+                    print(f"    ... ({len(ranked) - n_top_features} features excluded)")
         else:
-            print("  ⚠ Could not rank features. Using all selected features.")
+            print("  ⚠ Could not resolve feature subset. Using all selected features.")
+            feature_subset = None
 
     # 3. prepare data
     dataset, feature_names = prepare_extraction_data(
