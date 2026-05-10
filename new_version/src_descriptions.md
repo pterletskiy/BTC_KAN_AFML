@@ -156,13 +156,15 @@ These are consumed by the AR Logistic baseline as its complete feature set, and 
 
 ### What it does
 
-Fetches and aligns 22 external features: 13 macro variables from Yahoo Finance and FRED, 1 crypto-macro signal, and 8 on-chain metrics from CoinMetrics.
+Fetches and aligns 29 external features: 20 macro variables from Yahoo Finance and FRED, 1 crypto-macro signal, and 8 on-chain metrics from CoinMetrics.
 
 ### Core concepts
 
 **Alignment via `merge_asof(direction='backward')`.** All external data is merged onto BTC's 7-day calendar. For each BTC day, the most recent available value from each external source is used. Weekends carry Friday's equity close; weekly macro releases persist until the next print. This is the only defensible alignment method — no look-ahead bias, no fabricated values.
 
-**Macro (13).** Traditional finance signals: Dollar Index 30-day RoC, 2-year and 10-year Treasury yields, two yield curve spreads (2s10s and 10s30s), VIX, 30-day log returns for S&P 500, Nasdaq, gold, silver, copper, oil, and natural gas. These test whether crypto responds to traditional macro regimes — risk-on/risk-off, inflation, commodity cycles.
+**Macro (20).** Traditional finance signals: Dollar Index 30-day RoC, 2-year and 10-year Treasury yields, two yield curve spreads (2s10s and 10s30s), VIX as level, and rolling log returns for S&P 500, Nasdaq, gold, silver, copper, oil, and natural gas at both 30-day and 14-day horizons (14 columns total for the seven faster-moving assets). These test whether crypto responds to traditional macro regimes — risk-on/risk-off, inflation, commodity cycles.
+
+The dual-horizon convention for the seven faster-moving assets is implemented via two module-level constants `RET_WINDOW = 30` and `RET_WINDOW_SHORT = 14`. The 14-day variant captures bi-weekly cycles and is more responsive to recent news and macro shocks; the 30-day variant captures monthly cycles and is smoother. Both are exposed to MDA, which decides per fold which horizon is more informative. The pairs are correlated (typically Pearson r > 0.7), so MDA's permutation-importance approach can produce three patterns: (1) MDA consistently prefers one horizon per asset across folds (cleanest, "stable preference per asset"); (2) MDA picks both for some assets, indicating the 14d and 30d variants each capture marginally distinct information despite correlation; (3) MDA picks differently per fold, indicating regime-dependent optimal horizons. Slow-moving variables (DXY, US Treasury yields, yield-curve spreads) keep the 30-day window only because their information content is dominated by monthly settlement and release cycles where a 14-day variant adds noise without signal.
 
 **2-year yield fallback chain.** FRED DGS2 is the primary source. If it returns insufficient data, the code falls back to fetching the T10Y2Y spread from FRED and back-deriving `us2y = us10y - spread`. This ensures the yield curve feature is always populated even when the preferred source fails.
 
@@ -207,7 +209,7 @@ Aligns the feature matrix (covering all ~4,200 daily bars) with the labels and w
 ### Key function: `align_for_cv`
 
 Returns the four aligned objects:
-- **X**: feature matrix (~1,150 × 66; 25 TA + 9 math + 22 external + 10 lag). All 66 columns are eligible for MDA selection. AR Logistic separately consumes its 10 lag columns by name from the pre-MDA matrix routed through the pipeline's `X_tr_full`.
+- **X**: feature matrix (~1,150 × 73; 25 TA + 9 math + 29 external + 10 lag). All 73 columns are eligible for MDA selection. AR Logistic separately consumes its 10 lag columns by name from the pre-MDA matrix routed through the pipeline's `X_tr_full`.
 - **y**: binary labels {-1, +1}.
 - **w**: AFML sample weights (uniqueness × return attribution × time decay, capped at 99th percentile).
 - **t1**: barrier touch timestamps (DatetimeIndex) for CPCV purging.
@@ -236,7 +238,7 @@ Produces the visual diagnostics and statistical tests that sit between the data-
 
 **ADF test informs FFD selection.** The stationarity test is a diagnostic, not a decision: the function returns the per-feature ADF result table, and the notebook reads it to decide which columns to fractionally difference. The default cuts at `significance=0.05`, but the column flagged for FFD in the locked configuration (`atr`) was confirmed visually rather than auto-derived; some TA features (e.g., RSI, bounded between 0 and 100) can reject the unit-root null at small samples without actually needing FFD treatment, so the ADF result is informative rather than definitive.
 
-**MI handles binary labels directly.** The mutual information plot uses `sklearn.feature_selection.mutual_info_classif` against the binary `bin` column. Features with MI below `1e-6` are flagged as removal candidates. With 66 features and ~1,150 events the MI estimator is stable, but the function exposes `n_neighbors` and `seed` for sensitivity analysis.
+**MI handles binary labels directly.** The mutual information plot uses `sklearn.feature_selection.mutual_info_classif` against the binary `bin` column. Features with MI below `1e-6` are flagged as removal candidates. With 73 features and ~1,150 events the MI estimator is stable, but the function exposes `n_neighbors` and `seed` for sensitivity analysis.
 
 **ASCII portability.** Status flags use `OK` / `Flagged` rather than Unicode marks (`✓` / `✗`) so the diagnostic output renders consistently in Windows console, terminal pipes, PDF exports, and LaTeX appendices.
 
@@ -362,7 +364,7 @@ The final per-feature MDA is the average across both classifiers and all inner f
 
 The rationale for multi-model MDA: RF-only MDA introduces tree bias (features that tree ensembles naturally exploit get inflated importance). SFI in weak-signal regimes produces uninformative near-uniform scores. Averaging across model families reduces selection variance and prevents architecture bias.
 
-**Lag-feature inclusion (advisor-driven change).** All 66 features enter MDA together, including the 10 `log_returns_lagN` columns from `pre_cpcv/features.py`. An earlier version of `select_features` filtered out lag columns by name prefix on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing for the top-k cap. Whether a given fold selects any lag columns for the non-AR models depends on their permutation importance for that fold's RF and Logistic Regression inner classifiers. AR Logistic continues to pull its ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, so its behaviour is unchanged regardless of MDA's choices.
+**Lag-feature inclusion (advisor-driven change).** All 73 features enter MDA together, including the 10 `log_returns_lagN` columns from `pre_cpcv/features.py`. An earlier version of `select_features` filtered out lag columns by name prefix on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing for the top-k cap. Whether a given fold selects any lag columns for the non-AR models depends on their permutation importance for that fold's RF and Logistic Regression inner classifiers. AR Logistic continues to pull its ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, so its behaviour is unchanged regardless of MDA's choices.
 
 ### Key function: `preprocess_fold`
 
@@ -816,7 +818,15 @@ The architecture used for CPCV evaluation now matches the architecture extracted
 
 **Fold selection.** The `fold_selection` parameter controls which CPCV fold is used: `"best"` picks the highest-F1 fold, `"last"` picks the most recent, or an integer specifies a fold directly. The thesis uses `"last"` to match what would be used in deployment (most recent training data).
 
-**Feature ranking and subsetting.** When `n_top_features` is set, features are ranked by selection frequency across all KAN CPCV folds, and only the top N are used. Fewer features produce simpler formulas at some accuracy cost.
+**Feature selection (`select_features_for_extraction`).** Two strategies, controlled by the `feature_selection_strategy` parameter on `run_symbolic_extraction`:
+
+- *`"per_fold"`* (default): use the MDA selection from the chosen extraction fold itself, the same features the CPCV-evaluated KAN was trained on for that fold. Since MDA runs once per fold in `pipeline.py` and the selection is shared across all models within a fold, this strategy ensures the symbolic formula represents the actual KAN whose performance is reported in the comparison table rather than an idealised KAN trained on a different feature set. If `n_top_features` is set and the per-fold selection contains more features than the cap, the cap is enforced by ranking the fold's selection by cross-fold stability so the final pick is the intersection of "selected on this specific fold" and "consistently selected across other folds". The notebook output reports each chosen feature alongside its cross-fold stability percentage so a reader can tell whether the per-fold pick broadly aligns with the stability strategy or made a fold-idiosyncratic choice.
+
+- *`"stability"`* (legacy): rank features by selection frequency across all KAN CPCV folds and take the top N (where N is `n_top_features`). The legacy default in earlier iterations of the pipeline; reflects features that are robustly important across the dataset's history at the cost of potentially selecting features the chosen extraction fold did not actually train on.
+
+The per_fold strategy was made the new default because it is more methodologically faithful to the CPCV evaluation. The stability strategy remains available for sensitivity checks and the docstring on `run_symbolic_extraction` documents the trade-off so a reader of the source can reproduce the methodology choice.
+
+The legacy `rank_features_by_stability(cpcv_results)` function is kept in the module and used by the per_fold strategy (as the secondary sort key when capping the per-fold selection) and by the stability strategy directly.
 
 **Tanh input normalization match.** The symbolic re-training applies the same tanh normalization as the CPCV KAN (fitted on the symbolic re-training fold), ensuring inputs hit the spline grid range [-1, 1].
 
