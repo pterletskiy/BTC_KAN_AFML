@@ -11,7 +11,7 @@
 The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Networks (KANs), benchmarked against AR Logistic, Logistic Regression, Random Forest, XGBoost, and LSTM models, evaluated under López de Prado's *Advances in Financial Machine Learning* (2018) framework. The pipeline is organized into three phases with strict leakage boundaries between them.
 
 **Data:** BTC-USD daily OHLCV, November 2014 – May 2026 (~4,200 bars). Raw data starts in November 2014 to provide the 252-day lookback required by the longest-warmup features (Hurst, EMA 50/200 ratio, SADF). The CUSUM event filter is applied from August 8, 2015 onward — the date of Ethereum's Frontier launch and the first day with valid ETH/USD price data needed for the `eth_btc_ratio` feature. This buffer-and-truncate structure ensures that all engineered features have completed their warmup windows by the start of model evaluation, and that all cross-asset crypto features have full data availability across every CPCV fold.
-**Features:** 73 columns total, all eligible for MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 29 external: 20 macro, 1 crypto-macro, 8 on-chain from CoinMetrics, 10 autoregressive lags). The 10 lag features (`log_returns_lag1` … `log_returns_lag30`) compete with engineered features for the MDA top-k cap. AR Logistic continues to consume the 10 lag columns by name from the pre-MDA matrix as its pure-autoregressive baseline, independently of MDA's choices. The macro group includes 14-day and 30-day return horizons for the seven faster-moving assets (S&P 500, Nasdaq, gold, silver, copper, oil, natural gas), with MDA deciding per fold which horizon is more informative; slow-moving variables (DXY, yields, yield curves) keep the 30-day horizon only.
+**Features:** 73 columns total, all eligible for MDA feature selection (25 technical, 9 mathematical/AFML Part 4, 29 external: 20 macro, 1 crypto-macro, 8 on-chain from CoinMetrics, 10 autoregressive lags). The 10 lag features (`log_returns_lag1` … `log_returns_lag30`) compete with engineered features for the MDA top-k cap. AR Logistic continues to consume the 10 lag columns by name from the pre-MDA matrix as its pure-autoregressive baseline, independently of MDA's choices.
 **Calendar:** All rolling windows use the BTC trading calendar (7-day week, 30-day month, 90-day quarter, 180-day semester, 365-day year).
 **Evaluation:** CPCV (N=8, k=2) producing 28 splits and 7 backtest paths, with Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong pairwise AUC significance tests.
 **Tuning:** Nested Optuna TPE + Purged K-Fold, per-split, inside each CPCV training fold (AFML Ch. 7 compliant).
@@ -201,8 +201,8 @@ Orchestration function. Chains: concurrent labels → uniqueness → return attr
 |----------|-------|-----------|
 | Technical (TA) | 25 | MDA pool |
 | Mathematical (AFML Part 4) | 9 | MDA pool |
-| External (macro / crypto-macro / on-chain) | 29 | MDA pool |
-| Lag (autoregressive) | 10 | MDA pool + AR Logistic (by name, from pre-MDA matrix) |
+| External (macro / crypto-macro / on-chain) | 22 | MDA pool |
+| Lag (autoregressive) | 6 | MDA pool + AR Logistic (by name, from pre-MDA matrix) |
 | **Total** | **73** | **All 73 eligible for MDA; AR Logistic restricts itself to its 10 lag columns** |
 
 **Module-level constants (all feature parameters defined at top of each file):**
@@ -295,7 +295,7 @@ The list was extended from the earlier `[1, 2, 3, 7, 14, 30]` configuration afte
 **Helpers:**
 - `lag_column_names(lags=None)`: returns the canonical column names in the order matching `lags` (defaulting to `AR_LAGS`).
 
-**MDA inclusion (advisor-driven change).** Lag features now enter the multi-model MDA pool alongside TA, math, and external features. An earlier version excluded them from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not. The current pipeline lets all 73 features (was 62 before the lag extension and 66 before the macro horizon extension) compete for the top-k cap; whether MDA selects any lag columns for the other models depends on their permutation importance for that fold. AR Logistic still selects its ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, so its behaviour is unchanged.
+**MDA inclusion (advisor-driven change).** Lag features now enter the multi-model MDA pool alongside TA, math, and external features. An earlier version excluded them from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not. The current pipeline lets all 73 features (was 62 before the lag extension) compete for the top-k cap; whether MDA selects any lag columns for the other models depends on their permutation importance for that fold. AR Logistic still selects its ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, so its behaviour is unchanged.
 
 #### Step 6.d — Macro Features (`external_features.py`)
 
@@ -313,22 +313,15 @@ Data sources: yfinance for 11 tickers plus FRED (via pandas-datareader) for 2Y T
 | 4 | `yield_curve_2y10y` | Derived: us10y − us2y (or FRED T10Y2Y directly) | Spread (percentage points) |
 | 5 | `yield_curve_10y30y` | Derived: ^TYX − ^TNX | Spread (percentage points) |
 | 6 | `vix` | ^VIX | Level |
-| 7 | `sp500_ret_30` | ^GSPC | 30-day log return |
-| 8 | `sp500_ret_14` | ^GSPC | 14-day log return |
-| 9 | `nasdaq_ret_30` | ^IXIC | 30-day log return |
-| 10 | `nasdaq_ret_14` | ^IXIC | 14-day log return |
-| 11 | `gold_ret_30` | GC=F | 30-day log return |
-| 12 | `gold_ret_14` | GC=F | 14-day log return |
-| 13 | `silver_ret_30` | SI=F | 30-day log return |
-| 14 | `silver_ret_14` | SI=F | 14-day log return |
-| 15 | `copper_ret_30` | HG=F | 30-day log return |
-| 16 | `copper_ret_14` | HG=F | 14-day log return |
-| 17 | `oil_ret_30` | CL=F | 30-day log return |
-| 18 | `oil_ret_14` | CL=F | 14-day log return |
-| 19 | `natgas_ret_30` | NG=F | 30-day log return |
-| 20 | `natgas_ret_14` | NG=F | 14-day log return |
+| 7-8 | `sp500_ret_30`, `sp500_ret_14` | ^GSPC | 30-day and 14-day log returns |
+| 9-10 | `nasdaq_ret_30`, `nasdaq_ret_14` | ^IXIC | 30-day and 14-day log returns |
+| 11-12 | `gold_ret_30`, `gold_ret_14` | GC=F | 30-day and 14-day log returns |
+| 13-14 | `silver_ret_30`, `silver_ret_14` | SI=F | 30-day and 14-day log returns |
+| 15-16 | `copper_ret_30`, `copper_ret_14` | HG=F | 30-day and 14-day log returns |
+| 17-18 | `oil_ret_30`, `oil_ret_14` | CL=F | 30-day and 14-day log returns |
+| 19-20 | `natgas_ret_30`, `natgas_ret_14` | NG=F | 30-day and 14-day log returns |
 
-**Dual-horizon convention for fast-moving assets.** The seven non-yield macro assets (S&P 500, Nasdaq, gold, silver, copper, oil, natural gas) are exposed at both 30-day and 14-day return horizons via the module-level constants `RET_WINDOW = 30` and `RET_WINDOW_SHORT = 14`. The 14-day variant captures bi-weekly cycles and is more responsive to recent news and macro shocks; the 30-day variant captures monthly cycles and is smoother. MDA decides per fold which horizon is more informative, with three possible outcomes: (1) MDA consistently prefers one horizon per asset across folds, indicating a stable preference; (2) MDA picks both for some assets, indicating that the 14d and 30d variants each capture marginally distinct information despite their correlation (typically Pearson r > 0.7); (3) MDA picks differently per fold, indicating regime-dependent optimal horizons. Slow-moving variables (DXY, US Treasury yields, yield-curve spreads) keep the 30-day horizon only because their information content is dominated by monthly settlement and release cycles where a 14-day variant would add noise without signal.
+**Heterogeneous return windows.** The seven faster-moving assets (sp500, nasdaq, gold, silver, copper, oil, natgas) are exposed at both 30-day and 14-day return horizons. Module constants `RET_WINDOW = 30` and `RET_WINDOW_SHORT = 14` parameterise the two horizons. The 14-day variant captures bi-weekly cycles and is more responsive to recent news/macro shocks; the 30-day variant captures monthly cycles and is smoother. Slow-moving variables (DXY, yields, yield curves) keep the 30-day window only because their information content is dominated by monthly settlement and release cycles where a 14-day variant would add noise without signal. The 14d/30d pairs of the same asset are correlated (Pearson r typically > 0.7); MDA's permutation-importance scheme handles correlated features by either spreading importance across both or, in folds where the redundancy is unhelpful, dropping the less-informative variant entirely. Either outcome is acceptable; the methodology is "let MDA decide which horizon matters per fold". The change was made in May 2026 after observing that single-horizon macro features may not match BTC's response timescale to traditional-asset shocks; rather than making an arbitrary horizon choice on the model author's part, both horizons are exposed so the per-fold MDA can adapt.
 
 **2Y yield fallback:** (1) FRED DGS2 directly. (2) If DGS2 returns fewer than 2,000 bars, falls back to fetching the T10Y2Y spread from FRED, using it directly as `yield_curve_2y10y` and back-deriving `us2y = us10y − spread`. This two-step fallback ensures the yield curve feature is always populated even when DGS2 is unavailable.
 
@@ -376,7 +369,7 @@ FeeTotNtv, SplyExNtv, SplyCur, IssTotNtv
 
 #### External features orchestration
 
-`build_external_features(btc_df, include_macro=True, include_crypto_macro=True, include_onchain=True) → pd.DataFrame` fetches all three categories (macro 13, crypto-macro 1, on-chain 8 = 22 columns), concatenates, reports NaN summary, and caches to Parquet. Each category is independently toggleable. On-chain fetch is wrapped in try/except so missing `coinmetrics-api-client` doesn't break the pipeline.
+`build_external_features(btc_df, include_macro=True, include_crypto_macro=True, include_onchain=True) → pd.DataFrame` fetches all three categories (macro 20, crypto-macro 1, on-chain 8 = 29 columns), concatenates, reports NaN summary, and caches to Parquet. Each category is independently toggleable. On-chain fetch is wrapped in try/except so missing `coinmetrics-api-client` doesn't break the pipeline.
 
 **Cache invalidation.** The cache check verifies both the date-range endpoints and the column set. Changing the feature mix (e.g., dropping `btc_dominance`) invalidates the cache and triggers a refetch on next run; the date-range-only check would have silently returned a stale frame.
 
@@ -589,7 +582,7 @@ The 8-color palette used by the visual functions is exposed as a module-level co
 **Module-level constants:**
 ```
 FFD: FFD_D_RANGE=(0.0, 1.0, 0.05), FFD_THRESHOLD=1e-4, FFD_ADF_SIGNIFICANCE=0.05, FFD_MAX_LOOKBACK=200
-Selection: MDA_N_ESTIMATORS=500, MDA_N_INNER_FOLDS=3, MDA_TOP_K_FRAC=0.30, MIN_FEATURES=5
+Selection: MDA_N_ESTIMATORS=500, MDA_N_INNER_FOLDS=3, MDA_TOP_K_FRAC=0.20, MIN_FEATURES=5
 ```
 
 #### Step 11.a — FFD (`ffd_transform`)
@@ -636,11 +629,15 @@ The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
 
 **Lag features in the MDA pool.** `select_features` runs MDA over all 73 features, including the six `log_returns_lagN` columns. An earlier version of the pipeline excluded lag features from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing; lag columns appear in `selected` for a given fold only if their averaged MDA (RF + Logistic Regression permutation importance) is positive and ranks within the top-k cap. AR Logistic continues to consume the ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, independently of MDA's choices.
 
-**Typical result:** ~14–16 features selected per fold from the 73 candidates. The 10 lag columns sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
+**Typical result:** ~13–15 features selected per fold from the 73 candidates (`TOP_K_FRAC = 0.20` × 73 ≈ 15 with the MIN_FEATURES = 5 floor and the `MDA > 0` gate trimming a few additional features in low-signal folds). The 10 lag columns and the seven 14d/30d macro pairs sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
 
 **Per-fold warning provenance.** When fewer than `MIN_FEATURES = 5` features clear MDA > 0 on a given fold and the function falls back to the top-5 by MDA value, the emitted `logger.warning(...)` is prefixed with `[split K/N]` where `K` is the 1-indexed CPCV split number and `N` is the total number of splits (28 in the locked configuration). The prefix is plumbed via the keyword-only `split_idx` and `n_splits` arguments to `select_features` and `preprocess_fold`, which `pipeline.py` populates inside the per-split loop. The prefix surfaces in the deferred-warning summary that `run_cpcv_pipeline` prints after the ✅ completion notice, so the reader can tell which specific folds tripped the fallback rather than assuming the issue applied uniformly across all 28.
 
-**TOP_K_FRAC tightening and sensitivity (from 0.4 to 0.30, with 0.25 as the sensitivity check).** The cap was tightened from common defaults of 0.40-0.50 after a high-PBO run revealed that only ~6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Two cap settings were evaluated as candidates for the primary configuration: 0.25 forces ~16 features through the bottleneck, and 0.30 forces ~19. Both produced essentially identical predictive metrics across all six models (mean accuracy and pooled AUC differed by less than 0.5 percentage points per model), but the backtest-derived metrics diverged substantially: PBO was 0.69 at 0.25 and 0.26 at 0.30, with model rankings reshuffling between the two. The 0.30 setting was selected as primary because it produced the lower PBO (under the AFML interpretation, this indicates more robust model selection) while still being meaningfully tighter than the 0.40 default. The 0.25 setting is retained as a documented sensitivity check; the divergence between the two configurations on the path-Sharpe-derived metrics, despite stable predictive metrics, is itself the AFML rank-instability finding made operational on this dataset.
+**TOP_K_FRAC tightening trail (0.40 → 0.30 → 0.20).** The cap was tightened from common defaults of 0.40-0.50 in successive sensitivity rounds.
+
+The first tightening, from 0.40 to 0.30, came after a high-PBO run revealed that only ~6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Two cap settings were evaluated as primary candidates at that point: 0.25 forced ~16 features through the bottleneck, and 0.30 forced ~19. Both produced essentially identical predictive metrics across all six models (mean accuracy and pooled AUC differed by less than 0.5 percentage points per model), but the backtest-derived metrics diverged substantially: PBO was 0.69 at 0.25 and 0.26 at 0.30, with model rankings reshuffling between the two. 0.30 was selected as primary because it produced the lower PBO; the divergence between the two configurations on the path-Sharpe-derived metrics, despite stable predictive metrics, was itself the AFML rank-instability finding made operational on this dataset.
+
+The second tightening, from 0.30 to 0.20, accompanied the May 2026 expansion of the feature pool from 66 to 73 columns (the 14-day macro return variants and the AR_LAGS extension). With the larger pool, 0.30 × 73 ≈ 22 features pass the cap (up from 0.30 × 66 ≈ 20), but the absolute count of features that consistently rank as informative in the stability bar chart had not grown in proportion to the pool. Holding MDA_TOP_K_FRAC at 0.30 risked re-introducing the same long-tail variance the original tightening had addressed. 0.20 × 73 ≈ 15 features per fold, restoring the absolute count to roughly the pre-expansion working point. The locked configuration is therefore `MDA_TOP_K_FRAC = 0.20` against the 73-feature pool. Predictive metrics remain stable across the 0.20 and 0.30 settings on the new feature pool; the lower-PBO setting is retained as primary, consistent with the AFML interpretation that lower PBO indicates more robust model selection. The earlier-iteration findings (0.25 vs 0.30 sensitivity at the 66-feature pool size) are preserved for the methodology trail.
 
 #### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, ffd_columns, top_k_frac, skip_selection=False)`
 
@@ -1066,14 +1063,13 @@ Symbolic:
   AFFINE_FINETUNE_STEPS=30, AFFINE_LR=0.0004
 ```
 
-#### `run_symbolic_extraction(cpcv_results, X, y, w, t1, n_top_features=None, use_multkan=False, fold_selection="best", feature_selection_strategy="per_fold")`
+#### `run_symbolic_extraction(cpcv_results, X, y, w, t1, n_top_features=None, use_multkan=False, fold_selection="best")`
 
-Top-level entry point. Four control parameters:
+Top-level entry point. Three control parameters:
 
 | Parameter | Options | Effect |
 |-----------|---------|--------|
-| `n_top_features` | `None` or int (e.g., 5) | If set, caps the number of features used for symbolic extraction. The cap is enforced according to `feature_selection_strategy`. Fewer features → simpler formulas. |
-| `feature_selection_strategy` | `"per_fold"` (default) / `"stability"` | Controls how features are chosen for the symbolic re-training. See Step 17.b below. |
+| `n_top_features` | `None` or int (e.g., 5) | If set, only the N most stable features (by CPCV selection frequency) are used. Fewer features → simpler formulas. |
 | `use_multkan` | `False` / `True` | If True, uses MultKAN (KAN 2.0) with multiplication nodes, enabling discovery of multiplicative interactions (e.g., RSI × Stoch_K). Same symbolic pipeline works for both. |
 | `fold_selection` | `"best"` / `"last"` / int | Which fold to use: best F1, most recent, or specific index. |
 
@@ -1083,15 +1079,9 @@ Top-level entry point. Four control parameters:
 
 Scans all `(kan, split_idx, seed)` predictions, averages F1 across seeds per split, selects by strategy. Also retrieves `prep_info` (FFD d*, scaler, selected features) from that fold.
 
-#### Step 17.b — Feature selection (`select_features_for_extraction`, `rank_features_by_stability`)
+#### Step 17.b — Feature ranking (`rank_features_by_stability`)
 
-The symbolic re-training picks features via one of two strategies, controlled by `feature_selection_strategy`:
-
-- **`"per_fold"` (default).** Uses the MDA selection from the chosen extraction fold itself (the same features the CPCV-evaluated KAN was trained on for that fold). Since MDA runs once per fold in `pipeline.py` and the selection is shared across all models within a fold, this strategy ensures the symbolic formula represents the actual KAN whose performance is reported in the comparison table rather than an idealised KAN trained on a different feature set. If `n_top_features` is set and the per-fold selection contains more features than the cap, the cap is enforced by ranking the fold's selection by cross-fold stability so the final pick is the intersection of "selected on this specific fold" and "consistently selected across other folds". The notebook output reports each chosen feature alongside its cross-fold stability percentage so a reader can see whether the per-fold selection broadly aligns with the stability strategy or made a fold-idiosyncratic choice.
-
-- **`"stability"` (legacy).** Counts how often each feature was selected across all KAN CPCV folds and returns `[(feature_name, selection_frequency)]` sorted descending. When `n_top_features` is set, only the top N are used. This was the default in earlier iterations of the pipeline and reflects features that are robustly important across the dataset's history, at the cost of potentially selecting features the chosen extraction fold did not actually train on.
-
-The per_fold strategy is the new default because it is more methodologically faithful to the CPCV evaluation: the symbolic formula corresponds to the same input space the comparison-table KAN saw on the chosen fold. The stability strategy remains available as a sensitivity check, and the docstring documents the trade-off so a reader of the source can understand why the choice was made.
+Counts how often each feature was selected across all KAN CPCV folds. Returns `[(feature_name, selection_frequency)]` sorted descending. When `n_top_features` is set, only the top N are used for extraction, producing simpler formulas.
 
 #### Step 17.c — Data preparation (`prepare_extraction_data`)
 
@@ -1192,8 +1182,7 @@ Saves `cache/kan_symbolified_network.png`.
 **Notebook usage** (Section 6):
 ```python
 symbolic = run_symbolic_extraction(results, X, y, w, t1,
-                                   n_top_features=5, fold_selection="last",
-                                   feature_selection_strategy="per_fold")
+                                   n_top_features=5, fold_selection="last")
 
 # Decision-function summary
 print_symbolic_decision(symbolic)
