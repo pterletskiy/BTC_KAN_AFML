@@ -1,22 +1,20 @@
 """
-12.2) Path Explorer
+14.3) Path Explorer
 ===================
-Per-model multi-path equity curves (Brownian-motion-style).
+Per-model multi-path equity curves (Brownian-motion-style visualisations).
 
-Three views of the same idea:
+Three views of the same idea, each driven by ``analysis['path_results']``:
 
-1. STATIC PER-MODEL — a single chart for one model showing all 5 paths.
-   Best for thesis PDFs, exports cleanly to image.
+  1. STATIC PER-MODEL — one chart for one model showing all paths. Exports
+     cleanly to image for thesis PDFs.
+  2. STATIC GRID — one subplot per model with all paths. Best for
+     side-by-side variance comparison across the model lineup.
+  3. INTERACTIVE SELECTOR — ipywidgets dropdown for live notebook
+     exploration; not for the written thesis.
 
-2. STATIC GRID — one subplot per model, all paths shown. Best for
-   side-by-side variance comparison across the model lineup.
-
-3. INTERACTIVE SELECTOR — dropdown to flip between models in the
-   notebook. Uses ipywidgets. Best for live exploration.
-
-All three use the median across paths as a thick reference line and
-plot individual paths as thin lines, so you can see both the central
-tendency and the dispersion.
+All three plot individual paths as thin lines and overlay the median
+across paths as a thick reference line, so the reader sees both the
+central tendency and the dispersion.
 """
 
 import numpy as np
@@ -24,16 +22,17 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-# =====================================================================
-# Helper: collect all paths for a model into a single DataFrame
-# =====================================================================
+# --- 1. Helper: collect all path equity curves into a single DataFrame -----
+# Forward-fill each path onto a common index so subsequent plotting routines align cleanly.
 def collect_path_equities(model_path_data: dict, n_paths: int) -> pd.DataFrame:
-    """Collect equity curves for all paths of a model into a DataFrame.
+    """Return a DataFrame where each column is one path's cumulative-equity curve.
 
-    Each column is a path. Columns are forward-filled across the timeline
-    so all paths share a common index for plotting.
+    All paths are forward-filled to share a common index. Duplicate-index entries (which can
+    appear when LSTM windowing produces overlapping timestamps across folds) are collapsed
+    by taking the last value per timestamp before concatenation.
     """
     equities = []
+    # Build a per-path cumulative-equity series.
     for path_id in range(n_paths):
         if path_id in model_path_data and len(model_path_data[path_id]["returns"]) > 0:
             equity = (1 + model_path_data[path_id]["returns"]).cumprod()
@@ -41,24 +40,22 @@ def collect_path_equities(model_path_data: dict, n_paths: int) -> pd.DataFrame:
             equities.append(equity)
     if not equities:
         return pd.DataFrame()
-    
-    # Concatenate and handle duplicate index just in case
+
+    # Standard concat; if any path has duplicate timestamps, retry after collapsing them.
     try:
         df = pd.concat(equities, axis=1)
     except Exception:
-        # If there are duplicate indices in individual series, align them by grouping
         equities = [e.groupby(e.index).last() for e in equities]
         df = pd.concat(equities, axis=1)
-        
+
     df = df.ffill()
-    # Ensure index is DatetimeIndex for proper slicing
+    # Force a DatetimeIndex so callers can slice with strings like ``df.loc["2023":]``.
     df.index = pd.to_datetime(df.index)
     return df
 
 
-# =====================================================================
-# View 1: STATIC PER-MODEL — single model, all paths
-# =====================================================================
+# --- 2. View 1: STATIC PER-MODEL — one model, all paths -------------------
+# Single figure showing every path for one model, with the median overlaid as a thick line.
 def plot_paths_for_model(
     model_name: str,
     results: dict,
@@ -67,21 +64,11 @@ def plot_paths_for_model(
     since: str | None = None,
     figsize: tuple = (14, 5.5),
 ):
-    """Plot all 5 path equity curves for one model.
+    """Plot all path equity curves for one model with the median overlaid.
 
-    Parameters
-    ----------
-    model_name : str
-        e.g. "kan", "xgboost", "logistic".
-    results, analysis : dict
-        The output dicts of run_cpcv_pipeline and analyze_results.
-    log_scale : bool
-        If True, use log y-axis. Recommended for full-history plots
-        where any model has compounded heavily.
-    since : str, optional
-        e.g. "2023" to slice from 2023 onward and re-normalize to 1.0.
-    figsize : tuple
-        Figure size.
+    ``since`` accepts a year string (e.g. ``"2023"``) to slice and re-normalise to 1.0 at
+    the start of the window. ``log_scale=True`` is recommended for full-history plots where
+    compounding makes early values invisible on linear axes.
     """
     df = collect_path_equities(
         analysis["path_results"][model_name],
@@ -91,7 +78,7 @@ def plot_paths_for_model(
         print(f"No path data for {model_name}.")
         return
 
-    # optional time slice + renormalization
+    # Optional time slice + renormalisation to 1.0 at the start of the window.
     if since is not None:
         try:
             df = df.loc[since:]
@@ -100,7 +87,7 @@ def plot_paths_for_model(
         if df.empty:
             print(f"No data for {model_name} since {since}.")
             return
-        # Normalize by the first valid value of each path, preventing NaN propagation
+        # Defensive: bfill+replace(0, ε) prevents division-by-zero on paths that start with NaN or 0.
         first_valid = df.bfill().iloc[0].replace(0, 1e-10)
         df = df / first_valid
 
@@ -108,13 +95,13 @@ def plot_paths_for_model(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # individual paths as thin lines
+    # Individual paths as thin alpha-blended lines.
     for col in df.columns:
         ax.plot(df.index, df[col].values,
                 linewidth=0.9, alpha=0.55,
                 label=col.replace("_", " "))
 
-    # median as a thick reference line
+    # Median as a thick reference line on top.
     ax.plot(median.index, median.values,
             color="black", linewidth=2.0,
             label="median", zorder=10)
@@ -139,9 +126,8 @@ def plot_paths_for_model(
     plt.show()
 
 
-# =====================================================================
-# View 2: STATIC GRID — all models, one subplot each
-# =====================================================================
+# --- 3. View 2: STATIC GRID — all models side by side ---------------------
+# Grid of subplots for cross-model variance comparison; same per-subplot logic as View 1.
 def plot_paths_grid(
     results: dict,
     analysis: dict,
@@ -149,10 +135,7 @@ def plot_paths_grid(
     since: str | None = None,
     n_cols: int = 2,
 ):
-    """Grid of subplots, one per model, each showing all path equity curves.
-
-    Useful for side-by-side variance comparison across the model lineup.
-    """
+    """Grid of subplots (one per model) each showing all path equity curves with the median overlaid."""
     models = results.get("models", [])
     if not models:
         print("No models found in results.")
@@ -164,6 +147,7 @@ def plot_paths_grid(
                               figsize=(7 * n_cols, 4 * n_rows),
                               squeeze=False)
 
+    # One subplot per model; same plotting recipe as View 1 but compressed for grid use.
     for idx, model_name in enumerate(models):
         ax = axes[idx // n_cols][idx % n_cols]
 
@@ -183,6 +167,7 @@ def plot_paths_grid(
             if df.empty:
                 ax.set_title(f"{model_name} (no data since {since})")
                 continue
+            # Same defensive renormalisation as View 1.
             first_valid = df.bfill().iloc[0].replace(0, 1e-10)
             df = df / first_valid
 
@@ -202,7 +187,7 @@ def plot_paths_grid(
         ax.set_title(model_name, fontsize=11, fontweight="bold")
         ax.grid(True, which="both", alpha=0.2)
 
-    # hide unused subplots
+    # Hide trailing unused subplots when n_models doesn't fill the grid.
     for idx in range(n_models, n_rows * n_cols):
         axes[idx // n_cols][idx % n_cols].set_visible(False)
 
@@ -216,14 +201,10 @@ def plot_paths_grid(
     plt.show()
 
 
-# =====================================================================
-# View 3: INTERACTIVE SELECTOR — dropdown in the notebook
-# =====================================================================
+# --- 4. View 3: INTERACTIVE SELECTOR — ipywidgets dropdown ----------------
+# Live notebook explorer with model + period + log-scale controls; calls View 1 on every change.
 def interactive_path_explorer(results: dict, analysis: dict):
-    """Dropdown selector for model + log/linear toggle + since-year slider.
-
-    Requires ipywidgets. Designed for use inside a Jupyter notebook.
-    """
+    """Build an ipywidgets panel (model dropdown + period dropdown + log toggle) that re-renders View 1 on change."""
     try:
         import ipywidgets as widgets
         from IPython.display import display, clear_output
@@ -246,6 +227,7 @@ def interactive_path_explorer(results: dict, analysis: dict):
         description="Period:",
     )
 
+    # Re-render handler: clears the output area and replots View 1 with current widget values.
     def render(*_):
         with out:
             clear_output(wait=True)
@@ -255,6 +237,7 @@ def interactive_path_explorer(results: dict, analysis: dict):
                 since=since_dd.value,
             )
 
+    # Wire change events on every control to the same render handler.
     model_dd.observe(render, names="value")
     log_toggle.observe(render, names="value")
     since_dd.observe(render, names="value")
@@ -264,10 +247,8 @@ def interactive_path_explorer(results: dict, analysis: dict):
     render()
 
 
-# =====================================================================
-# Notebook usage examples
-# =====================================================================
-
+# --- Notebook usage examples -----------------------------------------------
+# Reference snippet for the notebook; not executed at import time.
 '''
 from src.post_cpcv.path_explorer import (
     plot_paths_for_model,
@@ -283,10 +264,4 @@ plot_paths_grid(results, analysis)
 
 # Interactive selector
 interactive_path_explorer(results, analysis)
-
-
-plot_paths_grid for the main results chapter — it shows the full lineup variance in one figure, which is the strongest visual argument that DSR and PBO are correctly identifying low-confidence results.
-plot_paths_for_model for the KAN-specific deep dive section — focuses attention on KAN's path variance while showing the median trajectory, supporting the claim that KAN's symbolic extraction (the actual contribution) is meaningful regardless of moderate predictive performance.
-interactive_path_explorer only for your live defense — if a committee member asks "what does XGBoost actually look like across paths?", you can flip to it instantly. Don't include it in the written thesis.
-
 '''
