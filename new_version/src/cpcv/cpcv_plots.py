@@ -21,6 +21,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+# Reuse cv.py's group-partition helper rather than maintaining a parallel copy here.
+# Importing the private name across modules is a small convention break, but it
+# eliminates the drift risk that a local duplicate would carry.
+from src.cpcv.cv import _compute_group_bounds
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,16 +43,8 @@ DEFAULT_GROUP_COLORS = [
 
 
 # --- 1. Group-partition helpers --------------------------------------------
-# Mirror of cv._compute_group_bounds so plots show exactly the partition the splits use.
-def _compute_group_bounds(T: int, n_groups: int) -> list[tuple[int, int]]:
-    """Return ``[(start, end), ...]`` with exclusive end; groups 0..N-2 have size ⌊T/N⌋."""
-    base_size = T // n_groups
-    bounds = []
-    for g in range(n_groups):
-        start = g * base_size
-        end = (g + 1) * base_size if g < n_groups - 1 else T
-        bounds.append((start, end))
-    return bounds
+# _compute_group_bounds is imported from cv.py (see top of file); this section
+# only contains helpers that are specific to the plotting / audit logic.
 
 
 # Choose three illustrative splits for the train/test timeline plot.
@@ -57,11 +54,28 @@ def pick_demo_splits(
     """Return positional indices for [contiguous-early, one-gap, contiguous-tail].
 
     The three splits cover the visually informative cases: a head-of-series test,
-    a split with a gap between test groups, and an end-of-series test.
+    a split with a gap between test groups, and an end-of-series test. Works for
+    any ``k`` by deriving the contiguous and gapped target tuples from the combos
+    themselves rather than assuming ``k=2``.
     """
-    contiguous_early = all_combos.index((0, 1))
-    contiguous_tail = all_combos.index((n_groups - 2, n_groups - 1))
-    gap_split = all_combos.index((1, 3))
+    # Recover k from the first combination; all combos share the same length.
+    k = len(all_combos[0])
+
+    # Contiguous-early: the first k groups, e.g. (0,1) for k=2, (0,1,2) for k=3.
+    contiguous_early = all_combos.index(tuple(range(k)))
+    # Contiguous-tail: the last k groups, e.g. (N-2,N-1) for k=2, (N-3,N-2,N-1) for k=3.
+    contiguous_tail = all_combos.index(tuple(range(n_groups - k, n_groups)))
+
+    # Gap split: first combination that contains at least one non-adjacent pair of
+    # test groups. Falls back to contiguous-early when none exist (k=N case).
+    gap_split = next(
+        (
+            i for i, c in enumerate(all_combos)
+            if any(c[j + 1] - c[j] > 1 for j in range(len(c) - 1))
+        ),
+        contiguous_early,
+    )
+
     return [contiguous_early, gap_split, contiguous_tail]
 
 
@@ -264,12 +278,19 @@ def print_purge_embargo_detail(
                 purge_gap = g_start - last_train_before - 1
                 print(f"  Pre-test gap (purged): {purge_gap} obs removed")
                 # Inspect the three closest pre-test rows; their t1 must resolve before t_test_start.
+                # NaN-t1 rows are flagged separately because they carry no label and so cannot leak;
+                # _purge_train skips them too.
                 for i in train_before[-3:]:
-                    safe = t1.iloc[i] < t_test_start
-                    flag = "OK" if safe else "OVERLAP"
+                    if pd.isna(t1.iloc[i]):
+                        flag = "NaN-label"
+                        t1_str = "NaT"
+                    else:
+                        safe = t1.iloc[i] < t_test_start
+                        flag = "OK" if safe else "OVERLAP"
+                        t1_str = str(t1.iloc[i].date())
                     print(
                         f"      idx={i:>4d} ({X.index[i].date()})  "
-                        f"t1={t1.iloc[i].date()}  {flag}"
+                        f"t1={t1_str}  {flag}"
                     )
 
             if train_after:
@@ -284,7 +305,27 @@ def print_purge_embargo_detail(
 
 
 # --- 5. Leakage audit across all splits ------------------------------------
-# Full audit: confirm no training label resolves inside any test group, across every split.
+# Full audit: confirm no training label resolves inside any test group, and no
+# training label horizon straddles any test group, across every split.
+def _recover_test_groups(
+    test_idx: np.ndarray,
+    group_bounds: list[tuple[int, int]],
+) -> tuple[int, ...]:
+    """Recover the tuple of test-group IDs by checking which group bounds enclose ``test_idx``.
+
+    Rather than trusting that the i-th split corresponds to the i-th combination from
+    ``itertools.combinations`` (which is true at construction time but fragile if splits
+    are later reordered), this reconstructs the test_groups from the indices themselves.
+    """
+    test_set = set(int(i) for i in test_idx)
+    groups = []
+    for g, (s, e) in enumerate(group_bounds):
+        # A group is "in the test set" iff every one of its positional indices appears in test_idx.
+        if all(i in test_set for i in range(s, e)):
+            groups.append(g)
+    return tuple(groups)
+
+
 def audit_cpcv_leakage(
     X: pd.DataFrame,
     t1: pd.Series,
@@ -295,19 +336,32 @@ def audit_cpcv_leakage(
 ) -> pd.DataFrame:
     """Audit every split for label-overlap leakage; print a summary and return the per-split table.
 
-    For each split, count training rows whose entry timestamp falls before a test
-    region but whose label end-time ``t1`` resolves inside that test region. AFML
-    purging is supposed to remove those rows, so a clean run reports zero leaks.
+    Checks AFML §7.4.1 conditions 2 and 3 (condition 1 cannot fire for contiguous group
+    partitioning because train and test indices are disjoint by construction):
+      - Condition 2: training label resolves inside a test group.
+      - Condition 3: training label horizon straddles the entire test group.
+
+    A clean run reports zero leaks for every split. NaN-t1 training rows are skipped
+    because they carry no label and so cannot leak — ``_purge_train`` treats them the
+    same way.
     """
+    # Defensive: t1 must be positionally aligned with X for ``t1.iloc[train_idx]``
+    # to return the right labels.
+    if len(t1) != len(X):
+        raise ValueError(
+            f"audit_cpcv_leakage: t1 has length {len(t1)} but X has length "
+            f"{len(X)}; they must be positionally aligned."
+        )
+
     T = len(X)
     group_bounds = _compute_group_bounds(T, n_groups)
-    all_combos = list(combinations(range(n_groups), k))
 
     n_leaks_total = 0
     audit_results = []
 
     for i, (train_idx, test_idx) in enumerate(splits):
-        test_groups = all_combos[i]
+        # Recover test_groups from the indices rather than trusting split position.
+        test_groups = _recover_test_groups(test_idx, group_bounds)
         leak_count = 0
 
         # Sum leaks across every test group within the split.
@@ -319,13 +373,20 @@ def audit_cpcv_leakage(
             train_t1 = t1.iloc[train_idx]
             train_times = X.index[train_idx]
 
-            # Vectorised condition: train row starts before test AND its label resolves inside test.
-            leaks = train_t1[
+            # Condition 2: training row starts before test AND its label resolves inside test.
+            # NaN comparisons evaluate to False, so NaN-labelled rows fall out naturally.
+            leaks_cond2 = train_t1[
                 (train_times < t_test_start)
                 & (train_t1 >= t_test_start)
                 & (train_t1 <= t_test_end)
             ]
-            leak_count += len(leaks)
+            # Condition 3: training label horizon straddles the entire test window
+            # (row starts at or before test_start AND resolves at or after test_end).
+            leaks_cond3 = train_t1[
+                (train_times <= t_test_start)
+                & (train_t1 >= t_test_end)
+            ]
+            leak_count += len(leaks_cond2) + len(leaks_cond3)
 
         n_leaks_total += leak_count
         audit_results.append({

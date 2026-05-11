@@ -35,6 +35,14 @@ def generate_cpcv_splits(
     Indices are positional integers into ``X``; ``t1`` supplies the label
     end-times that drive the purge condition.
     """
+    # Defensive: t1 and X must share the same row ordering and length, otherwise
+    # ``t1.iloc[i]`` (positional) gives a label that doesn't belong to row i of X.
+    if len(t1) != len(X):
+        raise ValueError(
+            f"generate_cpcv_splits: t1 has length {len(t1)} but X has length "
+            f"{len(X)}; they must be positionally aligned."
+        )
+
     T = len(X)
     embargo_len = int(embargo_pct * T)
 
@@ -145,7 +153,7 @@ def get_split_info(
         n_paths, path_map = build_path_matrix(n_groups, k)
 
     info = _compute_split_info(
-        X=X, splits=splits,
+        X=X, t1=t1, splits=splits,
         n_groups=n_groups, k=k,
         embargo_len=embargo_len, embargo_pct=embargo_pct,
         n_paths=n_paths, group_bounds=group_bounds,
@@ -191,6 +199,7 @@ def print_split_summary(info: dict) -> None:
 # Assemble the summary statistics dict from already-generated splits.
 def _compute_split_info(
     X: pd.DataFrame,
+    t1: pd.Series,
     splits: list[tuple[np.ndarray, np.ndarray]],
     n_groups: int,
     k: int,
@@ -214,25 +223,30 @@ def _compute_split_info(
     train_sizes = [len(tr) for tr, _ in splits]
     test_sizes = [len(te) for _, te in splits]
 
-    # Reconstruct per-split purge and embargo counts by comparing the actual train
-    # size to the unpurged baseline (T − test_size); the residual splits into the
-    # bounded embargo portion and the rest as purge.
+    # Exact per-split purge and embargo counts: call _purge_train directly to get the
+    # AFML purge set, then attribute the residual (total_removed - purged) to the
+    # embargo rule. Buckets add to total_removed exactly, with purge taking precedence
+    # over embargo when both rules would remove the same row.
     all_combos = list(combinations(range(n_groups), k))
     purge_counts = []
     embargo_counts = []
     for i, test_groups in enumerate(all_combos):
-        test_size = sum(
-            group_bounds[g][1] - group_bounds[g][0] for g in test_groups
+        test_set = set()
+        for g in test_groups:
+            s, e = group_bounds[g]
+            test_set.update(range(s, e))
+
+        initial_train = set(range(T)) - test_set
+        actual_train_set = set(splits[i][0].tolist())
+        total_removed = initial_train - actual_train_set
+
+        purged_set = _purge_train(
+            initial_train, test_groups, group_bounds, X.index, t1,
         )
-        unpurged_train = T - test_size
-        actual_train = len(splits[i][0])
-        total_removed = unpurged_train - actual_train
+        embargoed_set = total_removed - purged_set
 
-        est_embargo = min(embargo_len * len(test_groups), total_removed)
-        est_purged = total_removed - est_embargo
-
-        purge_counts.append(max(0, est_purged))
-        embargo_counts.append(max(0, est_embargo))
+        purge_counts.append(len(purged_set))
+        embargo_counts.append(len(embargoed_set))
 
     return {
         "T": T,
