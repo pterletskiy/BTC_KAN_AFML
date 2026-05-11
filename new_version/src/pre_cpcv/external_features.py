@@ -1,46 +1,12 @@
 """
 4.2) External Features
 ============================
-Fetch, cache, and align external data sources to BTC's daily calendar.
+Fetch, cache, and align macro, crypto-macro, and on-chain external features
+to BTC's daily calendar. 29 features total: 20 macro, 1 crypto-macro, 8 on-chain.
 
-Features are organized into three groups:
-
-Macro (20):
-  Traditional finance signals reflecting the broader economic environment.
-  dxy_roc_30, us2y, us10y, yield_curve_2y10y, yield_curve_10y30y, vix,
-  sp500_ret_30, sp500_ret_14, nasdaq_ret_30, nasdaq_ret_14,
-  gold_ret_30, gold_ret_14, silver_ret_30, silver_ret_14,
-  copper_ret_30, copper_ret_14, oil_ret_30, oil_ret_14,
-  natgas_ret_30, natgas_ret_14
-
-  The seven faster-moving assets (sp500, nasdaq, gold, silver, copper,
-  oil, natgas) are exposed at both 30-day and 14-day return horizons so
-  MDA can pick whichever the per-fold permutation importance prefers.
-  The 14-day variant captures bi-weekly cycles and is more responsive
-  to recent news/macro shocks; the 30-day variant captures monthly
-  cycles and is smoother. Slow-moving variables (DXY, yields, yield
-  curves) keep the 30-day window only because their information content
-  is dominated by monthly settlement and release cycles where a 14-day
-  variant adds noise without signal. The 14d/30d pairs of the same
-  asset are correlated (typically r > 0.7); MDA's permutation-importance
-  scheme handles correlated features by spreading importance across them
-  or, in some folds, dropping the redundant one entirely. Either outcome
-  is acceptable; the methodology is "let MDA decide".
-
-Crypto-Macro (1):
-  Market-level cross-crypto signal (not blockchain fundamentals).
-  eth_btc_ratio
-
-On-Chain (8):
-  Blockchain network activity from CoinMetrics Community API.
-  active_addr_roc_14, tx_count_roc_14, hashrate_roc_30, mvrv,
-  net_exchange_flow, fee_per_tx, exchange_supply_pct, issuance_ntv
-
-Total: 29 external features.
-
-All external data is forward-filled to BTC's trading calendar via
-pd.merge_asof(direction='backward') so that each BTC day uses the
-most recent available value (no look-ahead bias).
+All external series are forward-filled to BTC's trading calendar via
+``pd.merge_asof(direction='backward')`` so each BTC day uses the most recent
+available value with no look-ahead.
 """
 
 import logging
@@ -52,14 +18,12 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+# Cache paths for the assembled external matrix and the raw CoinMetrics pull.
 CACHE_DIR = "cache/"
 EXTERNAL_CACHE_FILE = "external_features.parquet"
 ONCHAIN_CACHE_FILE = "onchain_raw.parquet"
 
-# yfinance tickers for macro data
+# yfinance tickers for the macro group.
 MACRO_TICKERS = {
     "dxy": "DX-Y.NYB",       # US Dollar Index
     "us10y": "^TNX",          # 10Y Treasury yield
@@ -74,19 +38,12 @@ MACRO_TICKERS = {
     "natgas": "NG=F",         # Natural gas futures
 }
 
-# Rolling return windows. Both horizons are computed for the seven
-# faster-moving assets (sp500, nasdaq, gold, silver, copper, oil,
-# natgas) so that MDA decides per fold which horizon is more
-# informative. The 14-day window captures bi-weekly cycles and is
-# more responsive to recent macro/news shocks; the 30-day window
-# captures monthly cycles and is smoother. Slow-moving variables
-# (DXY, yields, yield curves) use the 30-day window only because
-# their information content is dominated by monthly settlement and
-# release cycles where a 14-day variant adds noise without signal.
-RET_WINDOW = 30        # ~1 crypto month
-RET_WINDOW_SHORT = 14  # ~2 crypto weeks
+# Rolling return windows. Faster-moving assets get both 30-day and 14-day returns
+# so MDA can pick the responsive horizon per fold; slow-moving variables (DXY,
+# yields, yield curves) keep only the 30-day window.
+RET_WINDOW, RET_WINDOW_SHORT = 30, 14  # ~1 crypto month, ~2 crypto weeks
 
-# CoinMetrics metrics to fetch (daily, community tier)
+# CoinMetrics Community-tier metrics used by the on-chain group.
 COINMETRICS_METRICS = [
     "AdrActCnt",       # active addresses
     "TxCnt",           # transaction count
@@ -101,11 +58,10 @@ COINMETRICS_METRICS = [
 ]
 
 
-# =====================================================================
-# Data fetching helpers
-# =====================================================================
+# --- 1. Data fetching helpers ----------------------------------------------
+# Thin yfinance wrapper that returns just the Close series and handles MultiIndex columns.
 def _fetch_yfinance(ticker: str, start: str, end: str) -> pd.Series:
-    """Fetch daily Close prices from yfinance."""
+    """Download daily Close prices from yfinance; return empty Series on failure."""
     import yfinance as yf
 
     df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
@@ -114,7 +70,7 @@ def _fetch_yfinance(ticker: str, start: str, end: str) -> pd.Series:
         logger.warning("yfinance returned empty data for %s.", ticker)
         return pd.Series(dtype=float)
 
-    # handle MultiIndex columns (newer yfinance)
+    # yfinance >= 0.2.31 returns MultiIndex columns; flatten to the ticker level.
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
@@ -123,16 +79,13 @@ def _fetch_yfinance(ticker: str, start: str, end: str) -> pd.Series:
     return close
 
 
+# 2Y Treasury yield from FRED, with empty-return signal so callers can fall back.
 def _fetch_us2y(start: str, end: str) -> pd.Series:
-    """Fetch 2Y Treasury yield from FRED.
-
-    Returns an empty Series on failure. The caller is expected to
-    fall back to the T10Y2Y spread derivation in compute_macro_features.
-    """
+    """Fetch DGS2 from FRED. Returns empty Series on failure; caller derives from T10Y2Y spread."""
     try:
         import pandas_datareader.data as web
         from pandas_datareader.fred import FredReader
-        FredReader.timeout = 60  # default 30s is too aggressive
+        FredReader.timeout = 60  # default 30s times out on long history pulls
         series = web.DataReader("DGS2", "fred", start, end)["DGS2"]
         series.index = pd.to_datetime(series.index).tz_localize(None)
         series = series.dropna()
@@ -145,32 +98,18 @@ def _fetch_us2y(start: str, end: str) -> pd.Series:
     return pd.Series(dtype=float)
 
 
+# CoinMetrics ETH price fetcher with a three-step metric-priority fallback.
 def _fetch_coinmetrics_eth(start: str, end: str) -> pd.Series:
-    """Fetch daily ETH/USD prices from CoinMetrics.
+    """Fetch daily ETH/USD from CoinMetrics; required for early-history ETH/BTC ratio.
 
-    CoinMetrics serves ETH/USD history back to 2015-08-07 (the day
-    of Ethereum's Frontier launch), substantially earlier than
-    yfinance's ``ETH-USD`` ticker which only begins around
-    2017-11-09. The earlier history is needed so that
-    ``eth_btc_ratio`` has valid values throughout the BTC dataset's
-    full span (2014 → present), preventing entire-test-partition NaN
-    in the early CPCV folds.
+    CoinMetrics serves ETH back to 2015-08-07 (Ethereum's Frontier launch),
+    whereas yfinance's ETH-USD only begins around 2017-11-09. The earlier
+    history avoids entire-test-partition NaN in early CPCV folds.
 
-    The Community tier gates which metrics are free per asset.
-    ``ReferenceRateUSD`` (the multi-source weighted reference rate)
-    is Pro-only for non-BTC assets at the time of writing, so this
-    function tries metrics in priority order:
-
-    1. ``ReferenceRateUSD`` — most curated, may be Pro-only for ETH.
-    2. ``PriceUSD`` — single-exchange price, typically free.
-    3. ``CapMrktCurUSD / SplyCur`` — derived market-cap / supply ratio.
-
-    The first one that returns >100 rows wins. Returns an empty Series
-    if all three fail; the caller then falls back to yfinance.
-
-    Uses the same ``coinmetrics-api-client`` Community-tier endpoint
-    already used for on-chain BTC metrics, so no additional
-    credentials or dependencies are required.
+    The Community tier gates which metrics are free per asset. Tries metrics in
+    priority order — ReferenceRateUSD, then PriceUSD, then a CapMrktCurUSD/SplyCur
+    derivation — and returns the first one returning more than 100 rows. Empty
+    Series if all three fail; the caller then falls back to yfinance.
     """
     try:
         from coinmetrics.api_client import CoinMetricsClient
@@ -183,7 +122,7 @@ def _fetch_coinmetrics_eth(start: str, end: str) -> pd.Series:
 
     client = CoinMetricsClient()
 
-    # Try the curated reference rate first; fall back to price.
+    # Try the curated reference rate first, then the raw single-exchange price.
     for metric in ("ReferenceRateUSD", "PriceUSD"):
         try:
             result = client.get_asset_metrics(
@@ -227,7 +166,7 @@ def _fetch_coinmetrics_eth(start: str, end: str) -> pd.Series:
             metric, len(eth),
         )
 
-    # Last resort: derive price from market cap and supply.
+    # Last-resort derivation: price ≈ market cap / supply when neither rate metric serves.
     try:
         result = client.get_asset_metrics(
             assets="eth",
@@ -273,13 +212,14 @@ def _fetch_coinmetrics_eth(start: str, end: str) -> pd.Series:
     return pd.Series(dtype=float)
 
 
+# Forward-fill an external series onto BTC's daily calendar via merge_asof.
 def _align_to_btc(
     series: pd.Series, btc_index: pd.DatetimeIndex, name: str,
 ) -> pd.Series:
-    """Forward-fill an external series to BTC's daily calendar.
+    """Snap each BTC day to the most recent available value of the external series.
 
-    Uses merge_asof with direction='backward' so each BTC day gets the
-    most recent available value from the external source.
+    Direction='backward' guarantees no look-ahead: weekends carry Friday's value,
+    weekly releases persist until the next print.
     """
     if series.empty:
         return pd.Series(np.nan, index=btc_index, name=name)
@@ -302,23 +242,11 @@ def _align_to_btc(
     return result
 
 
-# =====================================================================
-# Macro Features (13)
-# =====================================================================
+# --- 2. Macro features ------------------------------------------------------
+# 20 traditional-finance signals: DXY, yields, yield curves, VIX, and asset returns.
 def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
-    """Compute 13 macro features aligned to BTC's daily calendar.
-
-    Parameters
-    ----------
-    btc_index : pd.DatetimeIndex
-        BTC's daily trading dates (the master timeline).
-
-    Returns
-    -------
-    pd.DataFrame
-        13 macro feature columns indexed on btc_index.
-    """
-    # buffer for rolling calculations
+    """Compute 20 macro features aligned to BTC's daily calendar."""
+    # Buffer the start so rolling calculations have warm-up room.
     start = str(btc_index[0].date() - pd.Timedelta(days=250))
     end = str(btc_index[-1].date() + pd.Timedelta(days=1))
 
@@ -326,7 +254,7 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
 
     print("[external] Fetching macro data from yfinance...")
 
-    # fetch all yfinance tickers
+    # Fetch every yfinance ticker into a raw dict; per-ticker failures are isolated.
     raw = {}
     for name, ticker in MACRO_TICKERS.items():
         t0 = time.time()
@@ -338,25 +266,26 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
             logger.warning("Failed to fetch %s (%s): %s", name, ticker, e)
             raw[name] = pd.Series(dtype=float)
 
-    # fetch 2Y yield separately (FRED)
+    # 2Y yield comes from FRED separately so the spread-derived fallback can run.
     t0 = time.time()
     raw["us2y"] = _fetch_us2y(start, end)
     print(f"  {'us2y':>10s} ({'DGS2':>10s}): {len(raw['us2y'])} bars ({time.time()-t0:.1f}s)")
 
-    # align all to BTC calendar
+    # Align every series onto the BTC index before any feature computation.
     aligned = {name: _align_to_btc(series, btc_index, name) for name, series in raw.items()}
 
     # 1. DXY 30-day rate of change (%)
     dxy = aligned["dxy"]
     features["dxy_roc_30"] = (dxy / dxy.shift(RET_WINDOW) - 1.0) * 100.0
 
-    # 2. US 10Y yield (must come before 2Y so fallback can derive us2y)
+    # 2. US 10Y yield (must come before 2Y so the fallback can derive us2y).
+    # yfinance sometimes returns yields as bps × 10 instead of percent; auto-rescale.
     us10y = aligned["us10y"]
     if us10y.median() > 10:
         us10y = us10y / 10.0
     features["us10y"] = us10y
 
-    # 3 & 4. US 2Y yield + yield curve 2y10y (with FRED spread fallback)
+    # 3 & 4. US 2Y yield + 2y10y curve, with FRED T10Y2Y spread as fallback when DGS2 is sparse.
     us2y = aligned["us2y"]
     if us2y.notna().sum() > 2000:
         if us2y.median() > 10:
@@ -364,7 +293,7 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
         features["us2y"] = us2y
         features["yield_curve_2y10y"] = features["us10y"] - features["us2y"]
     else:
-        # fallback: fetch the T10Y2Y spread directly from FRED
+        # Spread-derived path: us2y = us10y - T10Y2Y spread.
         try:
             import pandas_datareader.data as web
             spread = web.DataReader("T10Y2Y", "fred", start, end)["T10Y2Y"]
@@ -379,7 +308,7 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
             features["us2y"] = np.nan
             features["yield_curve_2y10y"] = np.nan
 
-    # 5. Yield curve 10y30y
+    # 5. 10y30y yield curve (long-end slope).
     us30y = aligned["us30y"]
     if us30y.median() > 10:
         us30y = us30y / 10.0
@@ -388,37 +317,37 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     # 6. VIX (level)
     features["vix"] = aligned["vix"]
 
-    # 7. S&P 500 rolling log returns (30-day and 14-day; MDA picks per fold)
+    # 7. S&P 500 rolling log returns at both horizons; MDA picks per fold.
     sp500 = aligned["sp500"]
     features["sp500_ret_30"] = np.log(sp500 / sp500.shift(RET_WINDOW))
     features["sp500_ret_14"] = np.log(sp500 / sp500.shift(RET_WINDOW_SHORT))
 
-    # 8. Nasdaq rolling log returns (30-day and 14-day)
+    # 8. Nasdaq rolling log returns (30-day and 14-day).
     nasdaq = aligned["nasdaq"]
     features["nasdaq_ret_30"] = np.log(nasdaq / nasdaq.shift(RET_WINDOW))
     features["nasdaq_ret_14"] = np.log(nasdaq / nasdaq.shift(RET_WINDOW_SHORT))
 
-    # 9. Gold rolling log returns (30-day and 14-day)
+    # 9. Gold rolling log returns (30-day and 14-day).
     gold = aligned["gold"]
     features["gold_ret_30"] = np.log(gold / gold.shift(RET_WINDOW))
     features["gold_ret_14"] = np.log(gold / gold.shift(RET_WINDOW_SHORT))
 
-    # 10. Silver rolling log returns (30-day and 14-day)
+    # 10. Silver rolling log returns (30-day and 14-day).
     silver = aligned["silver"]
     features["silver_ret_30"] = np.log(silver / silver.shift(RET_WINDOW))
     features["silver_ret_14"] = np.log(silver / silver.shift(RET_WINDOW_SHORT))
 
-    # 11. Copper rolling log returns (30-day and 14-day)
+    # 11. Copper rolling log returns (30-day and 14-day).
     copper = aligned["copper"]
     features["copper_ret_30"] = np.log(copper / copper.shift(RET_WINDOW))
     features["copper_ret_14"] = np.log(copper / copper.shift(RET_WINDOW_SHORT))
 
-    # 12. Oil rolling log returns (30-day and 14-day)
+    # 12. Oil rolling log returns (30-day and 14-day).
     oil = aligned["oil"]
     features["oil_ret_30"] = np.log(oil / oil.shift(RET_WINDOW))
     features["oil_ret_14"] = np.log(oil / oil.shift(RET_WINDOW_SHORT))
 
-    # 13. Natural gas rolling log returns (30-day and 14-day)
+    # 13. Natural gas rolling log returns (30-day and 14-day).
     natgas = aligned["natgas"]
     features["natgas_ret_30"] = np.log(natgas / natgas.shift(RET_WINDOW))
     features["natgas_ret_14"] = np.log(natgas / natgas.shift(RET_WINDOW_SHORT))
@@ -430,34 +359,13 @@ def compute_macro_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     return features
 
 
-# =====================================================================
-# Crypto-Macro Features (1)
-# =====================================================================
+# --- 3. Crypto-macro features ----------------------------------------------
+# Single market-level cross-crypto signal (ETH/BTC ratio); distinct from on-chain.
 def compute_crypto_macro_features(
     btc_close: pd.Series,
     btc_index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
-    """Compute 1 crypto-macro feature aligned to BTC's calendar.
-
-    Currently produces only ETH/BTC ratio. ``btc_dominance`` was
-    removed because the CoinGecko endpoint returned BTC market cap in
-    USD (not the bounded dominance percentage), and the proxy fallback
-    was a price-correlated approximation. ETH/BTC ratio carries the
-    alt-rotation signal alone, distinct from blockchain fundamentals
-    in compute_onchain_features.
-
-    Parameters
-    ----------
-    btc_close : pd.Series
-        BTC daily close prices.
-    btc_index : pd.DatetimeIndex
-        BTC's daily trading dates.
-
-    Returns
-    -------
-    pd.DataFrame
-        Single-column ('eth_btc_ratio') DataFrame indexed on btc_index.
-    """
+    """Compute the single crypto-macro feature ``eth_btc_ratio`` aligned to BTC's calendar."""
     start = str(btc_index[0].date() - pd.Timedelta(days=30))
     end = str(btc_index[-1].date() + pd.Timedelta(days=1))
 
@@ -465,20 +373,8 @@ def compute_crypto_macro_features(
 
     print("[external] Fetching crypto-macro data...")
 
-    # ETH/BTC ratio
-    # Source priority: CoinMetrics first (ETH price back to 2015-08-07,
-    # the Ethereum Frontier launch date), falling back to yfinance
-    # ETH-USD (history back to ~2017-11-09 only). The earlier
-    # CoinMetrics history is needed to avoid entire-test-partition NaN
-    # in eth_btc_ratio for the early CPCV folds. Both sources return
-    # daily-close-equivalent USD prices, so the ratio computation is
-    # source-agnostic once the series is aligned to btc_index.
-    # CoinMetrics' Community-tier API is already used elsewhere in
-    # this module for on-chain BTC metrics, so no new credentials
-    # are required. The CoinMetrics helper internally tries
-    # ReferenceRateUSD, then PriceUSD, then a CapMrktCurUSD/SplyCur
-    # derivation, before signalling the caller to fall back to
-    # yfinance.
+    # ETH source priority: CoinMetrics (history back to 2015-08-07) → yfinance (~2017-11-09 onward).
+    # The earlier history is needed so eth_btc_ratio is non-NaN throughout the BTC series.
     t0 = time.time()
     try:
         eth = _fetch_coinmetrics_eth(start, end)
@@ -500,6 +396,7 @@ def compute_crypto_macro_features(
                 f"(fallback) ({time.time()-t0:.1f}s)"
             )
 
+        # Align ETH to the BTC index and form the ratio.
         eth_aligned = _align_to_btc(eth, btc_index, "eth_close")
         features["eth_btc_ratio"] = eth_aligned / btc_close.reindex(btc_index)
 
@@ -510,13 +407,12 @@ def compute_crypto_macro_features(
     return features
 
 
-# =====================================================================
-# On-Chain Features (8)
-# =====================================================================
+# --- 4. On-chain features --------------------------------------------------
+# Raw CoinMetrics pull shared by all 8 on-chain derivations; shifted by 1 day for anti-leakage.
 def _fetch_coinmetrics(
     metrics: list[str], start: str, end: str,
 ) -> pd.DataFrame:
-    """Fetch BTC on-chain metrics from CoinMetrics Community API."""
+    """Fetch BTC on-chain metrics from CoinMetrics Community API; raises on missing client."""
     try:
         from coinmetrics.api_client import CoinMetricsClient
     except ImportError:
@@ -539,7 +435,7 @@ def _fetch_coinmetrics(
     )
     df = result.to_dataframe()
 
-    # parse timestamps
+    # Normalise the time column to a clean tz-naive DatetimeIndex.
     df["time"] = pd.to_datetime(df["time"])
     df["time"] = df["time"].dt.tz_localize(None).dt.normalize()
     df = df.set_index("time")
@@ -551,8 +447,8 @@ def _fetch_coinmetrics(
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # shift by 1 day to avoid look-ahead bias
-    # (CoinMetrics reports end-of-day; we align to next day's open)
+    # Critical anti-leakage step: CoinMetrics reports end-of-day, but a model
+    # predicting tomorrow from today's open cannot use today's close-time values.
     df = df.shift(1)
 
     elapsed = time.time() - t0
@@ -561,22 +457,9 @@ def _fetch_coinmetrics(
     return df
 
 
+# 8 blockchain-fundamental features derived from CoinMetrics raw metrics.
 def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
-    """Compute 8 on-chain features from CoinMetrics Community API.
-
-    These are blockchain fundamentals, distinct from crypto-macro
-    market-level signals.
-
-    Parameters
-    ----------
-    btc_index : pd.DatetimeIndex
-        BTC's daily trading dates (the master timeline).
-
-    Returns
-    -------
-    pd.DataFrame
-        8 on-chain feature columns indexed on btc_index.
-    """
+    """Compute 8 on-chain features from the CoinMetrics Community API, aligned to BTC's calendar."""
     start = str(btc_index[0].date() - pd.Timedelta(days=60))
     end = str(btc_index[-1].date() + pd.Timedelta(days=1))
 
@@ -584,7 +467,7 @@ def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
 
     print("[external] Fetching on-chain data from CoinMetrics...")
 
-    # fetch raw metrics (with cache)
+    # Cache the raw CoinMetrics pull because it is the slow step; refresh on stale cache.
     raw_cache = os.path.join(CACHE_DIR, ONCHAIN_CACHE_FILE)
 
     if os.path.exists(raw_cache):
@@ -600,41 +483,41 @@ def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
         os.makedirs(CACHE_DIR, exist_ok=True)
         raw.to_parquet(raw_cache)
 
-    # align to BTC calendar
+    # Align every raw metric onto the BTC index before deriving features.
     aligned = {col: _align_to_btc(raw[col], btc_index, col) for col in raw.columns}
 
-    # 1. Active addresses: 14-day rate of change
+    # 1. Active addresses: 14-day rate of change (turns level into stationary differential).
     adr = aligned.get("AdrActCnt", pd.Series(np.nan, index=btc_index))
     features["active_addr_roc_14"] = (adr / adr.shift(14) - 1.0) * 100.0
 
-    # 2. Transaction count: 14-day rate of change
+    # 2. Transaction count: 14-day rate of change.
     tx = aligned.get("TxCnt", pd.Series(np.nan, index=btc_index))
     features["tx_count_roc_14"] = (tx / tx.shift(14) - 1.0) * 100.0
 
-    # 3. Hash rate: 30-day rate of change
+    # 3. Hash rate: 30-day rate of change (slower mining capacity adjustments).
     hr = aligned.get("HashRate", pd.Series(np.nan, index=btc_index))
     features["hashrate_roc_30"] = (hr / hr.shift(30) - 1.0) * 100.0
 
-    # 4. MVRV ratio (level, already stationary and mean-reverting)
+    # 4. MVRV ratio (already stationary and mean-reverting; kept as level).
     features["mvrv"] = aligned.get("CapMVRVCur", pd.Series(np.nan, index=btc_index))
 
-    # 5. Net exchange flow: inflows minus outflows (already stationary)
+    # 5. Net exchange flow: inflows − outflows. Positive ⇒ selling pressure to exchanges.
     flow_in = aligned.get("FlowInExNtv", pd.Series(0.0, index=btc_index))
     flow_out = aligned.get("FlowOutExNtv", pd.Series(0.0, index=btc_index))
     features["net_exchange_flow"] = flow_in - flow_out
 
-    # 6. Fee per transaction (ratio, stationary)
+    # 6. Fee per transaction (stationary ratio, BTC per tx).
     fee = aligned.get("FeeTotNtv", pd.Series(np.nan, index=btc_index))
     tx_safe = tx.replace(0, np.nan)
     features["fee_per_tx"] = fee / tx_safe
 
-    # 7. Exchange supply percentage (ratio, stationary)
+    # 7. Exchange supply percentage (stationary ratio, fraction of supply on exchanges).
     sply_ex = aligned.get("SplyExNtv", pd.Series(np.nan, index=btc_index))
     sply_cur = aligned.get("SplyCur", pd.Series(np.nan, index=btc_index))
     sply_cur_safe = sply_cur.replace(0, np.nan)
     features["exchange_supply_pct"] = (sply_ex / sply_cur_safe) * 100.0
 
-    # 8. Daily issuance (BTC, level, changes only at halvings)
+    # 8. Daily issuance (kept as level; step-function changes at halvings).
     features["issuance_ntv"] = aligned.get("IssTotNtv", pd.Series(np.nan, index=btc_index))
 
     n_valid = features.notna().all(axis=1).sum()
@@ -644,9 +527,8 @@ def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     return features
 
 
-# =====================================================================
-# Orchestration
-# =====================================================================
+# --- 5. Orchestration ------------------------------------------------------
+# Public entry point: fetch every category, concatenate, cache to Parquet.
 def build_external_features(
     btc_df: pd.DataFrame,
     include_macro: bool = True,
@@ -655,30 +537,15 @@ def build_external_features(
 ) -> pd.DataFrame:
     """Fetch, compute, and cache all external features.
 
-    Total feature count: 13 macro + 1 crypto-macro + 8 on-chain = 22.
-
-    Parameters
-    ----------
-    btc_df : pd.DataFrame
-        BTC OHLCV DataFrame with DatetimeIndex (from data_loader).
-    include_macro : bool
-        Whether to include macro features (traditional finance).
-    include_crypto_macro : bool
-        Whether to include crypto-macro features (ETH/BTC ratio).
-    include_onchain : bool
-        Whether to include on-chain features (requires coinmetrics-api-client).
-
-    Returns
-    -------
-    pd.DataFrame
-        External features aligned to BTC's daily calendar.
+    Each category is independently toggleable; the on-chain fetch is wrapped in
+    try/except so a missing ``coinmetrics-api-client`` does not break the pipeline.
     """
     cache_path = os.path.join(CACHE_DIR, EXTERNAL_CACHE_FILE)
     btc_index = btc_df.index
     btc_close = btc_df["Close"]
 
-    # check cache (date-range AND column-set match, the latter so dropping
-    # a feature like btc_dominance does not silently return a stale cache)
+    # Cache hit requires both date-range AND column-set to match. The column check
+    # prevents a stale cache from silently surviving a feature-list change.
     expected_cols = _expected_external_columns(
         include_macro, include_crypto_macro, include_onchain,
     )
@@ -703,6 +570,7 @@ def build_external_features(
     print("=" * 60)
     t_start = time.time()
 
+    # Build each enabled category in turn and concatenate.
     parts = []
 
     if include_macro:
@@ -723,7 +591,7 @@ def build_external_features(
 
     features = pd.concat(parts, axis=1)
 
-    # report
+    # Surface column-level NaN concerns so a quick eyeball check catches feed issues.
     elapsed = time.time() - t_start
     n_valid = features.notna().all(axis=1).sum()
     print(f"\n[external] {features.shape[1]} features, "
@@ -731,13 +599,12 @@ def build_external_features(
           f"fetched in {elapsed:.1f}s")
     print(f"[external] Columns: {list(features.columns)}")
 
-    # NaN summary
     nan_pct = features.isna().mean() * 100
     for col in features.columns:
         if nan_pct[col] > 5:
             print(f"  ⚠ {col}: {nan_pct[col]:.1f}% NaN")
 
-    # cache
+    # Persist the assembled matrix for the next run.
     os.makedirs(CACHE_DIR, exist_ok=True)
     features.to_parquet(cache_path)
     logger.info("External features cached to %s.", cache_path)
@@ -745,17 +612,13 @@ def build_external_features(
     return features
 
 
+# Cache schema fingerprint; invalidates the cache when the configured feature set changes.
 def _expected_external_columns(
     include_macro: bool,
     include_crypto_macro: bool,
     include_onchain: bool,
 ) -> list[str]:
-    """Return the column set the cache must match for a hit.
-
-    Used by build_external_features to invalidate the cache when the
-    feature set changes (e.g., dropping btc_dominance), since the prior
-    cache check only compared index endpoints.
-    """
+    """Return the column set the cache must contain to count as a hit."""
     cols: list[str] = []
     if include_macro:
         cols += [

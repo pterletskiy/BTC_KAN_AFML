@@ -1,35 +1,11 @@
 """
 4.1) Features
 ============================
-Compute all features from the full OHLCV DataFrame. Returns a feature
-matrix covering every daily bar. Feature selection by row (restricting
-to labeled events) happens later in alignment.
+Compute the TA + math + lag feature matrix on the full daily OHLCV bar set.
+Row-level alignment to labelled events happens later in ``alignment.py``.
 
-Implements technical analysis features, AFML Part 4 mathematical
-features, lag features (AR Logistic baseline), and log transforms.
-
-All time windows use crypto calendar (365 days/year, 7 days/week):
+All time windows use the crypto calendar (365 days/year, 7 days/week):
   1 week = 7,  1 month = 30,  1 quarter = 90,  6 months = 180
-
-TA features (25 total):
-  log_returns, rsi, macd, macd_signal, macd_hist, bb_width, atr, obv,
-  skewness, kurtosis, realized_vol, gk_vol, yz_vol, ema_ratio_20_50,
-  ema_ratio_50_200, vwma_ratio_20_50, roc_14, stoch_k, stoch_d,
-  williams_r, cci_14, chaikin_osc, mfi_14,
-  vol_term_7_30, vol_term_30_90
-
-Mathematical features (9 total):
-  shannon_entropy, lz_complexity, hurst, variance_ratio, jarque_bera,
-  negentropy, sadf, smt_poly1, smt_exp
-
-Lag features (6 total, AR Logistic only):
-  log_returns_lag1, log_returns_lag2, log_returns_lag3,
-  log_returns_lag7, log_returns_lag14, log_returns_lag30
-
-  Precomputed once on the full daily series so the AR Logistic baseline
-  does not need to build lags inline at fit/predict time. Excluded
-  from MDA feature selection in preprocessing — they are a separate
-  category routed only to AR Logistic.
 """
 
 import logging
@@ -41,68 +17,52 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 logger = logging.getLogger(__name__)
 
-# ── TA parameters ─────────────────────────────────────────────────────
+# --- TA parameters ----------------------------------------------------------
 RSI_PERIOD = 14
-MACD_FAST = 12
-MACD_SLOW = 26
-MACD_SIGNAL = 9
 BB_PERIOD = 20
 ATR_PERIOD = 14
-ROLLING_WINDOW = 30              
+MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 
-EMA_SHORT = 20
-EMA_MID = 50
-EMA_LONG = 200
+# Generic rolling window for skew/kurt/realized-vol/GK-vol moments.
+ROLLING_WINDOW = 30
+EMA_SHORT, EMA_MID, EMA_LONG = 20, 50, 200
+CHAIKIN_FAST, CHAIKIN_SLOW = 3, 10
+STOCH_PERIOD, STOCH_SMOOTH = 14, 3
 ROC_PERIOD = 14
-STOCH_PERIOD = 14
-STOCH_SMOOTH = 3
 CCI_PERIOD = 14
 MFI_PERIOD = 14
-CHAIKIN_FAST = 3
-CHAIKIN_SLOW = 10
-YZ_WINDOW = 30                   
+YZ_WINDOW = 30
 
-# ── Volatility term-structure windows ─────────────────────────────────
-VOL_SHORT = 7                    # 1 crypto week
-VOL_MID = 30                     # 1 crypto month
-VOL_LONG = 90                    # 1 crypto quarter
+# --- Volatility term-structure windows --------------------------------------
+VOL_SHORT, VOL_MID, VOL_LONG = 7, 30, 90      # 1 crypto week, month, quarter
 
-# ── Mathematical feature parameters ───────────────────────────────────
-SADF_MIN_SL = 90                 # minimum sample length (~1 crypto quarter)
+# --- Mathematical feature parameters ----------------------------------------
+SADF_MIN_SL = 90              # minimum sample length (~1 crypto quarter)
 SADF_LAGS = 1
-ENTROPY_WINDOW = 30              # ~1 crypto month
-LZ_WINDOW = 90                   # ~1 crypto quarter
-HURST_WINDOW = 180               # ~6 crypto months
-VR_WINDOW = 90                   # ~1 crypto quarter
-VR_LAG = 7                       # 1 crypto week
-JB_WINDOW = 90                   # ~1 crypto quarter
-GAUSS_ENT_WINDOW = 30            # ~1 crypto month
+ENTROPY_WINDOW = 30           # ~1 crypto month
+LZ_WINDOW = 90                # ~1 crypto quarter
+HURST_WINDOW = 180            # ~6 crypto months
+VR_WINDOW = 90                # ~1 crypto quarter
+VR_LAG = 7                    # 1 crypto week
+JB_WINDOW = 90                # ~1 crypto quarter
+GAUSS_ENT_WINDOW = 30         # ~1 crypto month
 
-# ── Lag features (consumed only by AR Logistic baseline) ──────────────
+# --- Lag features (AR Logistic baseline) ------------------------------------
+# AR_LAGS covers the full weekday cycle (1-7) plus 2-week, 3-week, and
+# 1-month markers; the calendar-day convention matches BTC's 24/7 trading.
 AR_LAGS = [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
 LAG_COLUMN_PREFIX = "log_returns_lag"
 
-# ── Cache ─────────────────────────────────────────────────────────────
+# --- Cache ------------------------------------------------------------------
+# Parquet cache for the O(n²) mathematical features (SADF, SMT especially).
 CACHE_DIR = "cache/"
 MATH_CACHE_FILE = "math_features.parquet"
 
 
-# =====================================================================
-# Technical Analysis Features
-# =====================================================================
+# --- 1. Technical Analysis features ----------------------------------------
+# Backward-looking price/volume features computed in one pass over the OHLCV bars.
 def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute backward-looking TA features from OHLCV data.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        OHLCV DataFrame with DatetimeIndex.
-
-    Returns
-    -------
-    pd.DataFrame
-        One column per feature, indexed identically to *df*.
-    """
+    """Compute 25 backward-looking TA features from OHLCV data, indexed identically to ``df``."""
     close = df["Close"]
     high = df["High"]
     low = df["Low"]
@@ -124,7 +84,7 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, np.nan)
     features["rsi"] = 100.0 - 100.0 / (1.0 + rs)
 
-    # 3. MACD
+    # 3. MACD: signal line + histogram capture both trend and trend acceleration
     ema_fast = close.ewm(span=MACD_FAST, min_periods=MACD_FAST).mean()
     ema_slow = close.ewm(span=MACD_SLOW, min_periods=MACD_SLOW).mean()
     macd_line = ema_fast - ema_slow
@@ -133,14 +93,14 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     features["macd_signal"] = macd_signal
     features["macd_hist"] = macd_line - macd_signal
 
-    # 4. Bollinger Band width (dimensionless)
+    # 4. Bollinger Band width: dimensionless volatility-of-volatility proxy
     bb_mid = close.rolling(BB_PERIOD).mean()
     bb_std = close.rolling(BB_PERIOD).std()
     bb_upper = bb_mid + 2.0 * bb_std
     bb_lower = bb_mid - 2.0 * bb_std
     features["bb_width"] = (bb_upper - bb_lower) / bb_mid
 
-    # 5. ATR (EWMA smoothed)
+    # 5. ATR (EWMA-smoothed True Range)
     prev_close = close.shift(1)
     tr = pd.concat([
         high - low,
@@ -149,41 +109,37 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     ], axis=1).max(axis=1)
     features["atr"] = tr.ewm(span=ATR_PERIOD, min_periods=ATR_PERIOD).mean()
 
-    # 6. OBV
+    # 6. OBV: cumulative signed volume
     sign = np.sign(close.diff()).fillna(0)
     features["obv"] = (volume * sign).cumsum()
 
-    # 7. Rolling skewness
+    # 7-8. Rolling moments of the return distribution
     features["skewness"] = log_returns.rolling(ROLLING_WINDOW).skew()
-
-    # 8. Rolling kurtosis
     features["kurtosis"] = log_returns.rolling(ROLLING_WINDOW).kurt()
 
-    # 9. Rolling realized volatility (annualized)
+    # 9. Realised vol (annualised): the simplest volatility estimator
     vol_medium = log_returns.rolling(ROLLING_WINDOW).std()
     features["realized_vol"] = vol_medium * np.sqrt(365)
 
-    # 10. Garman-Klass volatility (rolling)
+    # 10. Garman-Klass: uses OHLC, lower variance than close-to-close
     log_hl = np.log(high / low)
     log_co = np.log(close / open_)
     gk_daily = 0.5 * log_hl ** 2 - (2.0 * np.log(2) - 1.0) * log_co ** 2
     features["gk_vol"] = gk_daily.rolling(ROLLING_WINDOW).mean()
 
-    # 11. Yang-Zhang volatility (best unbiased OHLC estimator)
+    # 11. Yang-Zhang: best unbiased OHLC volatility estimator (handles overnight gap)
     features["yz_vol"] = _yang_zhang_volatility(
         open_, high, low, close, window=YZ_WINDOW,
     )
 
-    # 12. EMA ratio 20/50 (short vs medium trend)
+    # 12-13. EMA ratios: short/mid and mid/long trend signals (golden-cross-style)
     ema_20 = close.ewm(span=EMA_SHORT, min_periods=EMA_SHORT).mean()
     ema_50 = close.ewm(span=EMA_MID, min_periods=EMA_MID).mean()
-    features["ema_ratio_20_50"] = ema_20 / ema_50
-
-    # 13. EMA ratio 50/200 (golden/death cross signal)
     ema_200 = close.ewm(span=EMA_LONG, min_periods=EMA_LONG).mean()
+    features["ema_ratio_20_50"] = ema_20 / ema_50
     features["ema_ratio_50_200"] = ema_50 / ema_200
 
-    # 14. VWMA ratio 20/50 (volume-weighted trend confirmation)
+    # 14. VWMA ratio: volume-weighted trend confirmation
     vwma_20 = (close * volume).rolling(EMA_SHORT).sum() / volume.rolling(EMA_SHORT).sum()
     vwma_50 = (close * volume).rolling(EMA_MID).sum() / volume.rolling(EMA_MID).sum()
     features["vwma_ratio_20_50"] = vwma_20 / vwma_50
@@ -191,19 +147,17 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     # 15. Rate of Change
     features["roc_14"] = (close / close.shift(ROC_PERIOD) - 1.0) * 100.0
 
-    # 16. Stochastic %K
+    # 16-17. Stochastic oscillator: %K raw, %D smoothed
     lowest_low = low.rolling(STOCH_PERIOD).min()
     highest_high = high.rolling(STOCH_PERIOD).max()
     stoch_k = 100.0 * (close - lowest_low) / (highest_high - lowest_low + 1e-10)
     features["stoch_k"] = stoch_k
-
-    # 17. Stochastic %D (smoothed %K)
     features["stoch_d"] = stoch_k.rolling(STOCH_SMOOTH).mean()
 
-    # 18. Williams %R (momentum confirmation)
+    # 18. Williams %R: complementary momentum oscillator
     features["williams_r"] = -100.0 * (highest_high - close) / (highest_high - lowest_low + 1e-10)
 
-    # 19. Commodity Channel Index
+    # 19. CCI: typical-price deviation from its rolling SMA, scaled by MAD
     typical_price = (high + low + close) / 3.0
     tp_sma = typical_price.rolling(CCI_PERIOD).mean()
     tp_mad = typical_price.rolling(CCI_PERIOD).apply(
@@ -211,7 +165,7 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     features["cci_14"] = (typical_price - tp_sma) / (0.015 * tp_mad + 1e-10)
 
-    # 20. Chaikin Oscillator (volume + price momentum)
+    # 20. Chaikin Oscillator: MACD applied to the accumulation/distribution line
     money_flow_mult = ((close - low) - (high - close)) / (high - low + 1e-10)
     money_flow_vol = money_flow_mult * volume
     adl = money_flow_vol.cumsum()
@@ -220,11 +174,11 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
         - adl.ewm(span=CHAIKIN_SLOW, min_periods=CHAIKIN_SLOW).mean()
     )
 
-    # 21. Money Flow Index (volume-weighted RSI)
+    # 21. Money Flow Index: volume-weighted RSI
     features["mfi_14"] = _money_flow_index(high, low, close, volume, period=MFI_PERIOD)
 
-    # 22. Volatility term structure: short vol / long vol
-    #     Annualization cancels in ratios, so use raw rolling std
+    # 22-23. Volatility term structure: short/mid and mid/long ratios.
+    # Annualisation cancels in ratios, so we use raw rolling std.
     vol_short = log_returns.rolling(VOL_SHORT).std()
     vol_long = log_returns.rolling(VOL_LONG).std()
     features["vol_term_7_30"] = vol_short / vol_medium.replace(0, np.nan)
@@ -234,22 +188,11 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
-# ---------------------------------------------------------------------------
-# Yang-Zhang volatility
-# ---------------------------------------------------------------------------
-def _yang_zhang_volatility(
-    open_: pd.Series,
-    high: pd.Series,
-    low: pd.Series,
-    close: pd.Series,
-    window: int = 21,
-) -> pd.Series:
-    """Yang-Zhang (2000) volatility estimator.
-
-    Combines overnight (close-to-open), open-to-close, and
-    Rogers-Satchell components for the most efficient unbiased
-    OHLC volatility estimate.
-    """
+# Yang-Zhang OHLC volatility estimator (Yang & Zhang, 2000).
+def _yang_zhang_volatility(open_: pd.Series, high: pd.Series, low: pd.Series,
+                           close: pd.Series, window: int = 21) -> pd.Series:
+    """Combine overnight, open-to-close, and Rogers-Satchell components for an
+    unbiased OHLC volatility estimate that captures the overnight gap."""
     log_oc = np.log(open_ / close.shift(1))
     log_co = np.log(close / open_)
     log_ho = np.log(high / open_)
@@ -259,6 +202,7 @@ def _yang_zhang_volatility(
 
     rs = log_ho * log_hc + log_lo * log_lc
 
+    # k optimally balances the overnight and intraday components for unbiasedness.
     k = 0.34 / (1.34 + (window + 1) / (window - 1))
 
     var_overnight = log_oc.rolling(window).var()
@@ -270,22 +214,16 @@ def _yang_zhang_volatility(
     return np.sqrt(yz_var.clip(lower=0))
 
 
-# ---------------------------------------------------------------------------
-# Money Flow Index
-# ---------------------------------------------------------------------------
-def _money_flow_index(
-    high: pd.Series,
-    low: pd.Series,
-    close: pd.Series,
-    volume: pd.Series,
-    period: int = 14,
-) -> pd.Series:
-    """Money Flow Index: volume-weighted RSI."""
+# Money Flow Index: volume-weighted variant of RSI.
+def _money_flow_index(high: pd.Series, low: pd.Series, close: pd.Series,
+                      volume: pd.Series, period: int = 14) -> pd.Series:
+    """Compute the period-window MFI from OHLC + volume."""
     typical_price = (high + low + close) / 3.0
     raw_money_flow = typical_price * volume
 
     tp_diff = typical_price.diff()
 
+    # Split each bar's money flow into positive/negative bucket by the sign of typical-price change.
     pos_flow = pd.Series(0.0, index=close.index)
     neg_flow = pd.Series(0.0, index=close.index)
 
@@ -304,23 +242,14 @@ def _money_flow_index(
     return mfi
 
 
-# =====================================================================
-# Mathematical Features (AFML Part 4)
-# =====================================================================
-def compute_math_features(
-    df: pd.DataFrame,
-    which: list[str] | str = "all",
-) -> pd.DataFrame:
+# --- 2. Mathematical features (AFML Part 4) --------------------------------
+# Cached on Parquet because SADF and SMT are O(n²) and dominate the build time.
+def compute_math_features(df: pd.DataFrame, which: list[str] | str = "all") -> pd.DataFrame:
     """Compute AFML mathematical features with Parquet caching.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        OHLCV DataFrame with DatetimeIndex.
-    which : list[str] or "all"
-        Features to compute. Options: 'shannon_entropy', 'lz_complexity',
-        'hurst', 'variance_ratio', 'jarque_bera', 'negentropy',
-        'sadf', 'smt'. Pass "all" for everything.
+    ``which`` selects a subset: 'shannon_entropy', 'lz_complexity', 'hurst',
+    'variance_ratio', 'jarque_bera', 'negentropy', 'sadf', 'smt'. Pass "all"
+    for everything.
     """
     ALL_MATH = ["shannon_entropy", "lz_complexity", "hurst", "variance_ratio",
                 "jarque_bera", "negentropy", "sadf", "smt"]
@@ -329,7 +258,7 @@ def compute_math_features(
 
     cache_path = os.path.join(CACHE_DIR, MATH_CACHE_FILE)
 
-    # check cache
+    # Cache hit requires the date range to match exactly AND every requested column to be present.
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
         cached_cols = set(cached.columns)
@@ -353,7 +282,8 @@ def compute_math_features(
 
     features = pd.DataFrame(index=df.index)
 
-    # ordered from least to most expensive computation
+    # Compute requested features, ordered from cheapest to most expensive
+    # so an interrupted run still saves the easy results.
     if "shannon_entropy" in which:
         t0 = time.time()
         print("[features] Computing Shannon entropy...")
@@ -369,7 +299,7 @@ def compute_math_features(
         shannon_ent = _compute_shannon_entropy(
             log_returns, window=GAUSS_ENT_WINDOW,
         )
-        # Negentropy: how far the empirical distribution is from Gaussian
+        # Distance from Gaussian: a return distribution with fat tails has high negentropy.
         features["negentropy"] = gauss_ent - shannon_ent
         print(f"  Negentropy took {(time.time() - t0) / 60:.1f} min")
 
@@ -415,7 +345,7 @@ def compute_math_features(
         features["smt_exp"] = smt_exp
         print(f"  SMT took {(time.time() - t0) / 60:.1f} min")
 
-    # save/update cache
+    # Merge new columns into the existing cache if compatible, otherwise overwrite.
     os.makedirs(CACHE_DIR, exist_ok=True)
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
@@ -431,18 +361,9 @@ def compute_math_features(
     return features
 
 
-# ---------------------------------------------------------------------------
-# Rolling Variance Ratio (Lo & MacKinlay, 1988)
-# ---------------------------------------------------------------------------
-def _compute_rolling_variance_ratio(
-    log_returns: pd.Series, window: int = VR_WINDOW, lag: int = VR_LAG,
-) -> pd.Series:
-    """Variance ratio VR(q) = Var(r_q) / (q * Var(r_1)).
-
-    VR > 1 indicates momentum (positive autocorrelation).
-    VR < 1 indicates mean-reversion (negative autocorrelation).
-    VR = 1 is consistent with a random walk.
-    """
+# Rolling Variance Ratio (Lo & MacKinlay, 1988): random-walk null hypothesis test.
+def _compute_rolling_variance_ratio(log_returns: pd.Series, window: int = VR_WINDOW, lag: int = VR_LAG) -> pd.Series:
+    """``VR(q) = Var(r_q) / (q · Var(r_1))``. VR > 1 ⇒ momentum, < 1 ⇒ mean-reversion, ≈ 1 ⇒ random walk."""
     result = pd.Series(np.nan, index=log_returns.index)
     values = log_returns.values
     n = len(values)
@@ -456,6 +377,7 @@ def _compute_rolling_variance_ratio(
         if var_1 < 1e-20:
             continue
 
+        # Build the q-period aggregated returns and compute their variance.
         m = len(w) - lag
         if m < 2:
             continue
@@ -467,17 +389,9 @@ def _compute_rolling_variance_ratio(
     return result.reindex(log_returns.index)
 
 
-# ---------------------------------------------------------------------------
-# Rolling Jarque-Bera statistic (Jarque & Bera, 1987)
-# ---------------------------------------------------------------------------
-def _compute_rolling_jarque_bera(
-    log_returns: pd.Series, window: int = JB_WINDOW,
-) -> pd.Series:
-    """JB = (n/6) * (S² + K²/4).
-
-    Measures departure from normality. S = skewness, K = excess kurtosis.
-    Higher values indicate stronger non-Gaussianity.
-    """
+# Rolling Jarque-Bera statistic (Jarque & Bera, 1987): scalar measure of non-normality.
+def _compute_rolling_jarque_bera(log_returns: pd.Series, window: int = JB_WINDOW) -> pd.Series:
+    """``JB = (n/6) · (S² + K²/4)`` where S is skewness and K is excess kurtosis."""
     result = pd.Series(np.nan, index=log_returns.index)
     values = log_returns.values
     n = len(values)
@@ -493,6 +407,7 @@ def _compute_rolling_jarque_bera(
         if std_w < 1e-20:
             continue
 
+        # Standardise the window so skew/kurt are scale-invariant.
         z = (w - mean_w) / std_w
         skew = np.mean(z ** 3)
         kurt = np.mean(z ** 4) - 3.0
@@ -503,18 +418,9 @@ def _compute_rolling_jarque_bera(
     return result.reindex(log_returns.index)
 
 
-# ---------------------------------------------------------------------------
-# Rolling Gaussian Entropy (AFML Ch. 18.6)
-# ---------------------------------------------------------------------------
-def _compute_rolling_gaussian_entropy(
-    log_returns: pd.Series, window: int = GAUSS_ENT_WINDOW,
-) -> pd.Series:
-    """H_gauss = 0.5 * ln(2 * pi * e * sigma²).
-
-    The entropy of a Gaussian process with the same variance.
-    The gap between this and empirical Shannon entropy measures
-    how non-Gaussian the return distribution is.
-    """
+# Rolling Gaussian entropy (AFML Ch. 18.6): the reference point for negentropy.
+def _compute_rolling_gaussian_entropy(log_returns: pd.Series, window: int = GAUSS_ENT_WINDOW) -> pd.Series:
+    """``H_gauss = 0.5 · ln(2πe·σ²)``. The gap to empirical Shannon entropy is negentropy."""
     result = pd.Series(np.nan, index=log_returns.index)
     values = log_returns.values
     n = len(values)
@@ -533,15 +439,14 @@ def _compute_rolling_gaussian_entropy(
     return result.reindex(log_returns.index)
 
 
-# ---------------------------------------------------------------------------
-# SADF (AFML Snippet 17.1)
-# ---------------------------------------------------------------------------
+# SADF (AFML Snippet 17.1): supremum ADF test for explosive-bubble detection.
 def _compute_sadf(log_price: pd.Series) -> pd.Series:
-    """Supremum Augmented Dickey-Fuller test on log prices."""
+    """For each time t, take the supremum ADF t-stat across all expanding sub-samples ending at t."""
     result = pd.Series(np.nan, index=log_price.index)
     y = log_price.values
     n = len(y)
 
+    # O(n²): for each t, sweep over all start points t0 to find the worst-case t-stat.
     for t in range(SADF_MIN_SL, n):
         sup_adf = -np.inf
         for t0 in range(0, t - SADF_MIN_SL + 1):
@@ -554,8 +459,9 @@ def _compute_sadf(log_price: pd.Series) -> pd.Series:
     return result
 
 
+# OLS-based ADF t-statistic; the workhorse for SADF.
 def _adf_tstat(y: np.ndarray, lags: int = 1) -> float:
-    """Compute the ADF t-statistic for β in Δy_t = α + β*y_{t-1} + Σγ_k*Δy_{t-k} + ε."""
+    """T-stat for β in Δy_t = α + β·y_{t-1} + Σγ_k·Δy_{t-k} + ε. NaN on rank deficiency."""
     dy = np.diff(y)
     n = len(dy)
 
@@ -569,6 +475,7 @@ def _adf_tstat(y: np.ndarray, lags: int = 1) -> float:
     if m <= lags + 2:
         return np.nan
 
+    # Build the design matrix: intercept, level, then `lags` differences.
     regressors = np.ones((m, 2 + lags))
     regressors[:, 1] = y[start : start + m]
     for k in range(1, lags + 1):
@@ -589,11 +496,9 @@ def _adf_tstat(y: np.ndarray, lags: int = 1) -> float:
         return np.nan
 
 
-# ---------------------------------------------------------------------------
-# SMT (AFML Section 17.4.3)
-# ---------------------------------------------------------------------------
+# SMT (AFML §17.4.3): sub/super-martingale specification tests under polynomial and exponential trends.
 def _compute_smt(log_price: pd.Series) -> tuple[pd.Series, pd.Series]:
-    """Sub/Super-Martingale tests: polynomial-1 and exponential specifications."""
+    """Return the SMT statistic series for the polynomial-1 and exponential alternatives."""
     n = len(log_price)
     y = log_price.values
     idx = log_price.index
@@ -601,6 +506,7 @@ def _compute_smt(log_price: pd.Series) -> tuple[pd.Series, pd.Series]:
     smt_poly1 = pd.Series(np.nan, index=idx)
     smt_exp = pd.Series(np.nan, index=idx)
 
+    # O(n²) like SADF, with two alternative regressors per inner loop.
     for t in range(SADF_MIN_SL, n):
         sup_poly = -np.inf
         sup_exp = -np.inf
@@ -608,8 +514,9 @@ def _compute_smt(log_price: pd.Series) -> tuple[pd.Series, pd.Series]:
         for t0 in range(0, t - SADF_MIN_SL + 1):
             seg = y[t0 : t + 1]
             length = len(seg)
-            phi = 0.5
+            phi = 0.5  # AFML's recommended length-penalty exponent
 
+            # Polynomial-1: regress log price on linear time trend.
             t_vec = np.arange(length, dtype=np.float64)
             tstat_p = _ols_tstat(seg, t_vec)
             if not np.isnan(tstat_p):
@@ -617,6 +524,7 @@ def _compute_smt(log_price: pd.Series) -> tuple[pd.Series, pd.Series]:
                 if val > sup_poly:
                     sup_poly = val
 
+            # Exponential: regress log price on exp(t/length).
             exp_vec = np.exp(t_vec / length)
             tstat_e = _ols_tstat(seg, exp_vec)
             if not np.isnan(tstat_e):
@@ -630,8 +538,9 @@ def _compute_smt(log_price: pd.Series) -> tuple[pd.Series, pd.Series]:
     return smt_poly1, smt_exp
 
 
+# OLS t-statistic for a simple two-column regression; helper for SMT.
 def _ols_tstat(y: np.ndarray, x: np.ndarray) -> float:
-    """T-statistic for β in y = α + β*x + ε."""
+    """T-stat for β in y = α + β·x + ε. NaN on rank deficiency."""
     n = len(y)
     if n < 3:
         return np.nan
@@ -651,17 +560,12 @@ def _ols_tstat(y: np.ndarray, x: np.ndarray) -> float:
         return np.nan
 
 
-# ---------------------------------------------------------------------------
-# Shannon entropy
-# ---------------------------------------------------------------------------
-def _compute_shannon_entropy(
-    log_returns: pd.Series, window: int = ENTROPY_WINDOW
-) -> pd.Series:
+# Shannon entropy over equal-width return-distribution bins.
+def _compute_shannon_entropy(log_returns: pd.Series, window: int = ENTROPY_WINDOW) -> pd.Series:
     """Equal-width histogram Shannon entropy over a rolling window.
 
-    Uses equal-width bins instead of quantile bins to avoid the
-    degenerate case where clustered values collapse all quantile
-    edges, producing constant zero entropy.
+    Equal-width binning rather than quantile binning, because clustered values
+    can collapse all quantile edges and produce a degenerate zero entropy.
     """
     result = pd.Series(np.nan, index=log_returns.index)
     values = log_returns.values
@@ -676,11 +580,12 @@ def _compute_shannon_entropy(
         w_min, w_max = w.min(), w.max()
         spread = w_max - w_min
         if spread < 1e-14:
-            # All values identical → zero information
+            # All values identical → zero information.
             result.iloc[i] = 0.0
             continue
 
         try:
+            # Bin edges padded by 1e-10 on each side so endpoint values land cleanly.
             edges = np.linspace(w_min - 1e-10, w_max + 1e-10, n_bins + 1)
             digitized = np.digitize(w, edges[1:-1])
             counts = np.bincount(digitized, minlength=n_bins)
@@ -694,13 +599,9 @@ def _compute_shannon_entropy(
     return result.reindex(log_returns.index)
 
 
-# ---------------------------------------------------------------------------
-# Rolling Lempel-Ziv complexity
-# ---------------------------------------------------------------------------
-def _compute_rolling_lz(
-    log_returns: pd.Series, window: int = LZ_WINDOW
-) -> pd.Series:
-    """Binary-encoded Lempel-Ziv-76 complexity over a rolling window."""
+# Rolling Lempel-Ziv complexity on the binary-encoded return sign sequence.
+def _compute_rolling_lz(log_returns: pd.Series, window: int = LZ_WINDOW) -> pd.Series:
+    """LZ-76 complexity of the up/down indicator sequence, normalised by window/log2(window)."""
     result = pd.Series(np.nan, index=log_returns.index)
     values = log_returns.values
     n = len(values)
@@ -709,6 +610,7 @@ def _compute_rolling_lz(
         w = values[i - window + 1 : i + 1]
         if np.any(np.isnan(w)):
             continue
+        # Encode each return as 1 (up) or 0 (down) and count distinct sub-patterns.
         binary_str = "".join("1" if r > 0 else "0" for r in w)
         c = _lempel_ziv_76(binary_str)
         norm = window / np.log2(window) if window > 1 else 1.0
@@ -717,8 +619,9 @@ def _compute_rolling_lz(
     return result.reindex(log_returns.index)
 
 
+# Lempel-Ziv-76 sub-pattern counter on a binary string.
 def _lempel_ziv_76(s: str) -> int:
-    """Lempel-Ziv-76 complexity: count distinct sub-patterns."""
+    """Standard LZ-76 implementation; returns the count of distinct sub-patterns."""
     n = len(s)
     if n == 0:
         return 0
@@ -744,17 +647,14 @@ def _lempel_ziv_76(s: str) -> int:
     return complexity
 
 
-# ---------------------------------------------------------------------------
-# Rolling Hurst exponent (R/S analysis)
-# ---------------------------------------------------------------------------
-def _compute_rolling_hurst(
-    log_returns: pd.Series, window: int = HURST_WINDOW
-) -> pd.Series:
-    """Rescaled Range (R/S) Hurst exponent over a rolling window."""
+# Rolling Hurst exponent via Rescaled-Range (R/S) analysis at multiple sub-period scales.
+def _compute_rolling_hurst(log_returns: pd.Series, window: int = HURST_WINDOW) -> pd.Series:
+    """Hurst > 0.5 ⇒ persistence (trending), < 0.5 ⇒ anti-persistence (mean-reverting)."""
     result = pd.Series(np.nan, index=log_returns.index)
     values = log_returns.values
     n = len(values)
-    sub_periods = np.array([14, 30, 60, 90])  # crypto-calendar sub-periods
+    # Sub-period sizes chosen from the crypto calendar; we fit slope across them.
+    sub_periods = np.array([14, 30, 60, 90])
     sub_periods = sub_periods[sub_periods < window]
 
     for i in range(window - 1, n):
@@ -766,8 +666,9 @@ def _compute_rolling_hurst(
     return result.reindex(log_returns.index)
 
 
+# R/S estimator: fit a line to log(R/S) vs log(period); the slope is the Hurst exponent.
 def _hurst_rs(data: np.ndarray, sub_periods: np.ndarray) -> float:
-    """Estimate Hurst exponent from R/S statistics at multiple scales."""
+    """Compute Hurst as the slope of log(R/S) on log(period) across sub_periods."""
     log_ns = []
     log_rs = []
 
@@ -775,6 +676,7 @@ def _hurst_rs(data: np.ndarray, sub_periods: np.ndarray) -> float:
         n_chunks = len(data) // sp
         if n_chunks < 1:
             continue
+        # For each chunk, the rescaled-range R/S is range-of-cumulative-deviations / std.
         rs_values = []
         for j in range(n_chunks):
             chunk = data[j * sp : (j + 1) * sp]
@@ -797,67 +699,31 @@ def _hurst_rs(data: np.ndarray, sub_periods: np.ndarray) -> float:
     return slope
 
 
-# =====================================================================
-# Lag features (AR Logistic baseline — separate category)
-# =====================================================================
+# --- 3. Lag features (AR Logistic baseline) --------------------------------
+# Helper that other modules use to reference the lag columns by name.
 def lag_column_names(lags: list[int] | None = None) -> list[str]:
-    """Return the canonical column names for the lag features.
-
-    Parameters
-    ----------
-    lags : list[int], optional
-        Lag periods. Defaults to ``AR_LAGS``.
-
-    Returns
-    -------
-    list[str]
-        Column names in the same order as ``lags``.
-    """
+    """Canonical lag column names in the order matching ``lags`` (defaults to ``AR_LAGS``)."""
     if lags is None:
         lags = AR_LAGS
     return [f"{LAG_COLUMN_PREFIX}{k}" for k in lags]
 
 
-def compute_lag_features(
-    df: pd.DataFrame,
-    lags: list[int] | None = None,
-) -> pd.DataFrame:
+# Precompute lagged log returns once on the full series; consumed by AR Logistic.
+def compute_lag_features(df: pd.DataFrame, lags: list[int] | None = None) -> pd.DataFrame:
     """Precompute lagged log-return features on the full daily series.
 
-    These columns are kept as a separate feature category because they
-    are consumed only by the AR Logistic baseline. ML models (Logistic
-    Regression, Random Forest, XGBoost, LSTM, KAN) do not see them and
-    the multi-model MDA feature selection in ``preprocessing.py``
-    excludes them by name prefix.
-
-    Computing the lags here on the full daily series instead of inline
-    inside the AR Logistic model removes a look-ahead artefact: the
-    previous inline ``ffill().bfill()`` imputation at predict time
-    backfilled NaN lags at the head of each test fold from later test
-    observations. Precomputing on the global series gives every aligned
-    event valid lookback values that respect chronological order.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        OHLCV DataFrame with a 'Close' column and DatetimeIndex.
-    lags : list[int], optional
-        Lag periods to compute. Defaults to ``AR_LAGS``.
-
-    Returns
-    -------
-    pd.DataFrame
-        One column per lag, named ``log_returns_lag{k}``. Indexed
-        identically to ``df``. The first ``max(lags)`` rows contain
-        NaN; downstream alignment with CUSUM events drops these because
-        CUSUM filtering only fires after the volatility EWMA warmup,
-        which exceeds ``max(AR_LAGS)``.
+    Computing on the global series rather than inline at AR Logistic fit/predict
+    time guarantees that every aligned event has valid lookback values respecting
+    chronological order. The first ``max(lags)`` rows contain NaN; downstream
+    CUSUM filtering drops them because the volatility EWMA warm-up exceeds
+    ``max(AR_LAGS)``.
     """
     if lags is None:
         lags = AR_LAGS
 
     log_ret = np.log(df["Close"] / df["Close"].shift(1))
 
+    # Build one shifted-return column per lag k.
     lag_df = pd.DataFrame(index=df.index)
     for k in lags:
         lag_df[f"{LAG_COLUMN_PREFIX}{k}"] = log_ret.shift(k)
@@ -869,54 +735,21 @@ def compute_lag_features(
     return lag_df
 
 
-# =====================================================================
-# Log transforms
-# =====================================================================
+# --- 4. Compression transforms ---------------------------------------------
+# Symmetric log: sign-preserving variant of natural log for signed wide-range features.
 def apply_sym_log(features: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    """Apply the symmetric log transform to listed columns.
+    """Apply ``sign(x) · log(|x| + 1)`` to listed columns; returns a modified copy.
 
-    ``sign(x) * log(|x| + 1)`` — the sign-preserving variant of the
-    natural log. Used for signed quantities whose raw values can be
-    either positive or negative and whose magnitudes span many orders
-    of magnitude (e.g. ``obv``, ``chaikin_osc`` reach 10⁷-10¹⁰
-    during high-volume regimes).
-
-    Properties:
-
-    - preserves sign and zero (``sym_log(0) = 0``);
-    - preserves rank ordering;
-    - asymptotically log-like: for ``|x| ≫ 1`` it behaves like
-      ``sign(x) · log(|x|)``, compressing the tails by orders of
-      magnitude;
-    - has a derivative discontinuity at zero (``+1`` from the right,
-      ``-1`` from the left), which is acceptable in a feature-engineering
-      context where the transformed values feed downstream MDA, FFD,
-      and scaling steps rather than a gradient-based optimiser.
-
-    An asinh-based variant (``np.arcsinh``) was tested in May 2026 as
-    a smoother alternative; in sensitivity analysis it produced higher
-    out-of-sample variance on the neural-network models and was reverted
-    to the symmetric log transform here, which matches the convention
-    used in earlier rounds of the pipeline.
-
-    Parameters
-    ----------
-    features : pd.DataFrame
-        Feature matrix. A modified copy is returned; the original is
-        not mutated.
-    columns : list of str
-        Column names to transform. Columns not present in ``features``
-        are silently skipped, so the same target list can be reused
-        across feature-set variants.
-
-    Returns
-    -------
-    pd.DataFrame
-        Copy of ``features`` with the symmetric log applied to the
-        named columns.
+    Used for signed features whose magnitudes span many orders of magnitude (e.g.
+    ``obv`` and ``chaikin_osc`` reach 10⁷-10¹⁰ during high-volume regimes).
+    Preserves sign and zero, preserves rank ordering, and asymptotically behaves
+    like ``sign(x) · log(|x|)`` for ``|x| ≫ 1``. The derivative discontinuity at
+    zero is acceptable here because the transform feeds downstream MDA, FFD, and
+    scaling rather than a gradient-based optimiser.
     """
     features = features.copy()
     applied = []
+    # Skip silently if a target column isn't in the frame, so the same list can be reused.
     for col in columns:
         if col not in features.columns:
             continue
@@ -927,36 +760,13 @@ def apply_sym_log(features: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return features
 
 
-def apply_log(
-    features: pd.DataFrame,
-    columns: list[str],
-    eps: float = 1e-8,
-) -> pd.DataFrame:
-    """Apply ``log(|x| + eps)`` to listed columns.
+# Unsigned log with ε floor: variance-stabilising transform for strictly non-negative features.
+def apply_log(features: pd.DataFrame, columns: list[str], eps: float = 1e-8) -> pd.DataFrame:
+    """Apply ``log(|x| + eps)`` to listed columns; returns a modified copy.
 
-    Standard variance-stabilising transform for strictly non-negative
-    quantities whose magnitudes span many orders of magnitude (e.g.
-    ATR, realised volatility, dollar volume). The small additive
-    constant ``eps`` prevents ``log(0)`` for the rare exact-zero
-    observation. ``|x|`` is taken so that any spurious negative input
-    (which would not be expected for the target columns) does not
-    crash the transform.
-
-    Parameters
-    ----------
-    features : pd.DataFrame
-        Feature matrix. Returned a modified copy; original is not
-        mutated.
-    columns : list of str
-        Column names to transform. Columns not present in
-        ``features`` are silently skipped.
-    eps : float, default 1e-8
-        Additive constant to keep the transform finite at zero.
-
-    Returns
-    -------
-    pd.DataFrame
-        Copy of ``features`` with log applied to ``columns``.
+    Standard variance-stabilising transform for non-negative wide-range features
+    (e.g. ATR, realised volatility). ``|x|`` guards against any spurious negative
+    input; ``eps`` keeps the transform finite at zero.
     """
     features = features.copy()
     applied = []
@@ -970,36 +780,16 @@ def apply_log(
     return features
 
 
-# =====================================================================
-# Orchestration
-# =====================================================================
+# --- 5. Orchestration -------------------------------------------------------
+# Build the TA + math half of the feature matrix; the notebook concatenates the rest.
 def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    """Chain TA features and math features into a single DataFrame.
+    """Compute TA + math features and return them concatenated; no compression applied.
 
-    Compression transforms (symmetric log for signed wide-range
-    columns, log for unsigned wide-range columns) are NOT applied
-    here. They are applied in the notebook via ``apply_sym_log``
-    and ``apply_log`` so the choice of which columns get which
-    transform is visible at the call site rather than hidden inside
-    this function. Earlier iterations of this pipeline applied a
-    combined ``apply_log_transforms`` (and briefly an asinh variant
-    in ``apply_asinh``) here; both were removed in favour of explicit
-    notebook-level transform application.
-
-    External features and lag features are added separately in the
-    notebook (they have their own loaders / fetchers and are kept in
-    distinct categories).
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Clean OHLCV DataFrame from data_loader.
-
-    Returns
-    -------
-    pd.DataFrame
-        TA + math feature columns covering every daily bar, with no
-        compression transforms applied.
+    Compression transforms (``apply_sym_log``, ``apply_log``) are applied in the
+    notebook so the choice of which columns get which transform is visible at
+    the call site rather than hidden in this function. External and lag features
+    are added separately in the notebook because they have their own fetchers
+    and the canonical concat order is ``[ta, math, external, lag]``.
     """
     ta = compute_ta_features(df)
     math = compute_math_features(df)
