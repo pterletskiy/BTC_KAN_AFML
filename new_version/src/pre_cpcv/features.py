@@ -100,14 +100,14 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     bb_lower = bb_mid - 2.0 * bb_std
     features["bb_width"] = (bb_upper - bb_lower) / bb_mid
 
-    # 5. ATR (EWMA-smoothed True Range)
+    # 5. ATR (Wilder-smoothed True Range)
     prev_close = close.shift(1)
     tr = pd.concat([
         high - low,
         (high - prev_close).abs(),
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
-    features["atr"] = tr.ewm(span=ATR_PERIOD, min_periods=ATR_PERIOD).mean()
+    features["atr"] = tr.ewm(alpha=1.0 / ATR_PERIOD, min_periods=ATR_PERIOD).mean()
 
     # 6. OBV: cumulative signed volume
     sign = np.sign(close.diff()).fillna(0)
@@ -125,7 +125,7 @@ def compute_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     log_hl = np.log(high / low)
     log_co = np.log(close / open_)
     gk_daily = 0.5 * log_hl ** 2 - (2.0 * np.log(2) - 1.0) * log_co ** 2
-    features["gk_vol"] = gk_daily.rolling(ROLLING_WINDOW).mean()
+    features["gk_vol"] = np.sqrt(gk_daily.rolling(ROLLING_WINDOW).mean().clip(lower=0))
 
     # 11. Yang-Zhang: best unbiased OHLC volatility estimator (handles overnight gap)
     features["yz_vol"] = _yang_zhang_volatility(
@@ -256,18 +256,21 @@ def compute_math_features(df: pd.DataFrame, which: list[str] | str = "all") -> p
     if which == "all":
         which = ALL_MATH
 
+    # Resolve the column set the caller actually wants once; both the cache path
+    # and the recompute path return the same final shape.
+    requested_cols: set[str] = set()
+    for w in which:
+        if w == "smt":
+            requested_cols.update(["smt_poly1", "smt_exp"])
+        else:
+            requested_cols.add(w)
+
     cache_path = os.path.join(CACHE_DIR, MATH_CACHE_FILE)
 
     # Cache hit requires the date range to match exactly AND every requested column to be present.
     if os.path.exists(cache_path):
         cached = pd.read_parquet(cache_path)
         cached_cols = set(cached.columns)
-        requested_cols = set()
-        for w in which:
-            if w == "smt":
-                requested_cols.update(["smt_poly1", "smt_exp"])
-            else:
-                requested_cols.add(w)
 
         if (cached.index[0] == df.index[0]
                 and cached.index[-1] == df.index[-1]
@@ -354,11 +357,11 @@ def compute_math_features(df: pd.DataFrame, which: list[str] | str = "all") -> p
                 cached[col] = features[col]
             cached.to_parquet(cache_path)
             logger.info("Cache updated with %s.", list(features.columns))
-            return cached
+            return cached[sorted(requested_cols)]
     features.to_parquet(cache_path)
     logger.info("Math features cached to %s.", cache_path)
 
-    return features
+    return features[sorted(requested_cols)]
 
 
 # Rolling Variance Ratio (Lo & MacKinlay, 1988): random-walk null hypothesis test.
@@ -386,7 +389,7 @@ def _compute_rolling_variance_ratio(log_returns: pd.Series, window: int = VR_WIN
 
         result.iloc[i] = var_q / (lag * var_1)
 
-    return result.reindex(log_returns.index)
+    return result
 
 
 # Rolling Jarque-Bera statistic (Jarque & Bera, 1987): scalar measure of non-normality.
@@ -415,7 +418,7 @@ def _compute_rolling_jarque_bera(log_returns: pd.Series, window: int = JB_WINDOW
         jb = (m / 6.0) * (skew ** 2 + kurt ** 2 / 4.0)
         result.iloc[i] = jb
 
-    return result.reindex(log_returns.index)
+    return result
 
 
 # Rolling Gaussian entropy (AFML Ch. 18.6): the reference point for negentropy.
@@ -436,7 +439,7 @@ def _compute_rolling_gaussian_entropy(log_returns: pd.Series, window: int = GAUS
 
         result.iloc[i] = 0.5 * np.log(2.0 * np.pi * np.e * var)
 
-    return result.reindex(log_returns.index)
+    return result
 
 
 # SADF (AFML Snippet 17.1): supremum ADF test for explosive-bubble detection.
@@ -454,7 +457,7 @@ def _compute_sadf(log_price: pd.Series) -> pd.Series:
             tstat = _adf_tstat(segment, lags=SADF_LAGS)
             if tstat > sup_adf:
                 sup_adf = tstat
-        result.iloc[t] = sup_adf
+        result.iloc[t] = sup_adf if sup_adf > -np.inf else np.nan
 
     return result
 
@@ -596,7 +599,7 @@ def _compute_shannon_entropy(log_returns: pd.Series, window: int = ENTROPY_WINDO
             ent = np.nan
         result.iloc[i] = ent
 
-    return result.reindex(log_returns.index)
+    return result
 
 
 # Rolling Lempel-Ziv complexity on the binary-encoded return sign sequence.
@@ -616,7 +619,7 @@ def _compute_rolling_lz(log_returns: pd.Series, window: int = LZ_WINDOW) -> pd.S
         norm = window / np.log2(window) if window > 1 else 1.0
         result.iloc[i] = c / norm
 
-    return result.reindex(log_returns.index)
+    return result
 
 
 # Lempel-Ziv-76 sub-pattern counter on a binary string.
@@ -663,7 +666,7 @@ def _compute_rolling_hurst(log_returns: pd.Series, window: int = HURST_WINDOW) -
             continue
         result.iloc[i] = _hurst_rs(w, sub_periods)
 
-    return result.reindex(log_returns.index)
+    return result
 
 
 # R/S estimator: fit a line to log(R/S) vs log(period); the slope is the Hurst exponent.

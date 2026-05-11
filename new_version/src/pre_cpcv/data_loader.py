@@ -18,8 +18,8 @@ _OHLCV_COLS = ["Open", "High", "Low", "Close", "Volume"]
 # because BTC trades 24/7 and a multi-day gap is a data-source problem, not a holiday.
 _MAX_FFILL_DAYS = 3
 
-# Default download window. Start covers full BTC history; end is the locked thesis cutoff.
-_START_DATE, _END_DATE = "2014-01-01", "2026-05-01"
+# Default download window: start covers the 252-day Hurst lookback ahead of the August 2015 CUSUM start; end is the locked thesis cutoff.
+_START_DATE, _END_DATE = "2014-11-01", "2026-05-01"
 
 # Public entry point: fetch BTC daily OHLCV, validate, and return a clean DataFrame.
 def load_btc_daily(ticker: str = "BTC-USD", start: str = _START_DATE, end: str = _END_DATE) -> pd.DataFrame:
@@ -42,10 +42,11 @@ def load_btc_daily(ticker: str = "BTC-USD", start: str = _START_DATE, end: str =
     df.index.name = "Date"
     df = df.sort_index()
 
-    nan_close = df["Close"].isna()
-    if nan_close.any():
-        logger.warning("Dropped %d row(s) with NaN Close.", nan_close.sum())
-        df = df.loc[~nan_close]
+    # Track NaN-Close dates so they aren't silently resurrected by _fill_small_gaps.
+    nan_close_dates = df.index[df["Close"].isna()]
+    if len(nan_close_dates) > 0:
+        logger.warning("Dropped %d row(s) with NaN Close.", len(nan_close_dates))
+        df = df.loc[df["Close"].notna()]
 
     if df.index.duplicated().any():
         raise ValueError("Duplicate dates found in downloaded data.")
@@ -55,6 +56,11 @@ def load_btc_daily(ticker: str = "BTC-USD", start: str = _START_DATE, end: str =
     # BTC trades 7 days a week, so any calendar gap is a data-source issue
     df, gap_warnings = _fill_small_gaps(df)
     warnings_log.extend(gap_warnings)
+
+    # Re-drop NaN-Close dates resurrected by the gap fill.
+    if len(nan_close_dates) > 0:
+        df = df.drop(index=nan_close_dates.intersection(df.index))
+
     warnings_log.extend(_check_ohlcv_consistency(df))
 
     for w in warnings_log:

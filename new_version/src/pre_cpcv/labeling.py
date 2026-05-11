@@ -15,31 +15,31 @@ logger = logging.getLogger(__name__)
 
 # Volatility estimator that sets the per-event barrier width in triple_barrier_labels.
 def compute_daily_volatility(close: pd.Series, span: int = 50) -> pd.Series:
-    """EWMA std of log returns (AFML Snippet 3.1).
+    """EWMA std of simple returns (AFML Snippet 3.1).
 
     Span 50 instead of De Prado's 100 to track BTC's faster regime transitions.
     """
-    log_returns = np.log(close / close.shift(1))
-    return log_returns.ewm(span=span).std()
+    returns = close.pct_change()
+    return returns.ewm(span=span).std()
 
 
 # Reduce ~4,200 daily bars to a sparse event set where genuine drift has accumulated.
-def cusum_filter(log_returns: pd.Series, threshold: float) -> pd.DatetimeIndex:
+def cusum_filter(returns: pd.Series, threshold: float) -> pd.DatetimeIndex:
     """Symmetric CUSUM filter (AFML Snippet 2.4); fires when |cumulative drift| ≥ h."""
     events = []
     s_pos, s_neg = 0.0, 0.0
 
     # Two running accumulators: s_pos tracks positive drift, s_neg tracks negative.
-    # Each fires an event and resets when its absolute value crosses the threshold,
-    # so a sustained move in either direction produces a CUSUM event.
-    for t, r in log_returns.items():
+    # Each fires an event and resets when its absolute value crosses the threshold;
+    # the elif enforces "first barrier touched" so a single bar can't fire both.
+    for t, r in returns.items():
         s_pos = max(0.0, s_pos + r)
         s_neg = min(0.0, s_neg + r)
 
         if s_pos >= threshold:
             events.append(t)
             s_pos = 0.0
-        if s_neg <= -threshold:
+        elif s_neg <= -threshold:
             events.append(t)
             s_neg = 0.0
 
@@ -72,9 +72,11 @@ def triple_barrier_labels(close: pd.Series, t_events: pd.DatetimeIndex, trgt: pd
                           pt_sl: tuple[float, float] = (1.0, 1.0), num_days: int = 10, min_return: float = 0.0) -> pd.DataFrame:
     """Triple-barrier labelling (AFML Snippets 3.2, 3.4, 3.5).
 
+    Label is ``sign(ret)`` at the first-touch timestamp (Snippet 3.5's getBins).
     ``pt_sl`` are the upper/lower barrier multipliers applied to ``trgt`` (daily
-    vol). Setting either to 0 disables that barrier. Returns ``['ret', 'bin', 't1']``
-    indexed on event timestamps.
+    vol); setting either to 0 disables that barrier. ``min_return`` substitutes
+    0 on a vertical-barrier touch with |ret| below the threshold (Ch.3 Ex.3).
+    Returns ``['ret', 'bin', 't1']`` indexed on event timestamps.
     """
     # Drop events that fall in the vol warm-up (no trgt available) and attach vertical barriers.
     t_events = t_events[t_events.isin(trgt.dropna().index)]
@@ -96,33 +98,40 @@ def triple_barrier_labels(close: pd.Series, t_events: pd.DatetimeIndex, trgt: pd
         if len(path) < 2:
             continue
 
-        # Convert the vol-scaled multipliers into absolute price barriers around p0.
+        # Cumulative-return space, matching Snippet 3.2's df0 = close/p0 - 1 formulation.
         p0 = close.loc[t0]
-        upper = p0 * (1.0 + pt_sl[0] * target) if pt_sl[0] > 0 else np.inf
-        lower = p0 * (1.0 - pt_sl[1] * target) if pt_sl[1] > 0 else -np.inf
+        df0 = path / p0 - 1.0
 
-        # Earliest crossing of each horizontal barrier (NaT if never touched).
-        upper_touch = path[path >= upper].index.min() if pt_sl[0] > 0 else pd.NaT
-        lower_touch = path[path <= lower].index.min() if pt_sl[1] > 0 else pd.NaT
+        pt = pt_sl[0] * target if pt_sl[0] > 0 else np.inf
+        sl = -pt_sl[1] * target if pt_sl[1] > 0 else -np.inf
 
-        # The label is decided by whichever barrier was hit first in time.
+        # Earliest crossing of each horizontal barrier; strict inequalities per AFML.
+        upper_touch = df0[df0 > pt].index.min() if pt_sl[0] > 0 else pd.NaT
+        lower_touch = df0[df0 < sl].index.min() if pt_sl[1] > 0 else pd.NaT
+
+        # First-touch = earliest of the three; label by sign of the realised return.
         touches = pd.Series(
             {"upper": upper_touch, "lower": lower_touch, "vertical": t1}
         ).dropna()
         first_touch = touches.min()
-
         ret = close.loc[first_touch] / p0 - 1.0
 
-        if first_touch == upper_touch:
-            label = 1
-        elif first_touch == lower_touch:
-            label = -1
+        # min_return escape applies only when the vertical barrier was touched first.
+        is_vertical = (
+            (first_touch == t1)
+            and (first_touch != upper_touch)
+            and (first_touch != lower_touch)
+        )
+        if is_vertical and abs(ret) < min_return:
+            label = 0
         else:
-            # Vertical barrier hit: sign-of-return, with the |ret| < min_return
-            # → 0 escape hatch to avoid labelling pure noise
-            label = 0 if abs(ret) < min_return else int(np.sign(ret))
+            label = int(np.sign(ret))
 
         results.append({"t0": t0, "ret": ret, "bin": label, "t1": first_touch})
+
+    if not results:
+        logger.warning("Triple-barrier: 0 events labelled.")
+        return pd.DataFrame(columns=["ret", "bin", "t1"])
 
     out = pd.DataFrame(results).set_index("t0")
     out.index.name = None
@@ -161,11 +170,11 @@ def run_labeling_pipeline(close: pd.Series, vol_span: int = 50, cusum_enabled: b
                           min_rare_pct: float = 0.05) -> pd.DataFrame:
     """Chain vol estimation → CUSUM → triple-barrier → rare-class pruning."""
     daily_vol = compute_daily_volatility(close, span=vol_span)
-    log_rets = np.log(close / close.shift(1)).dropna()
+    returns = close.pct_change().dropna()
 
     if cusum_enabled:
         h = cusum_threshold_multiplier * daily_vol.mean()
-        t_events = cusum_filter(log_rets, h)
+        t_events = cusum_filter(returns, h)
         logger.info("CUSUM filter: threshold=%.6f, %d events detected.", h, len(t_events))
     else:
         t_events = close.index

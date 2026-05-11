@@ -19,11 +19,36 @@ from statsmodels.tsa.stattools import adfuller
 logger = logging.getLogger(__name__)
 
 
+# Replay labeling.cusum_filter and record per-timestamp accumulator state.
+def _replay_cusum_state(returns: pd.Series, h: float) -> tuple[pd.Series, pd.Series]:
+    """Return ``(s_pos, s_neg)`` Series indexed identically to ``returns``.
+
+    Used by ``plot_cusum_filter`` so the displayed trajectories match the
+    filter's internal state, including carry-over at the zoom-window start.
+    Resets only the accumulator that triggered, mirroring ``cusum_filter``.
+    """
+    s_pos, s_neg = 0.0, 0.0
+    s_pos_hist, s_neg_hist = [], []
+    for t, r in returns.items():
+        s_pos = max(0.0, s_pos + r)
+        s_neg = min(0.0, s_neg + r)
+        if s_pos >= h:
+            s_pos = 0.0
+        elif s_neg <= -h:
+            s_neg = 0.0
+        s_pos_hist.append(s_pos)
+        s_neg_hist.append(s_neg)
+    return (
+        pd.Series(s_pos_hist, index=returns.index, name="s_pos"),
+        pd.Series(s_neg_hist, index=returns.index, name="s_neg"),
+    )
+
+
 # --- 1. CUSUM filter: zoom-window diagnostic of returns + S+/S- accumulators ---
-def plot_cusum_filter(log_returns: pd.Series, t_events: pd.DatetimeIndex, h: float,
+def plot_cusum_filter(returns: pd.Series, t_events: pd.DatetimeIndex, h: float,
                       zoom_start: str = "2026-01-01", zoom_end: str = "2026-03-27",
                       figsize: tuple[int, int] = (16, 8)) -> plt.Figure:
-    """Two-panel CUSUM diagnostic: log returns on top, S+/S- accumulators below.
+    """Two-panel CUSUM diagnostic: returns on top, S+/S- accumulators below.
 
     The bottom panel makes the cumulative-drift crossings visible against the
     +/- ``h`` thresholds, which is the conceptually load-bearing part of the
@@ -33,25 +58,24 @@ def plot_cusum_filter(log_returns: pd.Series, t_events: pd.DatetimeIndex, h: flo
         2, 1, figsize=figsize, sharex=True,
         gridspec_kw={"height_ratios": [1.2, 1]})
 
-    mask = (log_returns.index >= zoom_start) & (log_returns.index <= zoom_end)
-    lr_zoom = log_returns.loc[mask]
+    mask = (returns.index >= zoom_start) & (returns.index <= zoom_end)
+    r_zoom = returns.loc[mask]
     events_zoom = t_events[(t_events >= zoom_start) & (t_events <= zoom_end)]
 
-    # Top panel: log returns, colour-coded by sign, with a vertical line at each event.
+    # Top panel: returns, colour-coded by sign, with a vertical line at each event.
     ax1 = axes[0]
     ax1.bar(
-        lr_zoom.index, lr_zoom.values, width=0.8, alpha=0.6,
-        color=["#2ecc71" if r > 0 else "#e74c3c" for r in lr_zoom.values],
-        label="Log returns")
-    for ev in events_zoom:
-        ax1.axvline(ev, color="#3498db", alpha=0.7, linewidth=1.2, linestyle="--")
-    if len(events_zoom) > 0:
+        r_zoom.index, r_zoom.values, width=0.8, alpha=0.6,
+        color=["#2ecc71" if r > 0 else "#e74c3c" for r in r_zoom.values],
+        label="Returns")
+    # Single labelled axvline per event; label only the first so the legend stays clean.
+    for i, ev in enumerate(events_zoom):
+        label = f"CUSUM events ({len(events_zoom)})" if i == 0 else None
         ax1.axvline(
-            events_zoom[0], color="#3498db", alpha=0.7,
-            linewidth=1.2, linestyle="--",
-            label=f"CUSUM events ({len(events_zoom)})")
+            ev, color="#3498db", alpha=0.7, linewidth=1.2, linestyle="--",
+            label=label)
     ax1.axhline(0, color="gray", linewidth=0.5)
-    ax1.set_ylabel("Log return")
+    ax1.set_ylabel("Return")
     ax1.set_title(
         f"CUSUM filter -- {pd.Timestamp(zoom_start).date()} to "
         f"{pd.Timestamp(zoom_end).date()}",
@@ -60,26 +84,17 @@ def plot_cusum_filter(log_returns: pd.Series, t_events: pd.DatetimeIndex, h: flo
 
     ax2 = axes[1]
 
-    # Reconstruct the S+/S- trajectories for the zoom window so the bottom panel
-    # mirrors what cusum_filter() did internally when generating the event list.
-    s_pos_series, s_neg_series = [], []
-    s_pos, s_neg = 0.0, 0.0
-    for t, r in lr_zoom.items():
-        s_pos = max(0.0, s_pos + r)
-        s_neg = min(0.0, s_neg + r)
-        if t in events_zoom:
-            s_pos_series.append(0.0)
-            s_neg_series.append(0.0)
-            s_pos, s_neg = 0.0, 0.0
-        else:
-            s_pos_series.append(s_pos)
-            s_neg_series.append(s_neg)
+    # Faithful state reconstruction: replay over the full series, then slice by mask,
+    # so the accumulator inherits its actual historical context at the zoom start.
+    s_pos_full, s_neg_full = _replay_cusum_state(returns, h)
+    s_pos_zoom = s_pos_full.loc[mask]
+    s_neg_zoom = s_neg_full.loc[mask]
 
     ax2.fill_between(
-        lr_zoom.index, s_pos_series, 0,
+        s_pos_zoom.index, s_pos_zoom.values, 0,
         alpha=0.3, color="#2ecc71", label="S+ (upward)")
     ax2.fill_between(
-        lr_zoom.index, s_neg_series, 0,
+        s_neg_zoom.index, s_neg_zoom.values, 0,
         alpha=0.3, color="#e74c3c", label="S- (downward)")
     ax2.axhline(h, color="#2ecc71", linewidth=1, linestyle=":",
                 label=f"h = +{h:.4f}")
@@ -357,6 +372,7 @@ def plot_feature_correlation(feature_matrix: pd.DataFrame, corr_threshold: float
     Set ``annotate=False`` for very large feature sets where the cell labels
     become illegible.
     """
+    # Complete-case analysis: every (i, j) cell uses the same row subset.
     corr = feature_matrix.dropna().corr()
     n = len(corr.columns)
 

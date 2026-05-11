@@ -18,12 +18,15 @@ def align_for_cv(features: pd.DataFrame, bins: pd.DataFrame, weights: pd.Series)
     # The CPCV loop expects a single index shared by all four objects; find it here.
     common_idx = features.index.intersection(bins.index).intersection(weights.index)
 
-    assert len(common_idx) > 0, (
-        "No overlapping indices between features, labels, and weights.")
-    assert not common_idx.duplicated().any(), "Duplicate dates in common index."
+    if len(common_idx) == 0:
+        raise ValueError(
+            "No overlapping indices between features, labels, and weights.")
+    if common_idx.duplicated().any():
+        raise ValueError("Duplicate dates in common index.")
 
     common_idx = common_idx.sort_values()
-    assert common_idx.is_monotonic_increasing, "Index not sorted."
+    if not common_idx.is_monotonic_increasing:
+        raise ValueError("Index not sorted.")
 
     # Slice each upstream object down to the shared index in one place.
     X = features.loc[common_idx]
@@ -32,13 +35,15 @@ def align_for_cv(features: pd.DataFrame, bins: pd.DataFrame, weights: pd.Series)
     t1 = bins.loc[common_idx, "t1"]
 
     # Cross-check that the slicing produced consistent shapes and no all-NaN columns.
-    assert X.shape[0] == y.shape[0] == w.shape[0] == t1.shape[0], (
-        f"Shape mismatch after alignment: X={X.shape[0]}, y={y.shape[0]}, "
-        f"w={w.shape[0]}, t1={t1.shape[0]}.")
+    if not (X.shape[0] == y.shape[0] == w.shape[0] == t1.shape[0]):
+        raise ValueError(
+            f"Shape mismatch after alignment: X={X.shape[0]}, y={y.shape[0]}, "
+            f"w={w.shape[0]}, t1={t1.shape[0]}.")
 
     all_nan_cols = X.columns[X.isnull().all(axis=0)].tolist()
-    assert len(all_nan_cols) == 0, (
-        f"Feature column(s) entirely NaN after alignment: {all_nan_cols}")
+    if len(all_nan_cols) > 0:
+        raise ValueError(
+            f"Feature column(s) entirely NaN after alignment: {all_nan_cols}")
 
     nan_counts = X.isnull().sum()
     nan_cols = nan_counts[nan_counts > 0]
@@ -62,29 +67,39 @@ def validate_alignment(X: pd.DataFrame, y: pd.Series, w: pd.Series, t1: pd.Serie
     Cheap belt-and-suspenders check: if a preprocessing step elsewhere has
     silently broken alignment, this catches it before the model sees the data.
     """
-    assert X.shape[0] == y.shape[0] == w.shape[0] == t1.shape[0], (
-        f"Shape mismatch: X={X.shape[0]}, y={y.shape[0]}, "
-        f"w={w.shape[0]}, t1={t1.shape[0]}.")
+    if not (X.shape[0] == y.shape[0] == w.shape[0] == t1.shape[0]):
+        raise ValueError(
+            f"Shape mismatch: X={X.shape[0]}, y={y.shape[0]}, "
+            f"w={w.shape[0]}, t1={t1.shape[0]}.")
 
-    assert X.index.equals(y.index), "X and y indices differ."
-    assert X.index.equals(w.index), "X and w indices differ."
-    assert X.index.equals(t1.index), "X and t1 indices differ."
-    assert X.index.is_monotonic_increasing, "Index not sorted ascending."
-    assert not X.index.duplicated().any(), "Duplicate dates in index."
+    if not X.index.equals(y.index):
+        raise ValueError("X and y indices differ.")
+    if not X.index.equals(w.index):
+        raise ValueError("X and w indices differ.")
+    if not X.index.equals(t1.index):
+        raise ValueError("X and t1 indices differ.")
+    if not X.index.is_monotonic_increasing:
+        raise ValueError("Index not sorted ascending.")
+    if X.index.duplicated().any():
+        raise ValueError("Duplicate dates in index.")
 
-    assert set(y.unique()).issubset({-1, 0, 1}), (
-        f"Labels contain unexpected values: {set(y.unique()) - {-1, 0, 1}}")
+    if not set(y.unique()).issubset({-1, 0, 1}):
+        raise ValueError(
+            f"Labels contain unexpected values: {set(y.unique()) - {-1, 0, 1}}")
 
-    assert (w > 0).all(), (
-        f"Non-positive sample weights found: {w[w <= 0].shape[0]} value(s).")
+    if not (w > 0).all():
+        raise ValueError(
+            f"Non-positive sample weights found: {w[w <= 0].shape[0]} value(s).")
 
     # t1 is required for CPCV purging; missing values would silently corrupt folds
-    assert t1.notna().all(), (
-        f"Missing t1 values ({t1.isna().sum()}) would break CPCV purging.")
+    if not t1.notna().all():
+        raise ValueError(
+            f"Missing t1 values ({t1.isna().sum()}) would break CPCV purging.")
 
     all_nan_cols = X.columns[X.isnull().all(axis=0)].tolist()
-    assert len(all_nan_cols) == 0, (
-        f"Feature column(s) entirely NaN: {all_nan_cols}")
+    if len(all_nan_cols) > 0:
+        raise ValueError(
+            f"Feature column(s) entirely NaN: {all_nan_cols}")
 
     logger.info("Alignment validation passed (%d samples, %d features).", *X.shape)
     return True

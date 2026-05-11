@@ -92,7 +92,7 @@ def _fetch_us2y(start: str, end: str) -> pd.Series:
         if len(series) > 2000:
             return series
         logger.warning("FRED DGS2 returned only %d bars.", len(series))
-    except (ImportError, Exception) as e:
+    except Exception as e:
         logger.warning("FRED DGS2 failed: %s", e)
 
     return pd.Series(dtype=float)
@@ -398,7 +398,7 @@ def compute_crypto_macro_features(
 
         # Align ETH to the BTC index and form the ratio.
         eth_aligned = _align_to_btc(eth, btc_index, "eth_close")
-        features["eth_btc_ratio"] = eth_aligned / btc_close.reindex(btc_index)
+        features["eth_btc_ratio"] = eth_aligned / btc_close
 
     except Exception as e:
         logger.warning("ETH/BTC ratio failed: %s", e)
@@ -502,8 +502,8 @@ def compute_onchain_features(btc_index: pd.DatetimeIndex) -> pd.DataFrame:
     features["mvrv"] = aligned.get("CapMVRVCur", pd.Series(np.nan, index=btc_index))
 
     # 5. Net exchange flow: inflows − outflows. Positive ⇒ selling pressure to exchanges.
-    flow_in = aligned.get("FlowInExNtv", pd.Series(0.0, index=btc_index))
-    flow_out = aligned.get("FlowOutExNtv", pd.Series(0.0, index=btc_index))
+    flow_in = aligned.get("FlowInExNtv", pd.Series(np.nan, index=btc_index))
+    flow_out = aligned.get("FlowOutExNtv", pd.Series(np.nan, index=btc_index))
     features["net_exchange_flow"] = flow_in - flow_out
 
     # 6. Fee per transaction (stationary ratio, BTC per tx).

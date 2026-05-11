@@ -99,17 +99,18 @@ def apply_time_decay(weights: pd.Series, oldest_weight: float = 1.0) -> pd.Serie
 
 # Public orchestrator: returns the final sample-weight Series consumed by every classifier.
 def compute_sample_weights(bins: pd.DataFrame, num_bars_index: pd.DatetimeIndex,
-                           time_decay_factor: float = 1.0, weight_cap_quantile: float = 0.99) -> pd.Series:
+                           oldest_weight: float = 1.0, weight_cap_quantile: float = 0.99) -> pd.Series:
     """Chain concurrency → uniqueness → return attribution → time decay → outlier cap.
 
     The quantile cap is a defensive step against a few extreme-return events
-    dominating the training-sample gradient.
+    dominating the training-sample gradient. ``oldest_weight`` is AFML Snippet
+    4.11's ``c``; 1.0 disables decay.
     """
     # Build the weight Series stage by stage; each stage transforms the previous.
     concurrent = get_num_concurrent_labels(bins["t1"], num_bars_index)
     avg_uniq = get_average_uniqueness(bins["t1"], concurrent)
     weights = get_return_attribution_weights(bins, avg_uniq)
-    weights = apply_time_decay(weights, oldest_weight=time_decay_factor)
+    weights = apply_time_decay(weights, oldest_weight=oldest_weight)
 
     # Clip the tail: a handful of extreme-return events would otherwise dominate the gradient.
     if weight_cap_quantile < 1.0:
@@ -120,6 +121,11 @@ def compute_sample_weights(bins: pd.DataFrame, num_bars_index: pd.DatetimeIndex,
             logger.info(
                 "Capped %d weights at %.2f (%.0f%% percentile).",
                 n_capped, cap, weight_cap_quantile * 100)
+
+        # Re-normalise so mean(w) stays ≈ 1 after the cap removes upper-tail mass.
+        w_sum = weights.sum()
+        if w_sum > 0:
+            weights = weights * len(weights) / w_sum
 
     print(
         f"[sample_weights] {len(weights)} weights | "
