@@ -1,0 +1,118 @@
+TOP_K_FRAC = 0.25 
+
+================================================================================
+Model Comparison Table
+================================================================================
+ rank    model_name  median_sharpe  std_sharpe  sharpe_ci_lower  sharpe_ci_upper    dsr  median_sortino  median_calmar  mean_f1  mean_accuracy  mean_auc_roc  median_max_dd  median_cum_return  median_win_rate  median_profit_factor
+    1          lstm         0.9263      1.2916           0.2829           1.4547 0.2292          0.6975         0.1693   0.4549         0.5305        0.5233        -0.3170             0.2070           0.5167                1.2029
+    2      logistic         0.8762      1.4296          -0.9405           1.3966 0.2110          0.5763         0.1391   0.4208         0.5350        0.5165        -0.2331             0.2179           0.4865                1.1946
+    3       xgboost         0.8040      1.0126          -0.1902           1.6057 0.1924          0.3748         0.1711   0.4392         0.5323        0.5106        -0.1836             0.1809           0.5486                1.3492
+    4 random_forest         0.7778      1.2490          -1.0329           1.2061 0.1850          0.1898         0.0900   0.4410         0.5311        0.5125        -0.2282             0.0766           0.5050                1.1454
+    5           kan         0.2039      1.1987          -0.2658           1.6051 0.0641          0.1746         0.0064   0.4327         0.5433        0.5180        -0.3656             0.0157           0.5333                1.0514
+    6   ar_logistic        -0.1864      0.7677          -0.5538           0.1112 0.0262         -0.1472        -0.0413   0.4682         0.5292        0.5070        -0.2778            -0.0668           0.5177                0.9762
+================================================================================
+
+  Best model: lstm (median Sharpe: 0.9263)
+  DSR > 0.95: none (results may be statistical artifacts)
+
+  Probability of Backtest Overfitting (PBO): 0.5429
+  → PBO > 0.5: in-sample winner tends to underperform OOS. Caution.
+
+================================================================================
+AUC Significance Tests (DeLong, pooled across splits, averaged across 3 seeds)
+================================================================================
+      model_a       model_b  auc_a  auc_b  delta_auc  z_stat  p_value  significant
+  ar_logistic      logistic 0.5046 0.5053    -0.0007 -0.0770   0.9386        False
+  ar_logistic random_forest 0.5046 0.5080    -0.0034 -0.3612   0.7179        False
+  ar_logistic       xgboost 0.5046 0.5068    -0.0022 -0.2297   0.8183        False
+  ar_logistic          lstm 0.5070 0.5026     0.0044  0.4276   0.6689        False
+  ar_logistic           kan 0.5046 0.5144    -0.0098 -1.0536   0.2921        False
+     logistic random_forest 0.5053 0.5080    -0.0027 -0.3567   0.7213        False
+     logistic       xgboost 0.5053 0.5068    -0.0015 -0.2052   0.8374        False
+     logistic          lstm 0.5036 0.5026     0.0009  0.0926   0.9262        False
+     logistic           kan 0.5053 0.5144    -0.0091 -1.4319   0.1522        False
+random_forest       xgboost 0.5080 0.5068     0.0012  0.2051   0.8375        False
+random_forest          lstm 0.5087 0.5026     0.0061  0.6030   0.5465        False
+random_forest           kan 0.5080 0.5144    -0.0064 -1.0354   0.3005        False
+      xgboost          lstm 0.5067 0.5026     0.0040  0.3937   0.6938        False
+      xgboost           kan 0.5068 0.5144    -0.0077 -1.1398   0.2544        False
+         lstm           kan 0.5155 0.4846     0.0309  3.1891   0.0014         True
+
+  1/15 pairs significantly different (α=0.05)
+================================================================================
+
+
+FFD d* across CPCV training folds:
+------------------------------------------------------------
+  Column             Mean d*     Std d*      Min      Max
+------------------------------------------------------------
+  atr                  0.170      0.075    0.050    0.300
+------------------------------------------------------------
+
+Deflated Sharpe Ratios:
+-------------------------------------------------------
+  Model                   DSR           >0.95?
+-------------------------------------------------------
+  lstm                 0.2292             fail
+  logistic             0.2110             fail
+  xgboost              0.1924             fail
+  random_forest        0.1850             fail
+  kan                  0.0641             fail
+  ar_logistic          0.0262             fail
+  buy_and_hold            n/a      (undefined)
+-------------------------------------------------------
+  Threshold 0.95: result survives multiple-testing correction (AFML Ch. 14).
+
+Baseline PBO (all 6 models): 0.543
+
+Leave-one-out PBO:
+-------------------------------------------------------
+  Model excluded    PBO (n=5)    Δ vs baseline
+-------------------------------------------------------
+  logistic              0.200           -0.343
+  kan                   0.314           -0.229
+  lstm                  0.371           -0.171
+  xgboost               0.400           -0.143
+  random_forest         0.457           -0.086
+  ar_logistic           0.543           +0.000
+-------------------------------------------------------
+
+
+
+============================================================
+Results
+============================================================
+  Model:                  PyKAN
+  Fold:                   split 27 (selection='last')
+  Features used:          5 (top by CPCV stability)
+  Feature names:          ['eth_btc_ratio', 'skewness', 'bb_width', 'kurtosis', 'log_returns_lag1']
+  Pre-symbolic accuracy:  0.6466
+  Post-symbolic accuracy: 0.5639
+  Symbolification rate:   100%
+  Surviving features:     ['eth_btc_ratio', 'skewness', 'bb_width', 'kurtosis', 'log_returns_lag1']
+  Pruned architecture:    [[5, 0], [2, 0], [2, 0]]
+
+
+
+Feature sensitivity at the dataset mean:
+
+                  mean_value  std_value  d_decision/d_feature_at_mean  sigma_effect_on_decision  approx_sigma_delta_p
+feature                                                                                                              
+eth_btc_ratio        +0.0461    +0.0247                       -0.0051                   -0.0001               -0.0000
+skewness             -0.0559    +1.0171                       +0.1364                   +0.1388               +0.0347
+bb_width             +0.2758    +0.1692                       -1.0969                   -0.1856               -0.0464
+kurtosis             +2.0727    +3.2182                       +0.0476                   +0.1531               +0.0383
+log_returns_lag1     -0.0005    +0.0415                       -0.0198                   -0.0008               -0.0002
+
+
+
+Formula term-structure summary:
+
+                  mean_value  std_value  n_terms_in_formula  d_decision/d_feature_at_mean  sigma_effect_on_decision  approx_sigma_delta_p
+feature                                                                                                                                  
+eth_btc_ratio        +0.0461    +0.0247                   4                       -0.0051                   -0.0001               -0.0000
+skewness             -0.0559    +1.0171                   4                       +0.1364                   +0.1388               +0.0347
+bb_width             +0.2758    +0.1692                   4                       -1.0969                   -0.1856               -0.0464
+kurtosis             +2.0727    +3.2182                   4                       +0.0476                   +0.1531               +0.0383
+log_returns_lag1     -0.0005    +0.0415                   4                       -0.0198                   -0.0008               -0.0002
+
