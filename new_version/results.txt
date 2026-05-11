@@ -116,3 +116,115 @@ bb_width             +0.2758    +0.1692                   4                     
 kurtosis             +2.0727    +3.2182                   4                       +0.0476                   +0.1531               +0.0383
 log_returns_lag1     -0.0005    +0.0415                   4                       -0.0198                   -0.0008               -0.0002
 
+
+
+================================================================================
+================================================================================
+================================================================================
+
+TOP_K_FRAC = 0.2 
+
+Model Comparison Table
+================================================================================
+ rank    model_name  median_sharpe  std_sharpe  sharpe_ci_lower  sharpe_ci_upper    dsr  median_sortino  median_calmar  mean_f1  mean_accuracy  mean_auc_roc  median_max_dd  median_cum_return  median_win_rate  median_profit_factor
+    1       xgboost         0.9483      1.6147          -1.6369           1.5260 0.2376          0.3774         0.2184   0.4422         0.5309        0.5106        -0.2308             0.1298           0.5374                1.4018
+    2           kan         0.8375      1.3346          -0.5868           1.5681 0.2012          0.4221         0.1268   0.4301         0.5377        0.5205        -0.2254             0.1097           0.5517                1.2752
+    3          lstm         0.6029      1.1890          -0.3630           1.1349 0.1375          0.4529         0.0835   0.4484         0.5259        0.5078        -0.2871             0.1399           0.4854                1.1342
+    4      logistic         0.4640      1.4700          -0.7817           1.0774 0.1073          0.3064         0.0690   0.4217         0.5286        0.5109        -0.3506             0.1168           0.5183                1.1002
+    5 random_forest         0.3265      1.3004          -1.4870           0.8769 0.0825          0.1818         0.0337   0.4348         0.5336        0.5102        -0.2801             0.0473           0.5202                1.1143
+    6   ar_logistic        -0.1864      0.7677          -0.5538           0.1112 0.0262         -0.1472        -0.0413   0.4682         0.5292        0.5070        -0.2778            -0.0668           0.5177                0.9762
+================================================================================
+
+  Best model: xgboost (median Sharpe: 0.9483)
+  DSR > 0.95: none (results may be statistical artifacts)
+
+  Probability of Backtest Overfitting (PBO): 0.3429
+  → PBO in [0.3, 0.5]: moderate overfitting risk.
+
+================================================================================
+AUC Significance Tests (DeLong, pooled across splits, averaged across 3 seeds)
+================================================================================
+      model_a       model_b  auc_a  auc_b  delta_auc  z_stat  p_value  significant
+  ar_logistic      logistic 0.5046 0.5032     0.0014  0.1526   0.8788        False
+  ar_logistic random_forest 0.5046 0.5037     0.0009  0.0961   0.9234        False
+  ar_logistic       xgboost 0.5046 0.5022     0.0024  0.2598   0.7951        False
+  ar_logistic          lstm 0.5070 0.5020     0.0050  0.4933   0.6218        False
+  ar_logistic           kan 0.5046 0.5129    -0.0083 -0.8893   0.3738        False
+     logistic random_forest 0.5032 0.5037    -0.0005 -0.0732   0.9417        False
+     logistic       xgboost 0.5032 0.5022     0.0010  0.1381   0.8902        False
+     logistic          lstm 0.5034 0.5020     0.0014  0.1347   0.8928        False
+     logistic           kan 0.5032 0.5129    -0.0097 -1.4757   0.1400        False
+random_forest       xgboost 0.5037 0.5022     0.0015  0.2964   0.7669        False
+random_forest          lstm 0.5058 0.5020     0.0038  0.3725   0.7095        False
+random_forest           kan 0.5037 0.5129    -0.0092 -1.4804   0.1388        False
+      xgboost          lstm 0.5036 0.5020     0.0016  0.1614   0.8718        False
+      xgboost           kan 0.5022 0.5129    -0.0107 -1.5435   0.1227        False
+         lstm           kan 0.5010 0.4863     0.0147  1.4623   0.1437        False
+
+  0/15 pairs significantly different (α=0.05)
+================================================================================
+
+
+
+FFD d* across CPCV training folds:
+------------------------------------------------------------
+  Column             Mean d*     Std d*      Min      Max
+------------------------------------------------------------
+  atr                  0.170      0.075    0.050    0.300
+------------------------------------------------------------
+
+Deflated Sharpe Ratios:
+-------------------------------------------------------
+  Model                   DSR           >0.95?
+-------------------------------------------------------
+  xgboost              0.2376             fail
+  kan                  0.2012             fail
+  lstm                 0.1375             fail
+  logistic             0.1073             fail
+  random_forest        0.0825             fail
+  ar_logistic          0.0262             fail
+  buy_and_hold            n/a      (undefined)
+-------------------------------------------------------
+  Threshold 0.95: result survives multiple-testing correction (AFML Ch. 14).
+
+Baseline PBO (all 6 models): 0.343
+
+Leave-one-out PBO:
+-------------------------------------------------------
+  Model excluded    PBO (n=5)    Δ vs baseline
+-------------------------------------------------------
+  logistic              0.114           -0.229
+  xgboost               0.200           -0.143
+  lstm                  0.257           -0.086
+  ar_logistic           0.343           +0.000
+  random_forest         0.343           +0.000
+  kan                   0.514           +0.171
+-------------------------------------------------------
+
+
+
+============================================================
+Results
+============================================================
+  Model:                  PyKAN
+  Fold:                   split 27 (selection='last')
+  Features used:          5 (top by CPCV stability)
+  Feature names:          ['eth_btc_ratio', 'bb_width', 'skewness', 'log_returns_lag1', 'natgas_ret_30']
+  Pre-symbolic accuracy:  0.5940
+  Post-symbolic accuracy: 0.6090
+  Symbolification rate:   93%
+  Surviving features:     ['eth_btc_ratio', 'bb_width', 'skewness', 'log_returns_lag1', 'natgas_ret_30']
+  Pruned architecture:    [[5, 0], [2, 0], [2, 0]]
+
+  WARNING  Sensitivity table: 1/5 features have non-finite gradient at the median; reported as NaN. Consider eval_point='median' or inspect the symbolic formula for poles near these features' median.
+Feature sensitivity at the dataset mean:
+
+                  mean_value  std_value  d_decision/d_feature_at_mean  sigma_effect_on_decision  approx_sigma_delta_p
+feature                                                                                                              
+eth_btc_ratio        +0.0461    +0.0247                       -2.9437                   -0.0727               -0.0182
+bb_width             +0.2758    +0.1692                       -1.9317                   -0.3269               -0.0817
+skewness             -0.0559    +1.0171                       -1.7309                   -1.7606               -0.4401
+log_returns_lag1     -0.0005    +0.0415                       +0.0783                   +0.0032               +0.0008
+natgas_ret_30        +0.0029    +0.1622                           NaN                       NaN                   NaN
+
+  Note: 1 feature(s) have a non-finite gradient at the dataset mean (symbolic formula has a pole near that point); rendered as N/A. Try eval_point='median' for a more robust point. (I'VE ALREADY GOT MEDIAN)
