@@ -93,16 +93,21 @@ class KANModel(BaseModel):
         sample_weight=None,
         X_val=None,
         y_val=None,
+        sample_weight_val=None,
     ) -> None:
 
         from efficient_kan import KAN
 
         # Seed every RNG so the same data + hyperparameters produce the same fitted weights.
+        # The cuDNN flags force deterministic kernels for any operation that has both
+        # a fast non-deterministic and a slower deterministic implementation.
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
         random.seed(self.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
 
         # Move features, labels, and (optional) sample weights onto the selected device.
         X_t = torch.tensor(
@@ -132,6 +137,15 @@ class KANModel(BaseModel):
                 y_val.values if hasattr(y_val, "values") else y_val,
                 dtype=torch.long,
             ).to(self.device)
+            if sample_weight_val is not None:
+                w_val_t = torch.tensor(
+                    sample_weight_val.values
+                    if hasattr(sample_weight_val, "values")
+                    else sample_weight_val,
+                    dtype=torch.float32,
+                ).to(self.device)
+            else:
+                w_val_t = torch.ones(len(y_val_t), dtype=torch.float32).to(self.device)
 
         # Tanh normalisation: fit on train, apply to train and (if present) validation.
         self._fit_input_norm(X_t)
@@ -164,13 +178,16 @@ class KANModel(BaseModel):
             T_mult=KAN_WARMRESTART_TMULT,
             eta_min=1e-5,
         )
-        # Per-sample reduction so AFML sample weights multiply correctly into each term.
+        # Per-sample reduction on BOTH train and val so AFML sample weights multiply
+        # correctly into each term, keeping the early-stopping criterion weighted on
+        # the same basis as the training loss (AFML Snippet 8.3 symmetry).
         criterion = nn.CrossEntropyLoss(
             weight=class_weights_t, reduction="none",
             label_smoothing=KAN_LABEL_SMOOTHING,
         )
         criterion_val = nn.CrossEntropyLoss(
-            weight=class_weights_t, label_smoothing=KAN_LABEL_SMOOTHING,
+            weight=class_weights_t, reduction="none",
+            label_smoothing=KAN_LABEL_SMOOTHING,
         )
 
         # Full-batch training: per-epoch convergence is logged at DEBUG;
@@ -199,7 +216,8 @@ class KANModel(BaseModel):
             if has_val and (epoch + 1) % KAN_VAL_INTERVAL == 0:
                 model.eval()
                 with torch.no_grad():
-                    val_loss = criterion_val(model(X_val_t), y_val_t).item()
+                    val_per_sample = criterion_val(model(X_val_t), y_val_t)
+                    val_loss = (val_per_sample * w_val_t).mean().item()
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -242,10 +260,11 @@ class KANModel(BaseModel):
             logit_range = (pred.min().item(), pred.max().item())
 
         final_epoch = epoch + 1
+        val_loss_str = f"{best_val_loss:.4f}" if has_val else "n/a"
         logger.info(
             "KAN fitted: widths=%s, grid=%d, epochs=%d, "
-            "val_acc=%.4f, val_loss=%.4f, logit_range=[%.2f, %.2f], device=%s.",
-            self.widths, KAN_GRID, final_epoch, val_acc, best_val_loss,
+            "val_acc=%.4f, val_loss=%s, logit_range=[%.2f, %.2f], device=%s.",
+            self.widths, KAN_GRID, final_epoch, val_acc, val_loss_str,
             logit_range[0], logit_range[1], self.device,
         )
 

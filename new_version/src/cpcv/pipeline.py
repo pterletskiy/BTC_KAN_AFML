@@ -59,7 +59,7 @@ _TRACKED_CONSTANTS = {
         "XGB_SUBSAMPLE", "XGB_COLSAMPLE_BYTREE", "XGB_GAMMA",
         "XGB_REG_ALPHA", "XGB_REG_LAMBDA",
     ],
-    "lstm_model":  ["LSTM_HIDDEN_SIZE", "LSTM_NUM_LAYERS", "LSTM_DROPOUT", "LSTM_LR"],
+    "lstm_model":  ["LSTM_HIDDEN_SIZE", "LSTM_NUM_LAYERS", "LSTM_DROPOUT", "LSTM_LR", "LSTM_WEIGHT_DECAY"],
     "kan_model":   ["KAN_HIDDEN", "KAN_HIDDEN2", "KAN_GRID", "KAN_LR", "KAN_WEIGHT_DECAY"],
 }
 
@@ -341,22 +341,37 @@ def run_cpcv_pipeline(
         y_tr = y_mapped.iloc[train_idx]
         y_te = y_mapped.iloc[test_idx]
         w_tr = w.iloc[train_idx]
+        w_te = w.iloc[test_idx]
         t1_tr = t1.iloc[train_idx]
+        t1_te = t1.iloc[test_idx]
         ret_te = bins_ret.iloc[test_idx]
 
-        # Preprocessing (FFD → scaling → MDA selection) shared across all models this fold.
+        # Preprocessing (FFD → MDA selection → scaling) shared across all models this fold.
+        # preprocess_fold returns a dict with re-aligned train and test labels (FFD may have
+        # dropped the lookback-head NaN rows on either side), so no manual realignment here.
         needs_selection = not all(m == "ar_logistic" for m in models)
-        X_tr_proc, X_te_proc, selected, prep_info = preprocess_fold(
-            X, train_idx, test_idx, y_tr, w_tr, t1_tr, ffd_columns, top_k_frac,
+        prep_result = preprocess_fold(
+            X, train_idx, test_idx,
+            y_tr, w_tr, t1_tr,
+            y_te, w_te, t1_te,
+            ffd_columns, top_k_frac,
             skip_selection=not needs_selection,
             split_idx=split_idx,
             n_splits=len(splits),
         )
 
-        # FFD may drop the lookback-head NaN rows; re-align y / w / t1 to the surviving training index.
-        y_tr = y_tr.loc[X_tr_proc.index]
-        w_tr = w_tr.loc[X_tr_proc.index]
-        t1_tr = t1_tr.loc[X_tr_proc.index]
+        X_tr_proc = prep_result["X_train"]
+        X_te_proc = prep_result["X_test"]
+        y_tr = prep_result["y_train"]
+        w_tr = prep_result["w_train"]
+        t1_tr = prep_result["t1_train"]
+        y_te = prep_result["y_test"]
+        t1_te = prep_result["t1_test"]
+        selected = prep_result["selected"]
+        prep_info = prep_result["info"]
+
+        # ret_te lives outside preprocess_fold's contract; re-align to the post-FFD test index.
+        ret_te = ret_te.reindex(X_te_proc.index)
 
         # Keep the pre-selection matrix so AR Logistic can grab its lag columns by name regardless of MDA.
         X_tr_full = X_tr_proc.copy()
@@ -366,43 +381,58 @@ def run_cpcv_pipeline(
         X_tr_sel = X_tr_proc[selected]
         X_te_sel = X_te_proc[selected]
 
-        # Calibration split: 80% train / 20% calibration. The calibration slice is held out from
-        # model fitting and consumed only by the Calibrator (Platt or vector scaling).
-        cal_boundary = int(len(X_tr_sel) * 0.8)
+        # Three-way split inside the outer training fold (T5): the calibration slice is
+        # held out from early stopping so it is genuinely unseen by the model fit. Layout:
+        #   train: rows [0,           val_boundary)   80%  → consumed by model.fit
+        #   val:   rows [val_boundary, cal_boundary)  10%  → consumed by early stopping in fit
+        #   cal:   rows [cal_boundary, n_tr)          10%  → consumed only by Calibrator.fit
+        n_tr = len(X_tr_sel)
+        val_boundary = int(n_tr * 0.8)
+        cal_boundary = int(n_tr * 0.9)
 
-        X_model = X_tr_sel.iloc[:cal_boundary]
+        X_model = X_tr_sel.iloc[:val_boundary]
+        X_val = X_tr_sel.iloc[val_boundary:cal_boundary]
         X_cal = X_tr_sel.iloc[cal_boundary:]
-        X_model_full = X_tr_full.iloc[:cal_boundary]
+        X_model_full = X_tr_full.iloc[:val_boundary]
+        X_val_full = X_tr_full.iloc[val_boundary:cal_boundary]
         X_cal_full = X_tr_full.iloc[cal_boundary:]
-        y_model = y_tr.iloc[:cal_boundary]
+
+        y_model = y_tr.iloc[:val_boundary]
+        y_val = y_tr.iloc[val_boundary:cal_boundary]
         y_cal = y_tr.iloc[cal_boundary:]
-        w_model = w_tr.iloc[:cal_boundary]
+
+        w_model = w_tr.iloc[:val_boundary]
+        w_val = w_tr.iloc[val_boundary:cal_boundary]
+        # w_cal is captured for future use (e.g. weighted Platt) but currently Platt is fit
+        # unweighted by design (see calibration.py docstring); kept here for parity.
+        _w_cal = w_tr.iloc[cal_boundary:]  # noqa: F841
 
         if needs_selection:
             logger.info(
                 "  Preprocessing: %d features selected, "
-                "train=%d + cal=%d, test=%d",
-                len(selected), len(X_model), len(X_cal), len(X_te_sel),
+                "train=%d + val=%d + cal=%d, test=%d",
+                len(selected), len(X_model), len(X_val), len(X_cal), len(X_te_sel),
             )
         else:
             from src.cpcv.models.benchmarks import AR_LAGS
             logger.info(
                 "  Preprocessing: FFD + scaling only (no feature selection), "
-                "train=%d + cal=%d, test=%d",
-                len(X_model), len(X_cal), len(X_te_full),
+                "train=%d + val=%d + cal=%d, test=%d",
+                len(X_model), len(X_val), len(X_cal), len(X_te_full),
             )
             logger.info("  AR Logistic lags: %s", AR_LAGS)
 
-        # Per-split nested tuning. Runs on the FULL training fold (X_tr_sel), not the 80% model
-        # portion, because the inner purged K-fold handles its own train/val split. This is the
-        # correct nested-CV architecture per AFML Ch. 7.
+        # Per-split nested tuning. Runs on the FULL training fold (X_tr_sel), not the 80%
+        # model portion, because the inner purged K-fold handles its own train/val split.
+        # t1_tr is passed through so the inner CV uses AFML §7.4.1 label-overlap purging,
+        # consistent with the outer CPCV purging in cv.py.
         if tune:
             from src.cpcv.tuning import tune_all_models
 
             tune_start = time.time()
 
             split_tune_results = tune_all_models(
-                X_tr_sel, y_tr, w_tr,
+                X_tr_sel, y_tr, w_tr, t1_tr,
                 n_features=len(selected),
                 models=[m for m in tune_models if m != "ar_logistic"],
                 seed=0,
@@ -437,21 +467,29 @@ def run_cpcv_pipeline(
                 )
 
                 # Route the correct X tensors to the model depending on its category.
+                # X_v feeds the model's early-stopping validation (X_val arg of model.fit);
+                # X_c feeds the calibrator after fitting (held out from early stopping).
                 if model_name == "ar_logistic":
                     X_fit = X_model_full
+                    X_v = X_val_full
                     X_c = X_cal_full
                     X_predict = X_te_full
                 else:
                     X_fit = X_model
+                    X_v = X_val
                     X_c = X_cal
                     X_predict = X_te_sel
 
                 # Training: any per-task failure is logged but does not abort the run.
+                # sample_weight_val=w_val (T3) makes the early-stopping criterion symmetric
+                # with the weighted training loss; without it, val loss falls back to ones
+                # and the model layer's M3+M4 symmetric weighting is silently no-op.
                 try:
                     model.fit(
                         X_fit, y_model,
                         sample_weight=w_model,
-                        X_val=X_c, y_val=y_cal,
+                        X_val=X_v, y_val=y_val,
+                        sample_weight_val=w_val,
                     )
                 except Exception as e:
                     logger.error(
@@ -460,13 +498,16 @@ def run_cpcv_pipeline(
                     )
                     continue
 
-                # Calibration. LSTM windowing produces logits offset by ``window-1`` from the calibration
-                # set head, so we go through fit_from_logits with the LSTM's stored valid_indices to align.
+                # Calibration on the truly-held-out X_c (10% tail of outer train).
+                # LSTM windowing produces NaN at the warm-up rows under the M1 contract, so we
+                # slice cal_logits down to the valid sequence indices before passing to the
+                # calibrator; otherwise vector scaling's NLL goes NaN.
                 try:
                     calibrator = Calibrator()
                     if model_name == "lstm" and hasattr(model, "last_valid_indices"):
-                        cal_logits = model.predict_logits(X_c)
+                        cal_logits_full = model.predict_logits(X_c)
                         cal_valid_idx = model.last_valid_indices
+                        cal_logits = cal_logits_full[cal_valid_idx]
                         y_cal_aligned = y_cal.iloc[cal_valid_idx]
                         calibrator.fit_from_logits(cal_logits, y_cal_aligned, method="vector")
                     else:
@@ -481,19 +522,15 @@ def run_cpcv_pipeline(
                     )
                     calibrator = None
 
-                # Prediction on the test fold, calibrated if the calibrator was successfully fitted.
+                # Prediction on the test fold. For LSTM, slice the raw logits down to valid
+                # rows BEFORE calibration so the calibrator never sees NaN warm-up logits
+                # (which would correctly trigger the T14 NaN-in-logits warning even though
+                # we'd be slicing the NaN out afterward).
                 raw_logits = model.predict_logits(X_predict)
 
-                if calibrator is not None:
-                    cal_proba = calibrator.calibrate(raw_logits)
-                else:
-                    cal_proba = model.predict_proba(X_predict)
-
-                y_pred = np.argmax(cal_proba, axis=1)
-
-                # LSTM offset handling: align the predicted timestamps to the (window-1)-shifted index.
                 if model_name == "lstm" and hasattr(model, "last_valid_indices"):
                     valid_idx = model.last_valid_indices
+                    raw_logits = raw_logits[valid_idx]
                     test_timestamps = X_te_proc.index[valid_idx]
                     y_true_aligned = y_te.reindex(test_timestamps).values
                     ret_aligned = ret_te.reindex(test_timestamps).values
@@ -501,6 +538,19 @@ def run_cpcv_pipeline(
                     test_timestamps = X_te_proc.index
                     y_true_aligned = y_te.reindex(test_timestamps).values
                     ret_aligned = ret_te.reindex(test_timestamps).values
+
+                if calibrator is not None:
+                    cal_proba = calibrator.calibrate(raw_logits)
+                else:
+                    # Non-calibrated fallback: model.predict_proba returns full-length too, so
+                    # slice it the same way for LSTM.
+                    cal_proba_full = model.predict_proba(X_predict)
+                    if model_name == "lstm" and hasattr(model, "last_valid_indices"):
+                        cal_proba = cal_proba_full[model.last_valid_indices]
+                    else:
+                        cal_proba = cal_proba_full
+
+                y_pred = np.argmax(cal_proba, axis=1)
 
                 # Per-task evaluation metrics; wrap AUC and log-loss in try/except since they can fail
                 # on single-class predictions or degenerate probability vectors.

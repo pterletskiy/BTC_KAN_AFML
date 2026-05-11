@@ -45,7 +45,15 @@ class RandomForestModel(BaseModel):
         self.model = None
 
     # Fit RF; sample_weight carries AFML weights, class_weight=balanced_subsample handles imbalance.
-    def fit(self, X_train, y_train, sample_weight=None, X_val=None, y_val=None) -> None:
+    def fit(
+        self,
+        X_train,
+        y_train,
+        sample_weight=None,
+        X_val=None,
+        y_val=None,
+        sample_weight_val=None,
+    ) -> None:
         X = X_train.values if hasattr(X_train, "values") else X_train
         y = y_train.values if hasattr(y_train, "values") else y_train
         w = sample_weight.values if hasattr(sample_weight, "values") else sample_weight
@@ -78,7 +86,11 @@ class RandomForestModel(BaseModel):
 
     # Log-odds for downstream calibration; symmetric clip prevents inf at probability extremes.
     def predict_logits(self, X) -> np.ndarray:
-        """Convert RF probabilities to log-odds for calibration."""
+        """Convert RF probabilities to log-odds for calibration (binary only)."""
+        if self.n_classes != 2:
+            raise NotImplementedError(
+                "RandomForestModel.predict_logits is binary-only; "
+                f"got n_classes={self.n_classes}.")
         proba = self.predict_proba(X)
         proba = np.clip(proba, 1e-10, 1 - 1e-10)
         logits = np.log(proba[:, 1] / proba[:, 0])
@@ -95,6 +107,11 @@ class XGBoostModel(BaseModel):
 
     def __init__(self, n_features: int, n_classes: int = 2, seed: int = 42):
         super().__init__(n_features, n_classes, seed)
+        if n_classes != 2:
+            raise NotImplementedError(
+                "XGBoostModel currently supports n_classes=2 only "
+                "(objective='binary:logistic', eval_metric='logloss'); "
+                f"got n_classes={n_classes}.")
         self.model = None
 
     # Fit XGBoost; if X_val/y_val are passed, early stopping fires after XGB_EARLY_STOPPING_ROUNDS no-improvement rounds.
@@ -105,6 +122,7 @@ class XGBoostModel(BaseModel):
         sample_weight=None,
         X_val=None,
         y_val=None,
+        sample_weight_val=None,
     ) -> None:
         X = X_train.values if hasattr(X_train, "values") else X_train
         y = y_train.values if hasattr(y_train, "values") else y_train
@@ -138,6 +156,16 @@ class XGBoostModel(BaseModel):
             y_v = y_val.values if hasattr(y_val, "values") else y_val
             fit_params["eval_set"] = [(X_v, y_v)]
 
+            # Pass eval-set sample weights so the early-stopping logloss is weighted
+            # on the same basis as the training loss.
+            if sample_weight_val is not None:
+                w_v = (
+                    sample_weight_val.values
+                    if hasattr(sample_weight_val, "values")
+                    else sample_weight_val
+                )
+                fit_params["sample_weight_eval_set"] = [w_v]
+
             self.model.fit(**fit_params)
 
             best_iter = self.model.best_iteration
@@ -164,7 +192,11 @@ class XGBoostModel(BaseModel):
 
     # Log-odds for downstream calibration.
     def predict_logits(self, X) -> np.ndarray:
-        """Convert XGBoost probabilities to log-odds for calibration."""
+        """Convert XGBoost probabilities to log-odds for calibration (binary only)."""
+        if self.n_classes != 2:
+            raise NotImplementedError(
+                "XGBoostModel.predict_logits is binary-only; "
+                f"got n_classes={self.n_classes}.")
         proba = self.predict_proba(X)
         proba = np.clip(proba, 1e-10, 1 - 1e-10)
         logits = np.log(proba[:, 1] / proba[:, 0])

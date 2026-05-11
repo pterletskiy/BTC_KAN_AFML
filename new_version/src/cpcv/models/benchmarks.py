@@ -56,16 +56,19 @@ class ARLogistic(BaseModel):
         sample_weight=None,
         X_val=None,
         y_val=None,
+        sample_weight_val=None,
     ) -> None:
         X_lagged, y_aligned, w_aligned = self._select_lag_features(
             X_train, y_train, sample_weight, drop_nan=True,
         )
 
+        # liblinear is required for L1; lbfgs is the standard L2 choice.
+        solver = "liblinear" if LOGISTIC_PENALTY == "l1" else "lbfgs"
         self.model = LogisticRegression(
             C=LOGISTIC_C,
             penalty=LOGISTIC_PENALTY,
             class_weight="balanced",
-            solver="lbfgs",
+            solver=solver,
             max_iter=LOGISTIC_MAX_ITER,
             random_state=self.seed,
         )
@@ -90,12 +93,17 @@ class ARLogistic(BaseModel):
         )
         return self.model.predict(X_lagged)
 
-    # Log-odds for downstream calibration; symmetric clip matches the tree models.
+    # Raw log-odds from sklearn's decision_function; cleaner than recomputing from probabilities.
     def predict_logits(self, X) -> np.ndarray:
-        """Return log-odds for calibration, with a symmetric numerical-stability clip."""
-        proba = self.predict_proba(X)
-        proba = np.clip(proba, 1e-10, 1.0 - 1e-10)
-        logits = np.log(proba[:, 1] / proba[:, 0])
+        """Return raw log-odds from sklearn's ``decision_function`` (binary only)."""
+        if self.n_classes != 2:
+            raise NotImplementedError(
+                "ARLogistic.predict_logits is binary-only; "
+                f"got n_classes={self.n_classes}.")
+        X_lagged, _, _ = self._select_lag_features(
+            X, None, None, drop_nan=False,
+        )
+        logits = self.model.decision_function(X_lagged)
         return logits.reshape(-1, 1)
 
     def get_name(self) -> str:
@@ -190,6 +198,7 @@ class LogisticRegressionModel(BaseModel):
         sample_weight=None,
         X_val=None,
         y_val=None,
+        sample_weight_val=None,
     ) -> None:
         X = X_train.values if hasattr(X_train, "values") else X_train
         y = y_train.values if hasattr(y_train, "values") else y_train
@@ -224,7 +233,11 @@ class LogisticRegressionModel(BaseModel):
 
     # Raw decision-function log-odds; cleaner than recomputing from probabilities.
     def predict_logits(self, X) -> np.ndarray:
-        """Return raw log-odds from sklearn's ``decision_function``."""
+        """Return raw log-odds from sklearn's ``decision_function`` (binary only)."""
+        if self.n_classes != 2:
+            raise NotImplementedError(
+                "LogisticRegressionModel.predict_logits is binary-only; "
+                f"got n_classes={self.n_classes}.")
         X_arr = X.values if hasattr(X, "values") else X
         logits = self.model.decision_function(X_arr)
         return logits.reshape(-1, 1)

@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import log_loss
+from sklearn.metrics import accuracy_score, log_loss
 from xgboost import XGBClassifier
 
 try:
@@ -50,45 +50,93 @@ OPTUNA_VERBOSITY = optuna.logging.WARNING
 
 
 # --- 1. Purged K-Fold Split Generator --------------------------------------
-# Time-ordered contiguous-block splits with embargo gaps; the inner-loop analogue of cv._purge_train.
-def _purged_kfold_splits(X_train, y_train, w_train=None,
+# Time-ordered contiguous-block splits with AFML label-overlap purging (when t1 is supplied)
+# and a one-sided post-val embargo. Matches the outer CPCV's methodology in cv._purge_train.
+def _purged_kfold_splits(X_train, y_train, w_train=None, t1_train=None,
                          n_folds=N_INNER_FOLDS, embargo=PURGE_EMBARGO):
-    """Generate ``[(X_tr, y_tr, w_tr, X_val, y_val), ...]`` with positional embargo on val boundaries."""
-    X = X_train.values if hasattr(X_train, "values") else np.array(X_train)
-    y = y_train.values if hasattr(y_train, "values") else np.array(y_train)
-    w = None
-    if w_train is not None:
-        w = w_train.values if hasattr(w_train, "values") else np.array(w_train)
+    """Generate ``[(X_tr, y_tr, w_tr, X_val, y_val, w_val), ...]`` with label-overlap purging.
 
-    n = len(X)
+    When ``t1_train`` is supplied and ``X_train`` carries a timestamp index, training
+    rows are purged using the three AFML §7.4.1 label-overlap conditions:
+      1. Training row starts inside the validation window.
+      2. Training label resolves inside the validation window.
+      3. Training label horizon straddles the entire validation window.
+    A one-sided post-val embargo of ``embargo`` rows is then applied to bar nearby
+    training rows from leaking the lookahead into the val set.
+
+    When ``t1_train`` is not supplied (or X_train has no index), the function falls
+    back to symmetric positional purging of ±``embargo`` rows around the val block.
+    """
+    if hasattr(X_train, "values"):
+        X_arr = X_train.values
+        X_index = X_train.index if hasattr(X_train, "index") else None
+    else:
+        X_arr = np.asarray(X_train)
+        X_index = None
+
+    y_arr = y_train.values if hasattr(y_train, "values") else np.asarray(y_train)
+    w_arr = None
+    if w_train is not None:
+        w_arr = w_train.values if hasattr(w_train, "values") else np.asarray(w_train)
+
+    use_label_overlap = t1_train is not None and X_index is not None
+    if use_label_overlap:
+        t1_arr = t1_train.values if hasattr(t1_train, "values") else np.asarray(t1_train)
+
+    n = len(X_arr)
     fold_size = n // n_folds
     splits = []
 
     for fold_idx in range(n_folds):
-        # Contiguous validation block, then embargo zone around it.
         val_start = fold_idx * fold_size
         val_end = (fold_idx + 1) * fold_size if fold_idx < n_folds - 1 else n
 
-        # Purge zone: extend val window by ±embargo to drop overlapping training rows.
-        purge_start = max(0, val_start - embargo)
-        purge_end = min(n, val_end + embargo)
+        # Initial candidate train set: everything outside the contiguous val block.
+        candidate_train = set(range(0, val_start)) | set(range(val_end, n))
 
-        train_mask = np.ones(n, dtype=bool)
-        train_mask[purge_start:purge_end] = False
+        if use_label_overlap:
+            # AFML §7.4.1 label-overlap purging on t1 against the val timestamps.
+            t_val_start = X_index[val_start]
+            t_val_end = X_index[val_end - 1]
 
+            purged = set()
+            for i in candidate_train:
+                t_i_start = X_index[i]
+                t_i_end = t1_arr[i]
+                if pd.isna(t_i_end):
+                    continue
+                # Three AFML conditions — same as cv._purge_train, but for a single val block.
+                if t_val_start <= t_i_start <= t_val_end:
+                    purged.add(i)
+                elif t_val_start <= t_i_end <= t_val_end:
+                    purged.add(i)
+                elif t_i_start <= t_val_start and t_val_end <= t_i_end:
+                    purged.add(i)
+            candidate_train -= purged
+
+            # One-sided post-val embargo (AFML §7.4.2): bar a fixed window after the val block.
+            embargo_range = set(range(val_end, min(val_end + embargo, n)))
+            candidate_train -= embargo_range
+        else:
+            # Positional fallback when t1 is unavailable: symmetric ±embargo around val block.
+            purge_start = max(0, val_start - embargo)
+            purge_end = min(n, val_end + embargo)
+            candidate_train -= set(range(purge_start, purge_end))
+
+        train_indices = np.array(sorted(candidate_train), dtype=np.int64)
         val_indices = np.arange(val_start, val_end)
-        train_indices = np.where(train_mask)[0]
 
         if len(train_indices) == 0 or len(val_indices) == 0:
             continue
 
-        X_tr = X[train_indices]
-        y_tr = y[train_indices]
-        w_tr = w[train_indices] if w is not None else None
-        X_val = X[val_indices]
-        y_val = y[val_indices]
+        X_tr = X_arr[train_indices]
+        y_tr = y_arr[train_indices]
+        w_tr = w_arr[train_indices] if w_arr is not None else None
+        X_val = X_arr[val_indices]
+        y_val = y_arr[val_indices]
+        w_val = w_arr[val_indices] if w_arr is not None else None
 
-        splits.append((X_tr, y_tr, w_tr, X_val, y_val))
+        splits.append((X_tr, y_tr, w_tr, X_val, y_val, w_val))
 
     return splits
 
@@ -96,15 +144,19 @@ def _purged_kfold_splits(X_train, y_train, w_train=None,
 # --- 2. Generic split evaluator with pruning support -----------------------
 # Run a model_fn across all inner splits, reporting intermediate scores for Optuna pruning.
 def _evaluate_on_splits(splits, model_fn, trial=None):
-    """Return ``(mean_log_loss, mean_accuracy)`` across all inner splits; prunes via ``trial.report``."""
+    """Return ``(mean_log_loss, mean_accuracy)`` across all inner splits; prunes via ``trial.report``.
+
+    Both metrics are sample-weighted by ``w_val`` when supplied, so the tuning
+    objective matches the production training loss (also sample-weighted).
+    """
     split_losses = []
     split_accs = []
 
-    for fold_idx, (X_tr, y_tr, w_tr, X_val, y_val) in enumerate(splits):
+    for fold_idx, (X_tr, y_tr, w_tr, X_val, y_val, w_val) in enumerate(splits):
         model = model_fn(X_tr, y_tr, w_tr)
         proba = model.predict_proba(X_val)
-        ll = log_loss(y_val, proba)
-        acc = (model.predict(X_val) == y_val).mean()
+        ll = log_loss(y_val, proba, sample_weight=w_val)
+        acc = accuracy_score(y_val, model.predict(X_val), sample_weight=w_val)
 
         split_losses.append(ll)
         split_accs.append(acc)
@@ -120,9 +172,10 @@ def _evaluate_on_splits(splits, model_fn, trial=None):
 
 # --- 3. Logistic Regression tuner ------------------------------------------
 # Search C (log-uniform) and penalty (l1 vs l2); solver auto-chosen.
-def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
+def tune_logistic(X_train, y_train, w_train=None, t1_train=None,
+                  seed=42, verbose=True, n_trials=None):
     """Tune Logistic Regression: ``C`` log-uniform [1e-4, 1e2], ``penalty`` ∈ {l1, l2}."""
-    splits = _purged_kfold_splits(X_train, y_train, w_train)
+    splits = _purged_kfold_splits(X_train, y_train, w_train, t1_train)
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
@@ -181,10 +234,11 @@ def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True, n_trial
 
 # --- 4. Random Forest tuner ------------------------------------------------
 # Search depth, leaf size, n_estimators (stepped), and max_features.
-def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
+def tune_random_forest(X_train, y_train, w_train=None, t1_train=None,
+                       seed=42, verbose=True, n_trials=None):
     """Tune Random Forest: ``n_estimators`` ∈ [100, 250] step 50, ``max_depth`` ∈ [2, 6],
     ``min_samples_leaf`` ∈ [15, 40], ``max_features`` ∈ {sqrt, log2}."""
-    splits = _purged_kfold_splits(X_train, y_train, w_train)
+    splits = _purged_kfold_splits(X_train, y_train, w_train, t1_train)
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
@@ -253,9 +307,10 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
 
 # --- 5. XGBoost tuner ------------------------------------------------------
 # Search depth, learning rate, child weight, subsampling, gamma, L1/L2; early stop on val.
-def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
+def tune_xgboost(X_train, y_train, w_train=None, t1_train=None,
+                 seed=42, verbose=True, n_trials=None):
     """Tune XGBoost across 8 parameters; n_estimators fixed at 500 with 20-round early stopping."""
-    splits = _purged_kfold_splits(X_train, y_train, w_train)
+    splits = _purged_kfold_splits(X_train, y_train, w_train, t1_train)
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
     if verbose:
@@ -280,7 +335,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
         split_losses = []
         split_accs = []
 
-        for fold_idx, (X_tr, y_tr, w_tr, X_val, y_val) in enumerate(splits):
+        for fold_idx, (X_tr, y_tr, w_tr, X_val, y_val, w_val) in enumerate(splits):
             # scale_pos_weight balances class imbalance natively inside XGBoost.
             n_pos = (y_tr == 1).sum()
             n_neg = (y_tr == 0).sum()
@@ -302,13 +357,20 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
                 early_stopping_rounds=20,
                 random_state=seed,
             )
-            m.fit(
-                X_tr, y_tr, sample_weight=w_tr,
+            # Weighted eval_set: early stopping decides on the same weighted log-loss objective
+            # the training side optimises; previously XGB's eval_metric was unweighted while
+            # training was weighted, producing an asymmetric stopping rule.
+            fit_kwargs = dict(
+                X=X_tr, y=y_tr, sample_weight=w_tr,
                 eval_set=[(X_val, y_val)], verbose=False,
             )
+            if w_val is not None:
+                fit_kwargs["sample_weight_eval_set"] = [w_val]
+            m.fit(**fit_kwargs)
+
             proba = m.predict_proba(X_val)
-            ll = log_loss(y_val, proba)
-            acc = (m.predict(X_val) == y_val).mean()
+            ll = log_loss(y_val, proba, sample_weight=w_val)
+            acc = accuracy_score(y_val, m.predict(X_val), sample_weight=w_val)
 
             split_losses.append(ll)
             split_accs.append(acc)
@@ -367,7 +429,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
 
 # --- 6. LSTM tuner ---------------------------------------------------------
 # Locked narrow ranges from sensitivity testing; see project_structure.md for the methodology trail.
-def tune_lstm(X_train, y_train, w_train=None, n_features=None,
+def tune_lstm(X_train, y_train, w_train=None, t1_train=None, n_features=None,
               seed=42, verbose=True, n_trials=None):
     """Tune LSTM: ``hidden_size`` ∈ {16, 32}, ``dropout`` ∈ [0.1, 0.5], ``lr`` log-uniform [1e-4, 5e-2].
 
@@ -381,7 +443,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     from torch.utils.data import TensorDataset, DataLoader
     from src.cpcv.models.lstm_model import LSTMClassifier, create_sequences
 
-    splits = _purged_kfold_splits(X_train, y_train, w_train)
+    splits = _purged_kfold_splits(X_train, y_train, w_train, t1_train)
 
     if n_features is None:
         n_features = splits[0][0].shape[1]
@@ -395,10 +457,13 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     patience = 7
 
     # Pre-build all sliding-window sequences once so each Optuna trial only repeats the training step.
+    # w_val is sequenced too so the val loss can be sample-weighted symmetrically with training.
     seq_splits = []
-    for X_tr, y_tr, w_tr, X_val, y_val in splits:
+    for X_tr, y_tr, w_tr, X_val, y_val, w_val in splits:
         X_seq, y_seq, w_seq, _ = create_sequences(X_tr, y_tr, w_tr, window=window)
-        X_val_seq, y_val_seq, _, _ = create_sequences(X_val, y_val, window=window)
+        X_val_seq, y_val_seq, w_val_seq, _ = create_sequences(
+            X_val, y_val, w_val, window=window,
+        )
 
         if len(X_seq) == 0 or len(X_val_seq) == 0:
             continue
@@ -413,8 +478,14 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
             ),
             "X_val_t": torch.tensor(X_val_seq, dtype=torch.float32).to(device),
             "y_val_t": torch.tensor(y_val_seq, dtype=torch.long).to(device),
+            "w_val_t": (
+                torch.tensor(w_val_seq, dtype=torch.float32).to(device)
+                if w_val_seq is not None
+                else torch.ones(len(y_val_seq), dtype=torch.float32).to(device)
+            ),
             "y_val_np": y_val_seq,
             "y_seq_np": y_seq,
+            "w_val_np": w_val_seq,
         })
 
     if not seq_splits:
@@ -445,6 +516,11 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                 torch.manual_seed(seed)
                 np.random.seed(seed)
                 python_random.seed(seed)
+                # cuDNN determinism: pin the GPU LSTM kernel to its deterministic path so the
+                # tuner is reproducible across runs on the same hardware.
+                if torch.cuda.is_available():
+                    torch.backends.cudnn.deterministic = True
+                    torch.backends.cudnn.benchmark = False
 
                 # Class-frequency-inverse weighting inside the loss.
                 cc = np.bincount(s["y_seq_np"], minlength=2)
@@ -460,12 +536,15 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                 ).to(device)
 
                 # Same loss + optimiser stack as the production training loop.
+                # Both train and val use reduction="none" so the per-sample CE is multiplied
+                # by AFML sample weights before averaging — symmetric weighting on both sides.
                 criterion = nn.CrossEntropyLoss(
                     weight=cw_t, reduction="none",
                     label_smoothing=0.1,
                 )
                 criterion_val = nn.CrossEntropyLoss(
-                    weight=cw_t, label_smoothing=0.1,
+                    weight=cw_t, reduction="none",
+                    label_smoothing=0.1,
                 )
                 optimizer = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
                 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -483,7 +562,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                 best_state = None
                 patience_counter = 0
 
-                # Training loop with early stopping on val loss.
+                # Training loop with early stopping on weighted val loss.
                 for epoch in range(epochs):
                     net.train()
                     for X_b, y_b, w_b in train_dl:
@@ -499,9 +578,8 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
                     with torch.no_grad():
                         val_logits = net(s["X_val_t"])
-                        val_loss = criterion_val(
-                            val_logits, s["y_val_t"]
-                        ).item()
+                        val_per_sample = criterion_val(val_logits, s["y_val_t"])
+                        val_loss = (val_per_sample * s["w_val_t"]).mean().item()
 
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
@@ -522,7 +600,8 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                     logits = net(s["X_val_t"])
                     proba = torch.softmax(logits, dim=1).cpu().numpy()
 
-                ll = log_loss(s["y_val_np"], proba)
+                # Weighted log_loss matches the weighted val loss used for early stopping.
+                ll = log_loss(s["y_val_np"], proba, sample_weight=s["w_val_np"])
                 split_losses.append(ll)
 
                 # Free GPU memory between folds to avoid OOM on long tuning runs.
@@ -585,7 +664,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
 # --- 7. KAN tuner (efficient-kan + AdamW) -----------------------------------
 # Locked narrow ranges from sensitivity testing; see project_structure.md for the methodology trail.
-def tune_kan(X_train, y_train, w_train=None, n_features=None,
+def tune_kan(X_train, y_train, w_train=None, t1_train=None, n_features=None,
              seed=42, verbose=True, n_trials=None):
     """Tune KAN: ``width1`` ∈ [2, 6], ``grid`` ∈ {3, 5}, ``lr`` log-uniform [5e-4, 5e-2],
     ``weight_decay`` log-uniform [1e-5, 5e-3].
@@ -599,7 +678,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     """
     from efficient_kan import KAN
 
-    splits = _purged_kfold_splits(X_train, y_train, w_train)
+    splits = _purged_kfold_splits(X_train, y_train, w_train, t1_train)
 
     if n_features is None:
         n_features = splits[0][0].shape[1]
@@ -634,11 +713,16 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
 
         split_losses = []
 
-        for fold_idx, (X_tr, y_tr, w_tr, X_val, y_val) in enumerate(splits):
+        for fold_idx, (X_tr, y_tr, w_tr, X_val, y_val, w_val) in enumerate(splits):
             try:
                 torch.manual_seed(seed)
                 np.random.seed(seed)
                 python_random.seed(seed)
+                # cuDNN determinism inside per-fold seed block; KAN itself doesn't use cuDNN
+                # but the surrounding PyTorch ops do, so the flag set is the same as for LSTM.
+                if torch.cuda.is_available():
+                    torch.backends.cudnn.deterministic = True
+                    torch.backends.cudnn.benchmark = False
 
                 X_t = torch.tensor(X_tr, dtype=torch.float32).to(device)
                 y_t = torch.tensor(y_tr, dtype=torch.long).to(device)
@@ -649,6 +733,11 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                     w_t = torch.tensor(w_tr, dtype=torch.float32).to(device)
                 else:
                     w_t = torch.ones(len(y_t), dtype=torch.float32).to(device)
+                # w_val tensor for the weighted val loss; falls back to uniform ones.
+                if w_val is not None:
+                    w_val_t = torch.tensor(w_val, dtype=torch.float32).to(device)
+                else:
+                    w_val_t = torch.ones(len(y_val_t), dtype=torch.float32).to(device)
 
                 # Tanh normalisation: matches the production KAN training stack.
                 input_mean = X_t.mean(dim=0)
@@ -666,8 +755,10 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                     weight=cw_t, reduction="none",
                     label_smoothing=0.1,
                 )
+                # Same reduction=none on val so val loss can be weighted by w_val_t.
                 criterion_val = nn.CrossEntropyLoss(
-                    weight=cw_t, label_smoothing=0.1,
+                    weight=cw_t, reduction="none",
+                    label_smoothing=0.1,
                 )
 
                 model = KAN(
@@ -688,7 +779,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                 best_state = None
                 patience_counter = 0
 
-                # Full-batch training step + per-epoch val score for early stopping.
+                # Full-batch training step + per-epoch weighted val score for early stopping.
                 for epoch in range(epochs):
                     model.train()
                     optimizer.zero_grad()
@@ -704,9 +795,9 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
 
                     model.eval()
                     with torch.no_grad():
-                        val_loss = criterion_val(
-                            model(X_val_t), y_val_t
-                        ).item()
+                        val_logits = model(X_val_t)
+                        val_per_sample = criterion_val(val_logits, y_val_t)
+                        val_loss = (val_per_sample * w_val_t).mean().item()
 
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
@@ -726,7 +817,8 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                     logits = model(X_val_t)
                     proba = torch.softmax(logits, dim=1).cpu().numpy()
 
-                ll = log_loss(y_val, proba)
+                # Weighted log_loss matches the weighted val loss used for early stopping.
+                ll = log_loss(y_val, proba, sample_weight=w_val)
                 split_losses.append(ll)
 
                 # Free GPU memory between folds.
@@ -793,13 +885,15 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
 # --- 8. Orchestrator -------------------------------------------------------
 # Dispatch table: run the per-model tuner for each requested model, return a combined results dict.
 def tune_all_models(
-    X_train, y_train, w_train=None, n_features=None,
+    X_train, y_train, w_train=None, t1_train=None, n_features=None,
     models=None, seed=42, verbose=True, n_trials=None,
 ):
     """Run Optuna TPE tuning for every requested model and return ``{model: result_dict}``.
 
     ``models`` defaults to ``["logistic", "random_forest", "xgboost"]``; pass
-    ``["lstm"]`` or ``["kan"]`` to add neural tuning.
+    ``["lstm"]`` or ``["kan"]`` to add neural tuning. ``t1_train`` is the label
+    end-time series used by the inner CV for AFML §7.4.1 label-overlap purging;
+    when None, the inner CV falls back to symmetric positional purging.
     """
     if models is None:
         models = ["logistic", "random_forest", "xgboost"]
@@ -811,11 +905,21 @@ def tune_all_models(
 
     # Lambda-wrapped dispatch keeps the call site flat.
     dispatch = {
-        "logistic": lambda: tune_logistic(X_train, y_train, w_train, seed, verbose, n_trials),
-        "random_forest": lambda: tune_random_forest(X_train, y_train, w_train, seed, verbose, n_trials),
-        "xgboost": lambda: tune_xgboost(X_train, y_train, w_train, seed, verbose, n_trials),
-        "lstm": lambda: tune_lstm(X_train, y_train, w_train, n_features, seed, verbose, n_trials),
-        "kan": lambda: tune_kan(X_train, y_train, w_train, n_features, seed, verbose, n_trials),
+        "logistic": lambda: tune_logistic(
+            X_train, y_train, w_train, t1_train, seed, verbose, n_trials
+        ),
+        "random_forest": lambda: tune_random_forest(
+            X_train, y_train, w_train, t1_train, seed, verbose, n_trials
+        ),
+        "xgboost": lambda: tune_xgboost(
+            X_train, y_train, w_train, t1_train, seed, verbose, n_trials
+        ),
+        "lstm": lambda: tune_lstm(
+            X_train, y_train, w_train, t1_train, n_features, seed, verbose, n_trials
+        ),
+        "kan": lambda: tune_kan(
+            X_train, y_train, w_train, t1_train, n_features, seed, verbose, n_trials
+        ),
     }
 
     all_results = {}

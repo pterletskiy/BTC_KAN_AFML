@@ -15,7 +15,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 
-# Contract every CPCV model must satisfy: fit, predict_proba, get_name, plus a default predict.
+# Contract every CPCV model must satisfy: fit, predict_proba, predict_logits, get_name,
+# plus a default predict implemented via argmax.
 class BaseModel(ABC):
     """All models in the pipeline implement this interface."""
 
@@ -24,7 +25,8 @@ class BaseModel(ABC):
         self.n_classes = n_classes
         self.seed = seed
 
-    # Fit on the training fold; X_val/y_val are used by models that support early stopping.
+    # Fit on the training fold. X_val/y_val/sample_weight_val are used by models that
+    # support early stopping (neural nets, XGBoost); ignored by others.
     @abstractmethod
     def fit(
         self,
@@ -33,12 +35,15 @@ class BaseModel(ABC):
         sample_weight: np.ndarray | None = None,
         X_val: np.ndarray | None = None,
         y_val: np.ndarray | None = None,
+        sample_weight_val: np.ndarray | None = None,
     ) -> None:
         """Train the model.
 
         ``sample_weight`` carries the AFML Chapter 4 weights (return-attribution
-        and time-decay). ``X_val`` / ``y_val`` are optional and used only by
-        models that support early stopping (neural nets, XGBoost).
+        and time-decay). ``X_val``, ``y_val``, and ``sample_weight_val`` are
+        optional and used only by models that support early stopping (neural
+        nets, XGBoost); ``sample_weight_val`` keeps the early-stopping criterion
+        weighted on the same basis as the training loss.
         """
         pass
 
@@ -46,6 +51,26 @@ class BaseModel(ABC):
     @abstractmethod
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """Return class probabilities, shape (n_samples, n_classes)."""
+        pass
+
+    # Raw logits for downstream calibration. Shape convention is heterogeneous and intentional:
+    # sklearn-family models (Logistic, RF, XGB) return (n_samples, 1) log-odds for Platt scaling;
+    # PyTorch-family models (KAN, LSTM) return (n_samples, n_classes) pre-softmax logits for
+    # vector scaling. The calibration layer dispatches on this shape.
+    @abstractmethod
+    def predict_logits(self, X: np.ndarray) -> np.ndarray:
+        """Return raw logits for downstream calibration.
+
+        Shape convention:
+          - sklearn-family models (Logistic, RF, XGB) return ``(n_samples, 1)``
+            log-odds intended for Platt scaling.
+          - PyTorch-family models (KAN, LSTM) return ``(n_samples, n_classes)``
+            pre-softmax logits intended for vector scaling.
+
+        Models that drop rows during inference (e.g. sequence-window models like
+        LSTM) pad the dropped positions with NaN so the output row count always
+        matches the input row count.
+        """
         pass
 
     # Hard-label fallback derived from predict_proba; models can override for efficiency.

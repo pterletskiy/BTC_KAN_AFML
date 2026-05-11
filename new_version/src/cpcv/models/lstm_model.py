@@ -35,6 +35,7 @@ LSTM_WINDOW = 14
 LSTM_BATCH_SIZE = 64
 LSTM_EPOCHS = 100
 LSTM_LR = 1e-3
+LSTM_WEIGHT_DECAY = 1e-4
 LSTM_PATIENCE = 15
 LSTM_LABEL_SMOOTHING = 0.1
 LSTM_GRAD_CLIP_NORM = 1.0
@@ -172,33 +173,35 @@ class LSTMModel(BaseModel):
         sample_weight=None,
         X_val=None,
         y_val=None,
+        sample_weight_val=None,
     ) -> None:
         # Seed every RNG so the same data + hyperparameters produce the same fitted weights.
+        # cuDNN's LSTM kernel is non-deterministic by default; the flags below force the
+        # deterministic kernel so GPU runs are reproducible at a small performance cost.
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
         random.seed(self.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
 
         # Tanh normalisation: fit on train only, apply to train and (if present) validation.
         X_train_arr = X_train.values if hasattr(X_train, "values") else X_train
         self._fit_input_norm(X_train_arr)
         X_train_normed = self._apply_input_norm(X_train_arr)
 
-        # Build sliding-window sequences for both train and validation.
-        import pandas as pd
-        X_train_df = pd.DataFrame(X_train_normed, index=getattr(X_train, 'index', None))
+        # Build sliding-window sequences directly on the normalised numpy array.
         X_seq, y_seq, w_seq, _ = create_sequences(
-            X_train_df, y_train, sample_weight, window=self.window
+            X_train_normed, y_train, sample_weight, window=self.window,
         )
 
         has_val = X_val is not None and y_val is not None
         if has_val:
             X_val_arr = X_val.values if hasattr(X_val, "values") else X_val
             X_val_normed = self._apply_input_norm(X_val_arr)
-            X_val_df = pd.DataFrame(X_val_normed, index=getattr(X_val, 'index', None))
-            X_val_seq, y_val_seq, _, _ = create_sequences(
-                X_val_df, y_val, window=self.window
+            X_val_seq, y_val_seq, w_val_seq, _ = create_sequences(
+                X_val_normed, y_val, sample_weight_val, window=self.window,
             )
 
         # Move tensors onto the selected device once; default to ones if no weights supplied.
@@ -213,6 +216,11 @@ class LSTMModel(BaseModel):
         if has_val:
             X_val_t = torch.tensor(X_val_seq, dtype=torch.float32).to(self.device)
             y_val_t = torch.tensor(y_val_seq, dtype=torch.long).to(self.device)
+            w_val_t = (
+                torch.tensor(w_val_seq, dtype=torch.float32).to(self.device)
+                if w_val_seq is not None
+                else torch.ones(len(y_val_seq), dtype=torch.float32).to(self.device)
+            )
 
         # Mini-batch shuffling helps regularise the LSTM despite the short window.
         train_ds = TensorDataset(X_t, y_t, w_t)
@@ -229,17 +237,19 @@ class LSTMModel(BaseModel):
         class_weights = class_weights / class_weights.sum() * self.n_classes
         class_weights_t = torch.tensor(class_weights, dtype=torch.float32).to(self.device)
 
-        # Per-sample loss reduction so AFML sample weights multiply correctly into each term.
+        # Per-sample loss reduction so AFML sample weights multiply correctly on
+        # both the training side (sample_weight) and the validation side
+        # (sample_weight_val), matching AFML Snippet 8.3's symmetric weighting.
         criterion = nn.CrossEntropyLoss(
             weight=class_weights_t, reduction="none",
             label_smoothing=LSTM_LABEL_SMOOTHING,
         )
         criterion_val = nn.CrossEntropyLoss(
-            weight=class_weights_t,
+            weight=class_weights_t, reduction="none",
             label_smoothing=LSTM_LABEL_SMOOTHING,
         )
         optimizer = torch.optim.AdamW(
-            self.net.parameters(), lr=LSTM_LR, weight_decay=1e-4,
+            self.net.parameters(), lr=LSTM_LR, weight_decay=LSTM_WEIGHT_DECAY,
         )
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer,
@@ -282,7 +292,8 @@ class LSTMModel(BaseModel):
                 self.net.eval()
                 with torch.no_grad():
                     val_logits = self.net(X_val_t)
-                    val_loss = criterion_val(val_logits, y_val_t).item()
+                    val_per_sample = criterion_val(val_logits, y_val_t)
+                    val_loss = (val_per_sample * w_val_t).mean().item()
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -319,13 +330,14 @@ class LSTMModel(BaseModel):
             len(y_seq), epoch + 1, self.device,
         )
 
-    # Class probabilities at inference; stores valid_indices so the caller can align predictions to dates.
+    # Class probabilities at inference. The first window-1 rows can't form a complete
+    # sequence; those rows of the output are NaN so the row count matches len(X).
+    # ``self.last_valid_indices`` lists the rows that DO receive a real prediction.
     def predict_proba(self, X) -> np.ndarray:
         X_arr = X.values if hasattr(X, "values") else X
+        n_total = len(X_arr)
         X_normed = self._apply_input_norm(X_arr)
-        import pandas as pd
-        X_df = pd.DataFrame(X_normed, index=getattr(X, 'index', None))
-        X_seq, valid_indices = create_sequences(X_df, window=self.window)
+        X_seq, valid_indices = create_sequences(X_normed, window=self.window)
         self.last_valid_indices = valid_indices
 
         X_t = torch.tensor(X_seq, dtype=torch.float32).to(self.device)
@@ -333,31 +345,38 @@ class LSTMModel(BaseModel):
         self.net.eval()
         with torch.no_grad():
             logits = self.net(X_t)
-            proba = torch.softmax(logits, dim=1).cpu().numpy()
+            proba_valid = torch.softmax(logits, dim=1).cpu().numpy()
 
+        # NaN-pad the warm-up rows so callers can rely on len(out) == len(X).
+        proba = np.full((n_total, self.n_classes), np.nan, dtype=np.float32)
+        proba[valid_indices] = proba_valid
         return proba
 
-    # Hard-label prediction via argmax.
+    # Hard-label prediction; warm-up rows are marked with -1 (labels are {0, 1} in the model layer).
     def predict(self, X) -> np.ndarray:
         proba = self.predict_proba(X)
-        return np.argmax(proba, axis=1)
+        valid_mask = ~np.isnan(proba).any(axis=1)
+        out = np.full(len(proba), -1, dtype=np.int64)
+        out[valid_mask] = np.argmax(proba[valid_mask], axis=1)
+        return out
 
-    # Raw pre-softmax logits for downstream calibration.
+    # Raw pre-softmax logits for downstream calibration. NaN-padded the same way as predict_proba.
     def predict_logits(self, X) -> np.ndarray:
-        """Return raw pre-softmax logits, shape ``(n_seq, n_classes)``."""
+        """Return raw pre-softmax logits, shape ``(n_samples, n_classes)`` with NaN warm-up rows."""
         X_arr = X.values if hasattr(X, "values") else X
+        n_total = len(X_arr)
         X_normed = self._apply_input_norm(X_arr)
-        import pandas as pd
-        X_df = pd.DataFrame(X_normed, index=getattr(X, 'index', None))
-        X_seq, valid_indices = create_sequences(X_df, window=self.window)
+        X_seq, valid_indices = create_sequences(X_normed, window=self.window)
         self.last_valid_indices = valid_indices
 
         X_t = torch.tensor(X_seq, dtype=torch.float32).to(self.device)
 
         self.net.eval()
         with torch.no_grad():
-            logits = self.net(X_t).cpu().numpy()
+            logits_valid = self.net(X_t).cpu().numpy()
 
+        logits = np.full((n_total, self.n_classes), np.nan, dtype=np.float32)
+        logits[valid_indices] = logits_valid
         return logits
 
     def get_name(self) -> str:

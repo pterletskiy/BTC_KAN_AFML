@@ -19,6 +19,7 @@ selects for the other models.
 import logging
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
@@ -76,17 +77,17 @@ def find_optimal_d(
     for d in d_values:
         d = round(d, 4)
         if d == 0.0:
-            sweep_results[d] = 1.0
-            continue
+            # d=0 is the identity; ADF on the raw series.
+            adf_input = series.dropna()
+        else:
+            adf_input = apply_ffd(series, d, threshold).dropna()
 
-        ffd_series = apply_ffd(series, d, threshold).dropna()
-
-        if len(ffd_series) < 50:
+        if len(adf_input) < 50:
             sweep_results[d] = 1.0
             continue
 
         try:
-            adf_stat, pval, *_ = adfuller(ffd_series, maxlag=14, autolag="AIC")
+            adf_stat, pval, *_ = adfuller(adf_input, maxlag=14, autolag="AIC")
             sweep_results[d] = pval
         except (ValueError, np.linalg.LinAlgError):
             sweep_results[d] = 1.0
@@ -164,13 +165,26 @@ def ffd_transform(
     X_train = X_transformed.iloc[train_idx].copy()
     X_test = X_transformed.iloc[test_idx].copy()
 
-    # Non-FFD columns are ffill/bfill'd for external-data availability gaps.
+    # Non-FFD columns are ffill'd to cover transient feed gaps; bfill is deliberately
+    # not used because it would fill leading NaN with future values (look-ahead leakage).
+    # Any NaN that survives ffill is a real availability problem; raise rather than mask it.
     ffd_cols_present = [c for c in ffd_columns if c in X_train.columns]
     non_ffd_cols = [c for c in X_train.columns if c not in ffd_cols_present]
 
     if non_ffd_cols:
-        X_train[non_ffd_cols] = X_train[non_ffd_cols].ffill().bfill()
-        X_test[non_ffd_cols] = X_test[non_ffd_cols].ffill().bfill()
+        X_train[non_ffd_cols] = X_train[non_ffd_cols].ffill()
+        X_test[non_ffd_cols] = X_test[non_ffd_cols].ffill()
+
+        train_remaining = X_train[non_ffd_cols].isna().sum()
+        test_remaining = X_test[non_ffd_cols].isna().sum()
+        train_bad = train_remaining[train_remaining > 0]
+        test_bad = test_remaining[test_remaining > 0]
+        if len(train_bad) > 0 or len(test_bad) > 0:
+            raise ValueError(
+                "FFD: non-FFD column(s) still contain NaN after ffill "
+                "(leading-NaN gaps that ffill cannot resolve). "
+                f"train: {train_bad.to_dict()}, test: {test_bad.to_dict()}. "
+                "Extend the feature's history upstream or drop the column.")
 
     # Drop rows only where the FFD columns themselves are NaN (the lookback head).
     if ffd_cols_present:
@@ -225,21 +239,35 @@ def scale_features(
 
 
 # --- 3. Feature Selection — Multi-Model MDA (AFML Ch. 8) -------------------
-# Permutation-importance loop on a single classifier with purged inner CV.
+# Permutation-importance loop on a single classifier with purged + embargoed inner CV.
 def _compute_mda_single_model(
     clf,
     X_train: pd.DataFrame,
     y_train: pd.Series,
     w_train: pd.Series,
     t1_train: pd.Series,
+    *,
+    embargo_pct: float = 0.01,
+    split_prefix: str = "",
 ) -> pd.Series:
-    """Per-feature mean MDA score across ``MDA_N_INNER_FOLDS`` purged inner folds."""
+    """Per-feature mean MDA score across ``MDA_N_INNER_FOLDS`` purged + embargoed inner folds.
+
+    ``X_train`` is taken as UNSCALED. The function re-fits a RobustScaler on every
+    inner-train slice so the inner test rows never contribute to the scaler statistics
+    that get applied to them. F1 is sample-weighted on both the baseline and permuted
+    evaluations, matching AFML Snippet 8.3.
+
+    Skipped folds (too few inner-train survivors after purging) emit a warning prefixed
+    with ``split_prefix`` so a downstream summary can attribute the warning to a split.
+    """
     n_folds = MDA_N_INNER_FOLDS
     T = len(X_train)
     fold_size = T // n_folds
+    embargo_len = int(embargo_pct * T)
     rng = np.random.RandomState(42)
 
     mda_scores = pd.DataFrame(index=X_train.columns)
+    folds_completed = 0
 
     for fold_i in range(n_folds):
         # Contiguous-block inner test slice; everything else is candidate inner train.
@@ -268,31 +296,60 @@ def _compute_mda_single_model(
                     purged.add(i)
             inner_train_idx = [i for i in inner_train_idx if i not in purged]
 
+            # One-sided embargo: drop inner-train rows in [test_end+1, test_end+embargo_len].
+            embargo_end_pos = min(inner_test_end + embargo_len, T)
+            embargo_range = set(range(inner_test_end, embargo_end_pos))
+            inner_train_idx = [i for i in inner_train_idx if i not in embargo_range]
+
         if len(inner_train_idx) < 20 or len(inner_test_idx) < 10:
+            logger.warning(
+                "%sMDA inner fold %d skipped (inner_train=%d, inner_test=%d).",
+                split_prefix, fold_i, len(inner_train_idx), len(inner_test_idx),
+            )
             continue
 
-        X_tr = X_train.iloc[inner_train_idx]
+        X_tr_raw = X_train.iloc[inner_train_idx]
         y_tr = y_train.iloc[inner_train_idx]
         w_tr = w_train.iloc[inner_train_idx]
-        X_te = X_train.iloc[inner_test_idx]
+        X_te_raw = X_train.iloc[inner_test_idx]
         y_te = y_train.iloc[inner_test_idx]
+        w_te = w_train.iloc[inner_test_idx]
+
+        # Re-fit the scaler on inner_train only so the inner_test rows never contribute
+        # to the median/IQR statistics that are then applied to them.
+        inner_scaler = RobustScaler()
+        X_tr = pd.DataFrame(
+            inner_scaler.fit_transform(X_tr_raw),
+            index=X_tr_raw.index, columns=X_tr_raw.columns,
+        )
+        X_te = pd.DataFrame(
+            inner_scaler.transform(X_te_raw),
+            index=X_te_raw.index, columns=X_te_raw.columns,
+        )
 
         # Clone-and-fit so the original estimator object stays unfitted across folds.
-        from sklearn.base import clone
         model = clone(clf)
         model.fit(X_tr, y_tr, sample_weight=w_tr)
 
-        baseline_f1 = f1_score(y_te, model.predict(X_te), average="macro")
+        baseline_f1 = f1_score(
+            y_te, model.predict(X_te), average="macro", sample_weight=w_te)
 
         # Permute one column at a time and measure the F1 drop; that drop is the MDA.
         fold_mda = {}
         for col in X_train.columns:
             X_te_perm = X_te.copy()
             X_te_perm[col] = rng.permutation(X_te_perm[col].values)
-            perm_f1 = f1_score(y_te, model.predict(X_te_perm), average="macro")
+            perm_f1 = f1_score(
+                y_te, model.predict(X_te_perm), average="macro", sample_weight=w_te)
             fold_mda[col] = baseline_f1 - perm_f1
 
         mda_scores[f"fold_{fold_i}"] = pd.Series(fold_mda)
+        folds_completed += 1
+
+    if folds_completed == 0:
+        logger.warning(
+            "%sMDA: 0 inner folds completed; returning NaN scores.", split_prefix)
+        return pd.Series(np.nan, index=X_train.columns)
 
     avg_mda = mda_scores.mean(axis=1)
     return avg_mda
@@ -304,12 +361,16 @@ def compute_multi_model_mda(
     y_train: pd.Series,
     w_train: pd.Series,
     t1_train: pd.Series,
+    *,
+    split_prefix: str = "",
 ) -> pd.DataFrame:
     """Return ``DataFrame[MDA_RF, MDA_LR, MDA]`` sorted by averaged MDA descending.
 
-    A feature ranks high only if it contributes meaningfully to a linear AND a
-    nonlinear classifier, or very strongly to one of them; this guards against
-    selection bias toward any single model architecture.
+    The combined ``MDA`` column is the mean of the two models' scores after each
+    is z-scored across features. Z-scoring equalises voting power: without it, the
+    model with larger raw F1 swings (usually the Random Forest) dominates the mean
+    and the second model has effectively no say. With it, a feature wins only when
+    BOTH models rank it above-average for their respective scales.
     """
     # Random Forest captures nonlinear and interaction effects.
     rf_clf = RandomForestClassifier(
@@ -319,7 +380,8 @@ def compute_multi_model_mda(
         n_jobs=-1,
     )
     logger.info("Computing MDA (Random Forest)...")
-    mda_rf = _compute_mda_single_model(rf_clf, X_train, y_train, w_train, t1_train)
+    mda_rf = _compute_mda_single_model(
+        rf_clf, X_train, y_train, w_train, t1_train, split_prefix=split_prefix)
 
     # Logistic Regression captures linear effects on the standardised feature scale.
     lr_clf = LogisticRegression(
@@ -328,14 +390,25 @@ def compute_multi_model_mda(
         random_state=42,
     )
     logger.info("Computing MDA (Logistic Regression)...")
-    mda_lr = _compute_mda_single_model(lr_clf, X_train, y_train, w_train, t1_train)
+    mda_lr = _compute_mda_single_model(
+        lr_clf, X_train, y_train, w_train, t1_train, split_prefix=split_prefix)
 
-    # The final score is the simple average; a feature wins only by performing in both worlds.
     results = pd.DataFrame({
         "MDA_RF": mda_rf,
         "MDA_LR": mda_lr,
     })
-    results["MDA"] = results[["MDA_RF", "MDA_LR"]].mean(axis=1)
+
+    # Z-score each model's scores across features so the two contribute equally.
+    # The std guard handles the degenerate all-equal case (e.g. all-NaN inner CV).
+    def _zscore(s: pd.Series) -> pd.Series:
+        std = s.std(ddof=0)
+        if not np.isfinite(std) or std == 0:
+            return pd.Series(0.0, index=s.index)
+        return (s - s.mean()) / std
+
+    z_rf = _zscore(results["MDA_RF"])
+    z_lr = _zscore(results["MDA_LR"])
+    results["MDA"] = (z_rf + z_lr) / 2.0
 
     return results.sort_values("MDA", ascending=False)
 
@@ -380,13 +453,13 @@ def select_features(
         split_prefix = ""
 
     # Stage 1: compute averaged MDA across the full feature universe.
-    mda_results = compute_multi_model_mda(X_train, y_train, w_train, t1_train)
+    mda_results = compute_multi_model_mda(
+        X_train, y_train, w_train, t1_train, split_prefix=split_prefix)
 
     # Filter to strictly positive MDA; everything else is eliminated by the linear/nonlinear consensus.
     mda_positive = mda_results[mda_results["MDA"] > 0]
-    mda_eliminated = mda_results[mda_results["MDA"] <= 0]
     n_passed = len(mda_positive)
-    n_eliminated = len(mda_eliminated)
+    n_eliminated = n_total - n_passed
 
     # Fallback: if positive-MDA set is too small, take the top MIN_FEATURES by score.
     if n_passed < MIN_FEATURES:
@@ -399,14 +472,13 @@ def select_features(
         selected_df = mda_positive
 
     # Stage 2: cap at top_k_frac · n_total, with a hard floor at MIN_FEATURES.
-    if top_k_frac is not None:
-        max_features = max(int(n_total * top_k_frac), MIN_FEATURES)
-        if len(selected_df) > max_features:
-            selected_df = selected_df.head(max_features)
-            logger.debug(
-                "MDA pool capped: %d → %d features (top_k_frac=%.2f).",
-                n_passed, max_features, top_k_frac,
-            )
+    max_features = max(int(n_total * top_k_frac), MIN_FEATURES)
+    if len(selected_df) > max_features:
+        selected_df = selected_df.head(max_features)
+        logger.debug(
+            "MDA pool capped: %d → %d features (top_k_frac=%.2f).",
+            n_passed, max_features, top_k_frac,
+        )
 
     selected = sorted(selected_df.index.tolist())
 
@@ -431,7 +503,7 @@ def select_features(
 
 
 # --- 4. Orchestration ------------------------------------------------------
-# Per-fold pipeline: FFD → re-align labels → scale → select. Returns full-column matrices.
+# Per-fold pipeline: FFD → re-align labels (both sides) → MDA (with inner-fold scaling) → scale → return.
 def preprocess_fold(
     X_full: pd.DataFrame,
     train_idx: np.ndarray,
@@ -439,36 +511,59 @@ def preprocess_fold(
     y_train: pd.Series,
     w_train: pd.Series,
     t1_train: pd.Series,
+    y_test: pd.Series,
+    w_test: pd.Series,
+    t1_test: pd.Series,
     ffd_columns: list[str],
     top_k_frac: float | None = None,
     skip_selection: bool = False,
     *,
     split_idx: int | None = None,
     n_splits: int | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict]:
-    """Run full preprocessing for one CPCV fold; return (X_train, X_test, selected, info).
+) -> dict:
+    """Run full preprocessing for one CPCV fold and return everything the caller needs.
 
-    Returned ``X_train`` and ``X_test`` carry ALL columns (pre-selection) so the
-    pipeline can route the full pre-MDA matrix to AR Logistic via ``X_tr_full``.
-    The selected feature list is returned separately and applied by the caller.
+    The caller must use the returned ``y_train``/``y_test``/``w_*``/``t1_*`` because
+    FFD can drop the lookback-head rows of either side, so the input labels go stale.
+
+    Feature selection runs on the UNSCALED FFD output; ``compute_multi_model_mda``
+    fits a fresh RobustScaler on each inner-CV train slice so the inner test rows
+    never contribute to the scaler statistics that get applied to them. The final
+    ``X_train``/``X_test`` returned to the caller ARE scaled (outer-train scaler
+    fit on the full post-FFD outer train) and carry ALL columns (pre-selection)
+    so the pipeline can route the full pre-MDA matrix to AR Logistic via
+    ``X_tr_full``. The selected feature list is returned separately and applied by
+    the caller.
 
     ``skip_selection=True`` is used when only AR Logistic is being evaluated.
+
+    Returns
+    -------
+    dict with keys:
+        X_train, X_test     : pd.DataFrame  (scaled, post-FFD)
+        y_train, y_test     : pd.Series     (re-aligned to X_*.index)
+        w_train, w_test     : pd.Series     (re-aligned)
+        t1_train, t1_test   : pd.Series     (re-aligned)
+        selected            : list[str]
+        info                : dict          (ffd_info, scaler, selected_features)
     """
     # 1. FFD on price-level columns: d* from train slice, applied to the full series.
     X_train, X_test, ffd_info = ffd_transform(
         X_full, train_idx, test_idx, ffd_columns
     )
 
-    # 2. Re-align labels/weights/t1 because FFD drops the lookback-head NaN rows.
+    # 2. Re-align labels/weights/t1 on BOTH sides because FFD can drop rows on either.
     common_train = X_train.index.intersection(y_train.index)
     y_train = y_train.loc[common_train]
     w_train = w_train.loc[common_train]
     t1_train = t1_train.loc[common_train]
 
-    # 3. Scale every feature using a RobustScaler fitted on train only.
-    X_train, X_test, scaler = scale_features(X_train, X_test)
+    common_test = X_test.index.intersection(y_test.index)
+    y_test = y_test.loc[common_test]
+    w_test = w_test.loc[common_test]
+    t1_test = t1_test.loc[common_test]
 
-    # 4. Feature selection (skipped when only AR Logistic is being evaluated).
+    # 3. Feature selection on UNSCALED post-FFD data; inner CV inside MDA scales per fold.
     if skip_selection:
         selected = sorted(X_train.columns.tolist())
         logger.info("Feature selection skipped (AR Logistic uses lagged returns only)")
@@ -478,11 +573,24 @@ def preprocess_fold(
             split_idx=split_idx, n_splits=n_splits,
         )
 
-    # Per-fold sample sizes are surfaced once by the calling pipeline; we no longer print here.
+    # 4. Outer scaling: fit RobustScaler on the full outer-train, apply to outer-test.
+    X_train, X_test, scaler = scale_features(X_train, X_test)
+
     info = {
         "ffd": ffd_info,
         "scaler": scaler,
         "selected_features": selected,
     }
 
-    return X_train, X_test, selected, info
+    return {
+        "X_train": X_train,
+        "X_test": X_test,
+        "y_train": y_train,
+        "y_test": y_test,
+        "w_train": w_train,
+        "w_test": w_test,
+        "t1_train": t1_train,
+        "t1_test": t1_test,
+        "selected": selected,
+        "info": info,
+    }

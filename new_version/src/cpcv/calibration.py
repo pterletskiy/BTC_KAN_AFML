@@ -52,6 +52,14 @@ def fit_platt_scaling(
 
     Returns the fitted LogisticRegression; calibrate via
     ``platt_model.predict_proba(new_logits.reshape(-1, 1))``.
+
+    Note on sample weights: the training side uses AFML sample weights end-to-end,
+    but Platt is fit unweighted by design. Calibration estimates the conditional
+    ``P(class | logit)`` of the underlying data-generating process, which is a
+    property of the data distribution rather than of the AFML training signal.
+    Fitting Platt with AFML weights would tilt the sigmoid toward high-weight
+    samples instead of toward the empirical class frequency at each logit, which
+    is the opposite of what calibration should measure.
     """
     logits_2d = logits.reshape(-1, 1)
 
@@ -86,7 +94,7 @@ def fit_temperature_scaling(
         correct_log_probs = log_probs[np.arange(len(y_true)), y_true]
         return -np.mean(correct_log_probs)
 
-    result = minimize_scalar(nll, bounds=(0.1, 10.0), method="bounded")
+    result = minimize_scalar(nll, bounds=_VECTOR_T_BOUNDS, method="bounded")
     optimal_T = result.x
 
     logger.debug(
@@ -103,28 +111,30 @@ def fit_vector_scaling(
 ) -> tuple[float, np.ndarray]:
     """Learn ``T`` and bias vector ``b`` minimising the NLL of ``softmax((logits + b) / T)``.
 
-    The parameterisation has one redundant degree of freedom (softmax is invariant
-    to a constant shift across all classes); the LBFGS optimiser handles this without
-    issue and the resulting calibrated probabilities are unambiguous. Calibrate new
-    logits via ``softmax((new_logits + b) / T, axis=1)``.
+    Softmax is invariant under a constant shift across all biases, so the raw
+    parameterisation ``[T, b_0, b_1, ..., b_{C-1}]`` has one redundant degree of
+    freedom: ``(T, b)`` and ``(T, b + c·1)`` produce identical calibrated
+    probabilities. To make ``(T, b)`` uniquely identifiable, ``b_0`` is pinned to
+    zero and only ``T`` plus ``b_1, ..., b_{C-1}`` are optimised. The returned
+    ``b`` is the full vector with ``b[0] = 0``. Calibrate new logits via
+    ``softmax((new_logits + b) / T, axis=1)``.
     """
     n_classes = logits.shape[1]
 
-    # NLL with composite parameter vector ``[T, b_0, b_1, ..., b_{C-1}]``.
+    # NLL with reduced parameter vector ``[T, b_1, ..., b_{C-1}]``; b_0 is implicitly zero.
     def neg_log_likelihood(params: np.ndarray) -> float:
         T = params[0]
-        b = params[1:]
-        if T <= 0:
-            return 1e10
+        # Reconstruct the full bias vector with b_0 = 0 pinned in.
+        b = np.concatenate([[0.0], params[1:]])
         scaled = (logits + b) / T
         log_probs = scaled - logsumexp(scaled, axis=1, keepdims=True)
         correct_log_probs = log_probs[np.arange(len(y_true)), y_true]
         return -float(np.mean(correct_log_probs))
 
-    # Initialise at T=1, b=0 (the identity calibrator) and let LBFGS refine.
-    x0 = np.zeros(1 + n_classes)
+    # Initialise at T=1, b_1..b_{C-1}=0 (the identity calibrator with b_0 pinned at 0).
+    x0 = np.zeros(n_classes)
     x0[0] = 1.0
-    bounds = [_VECTOR_T_BOUNDS] + [_VECTOR_BIAS_BOUNDS] * n_classes
+    bounds = [_VECTOR_T_BOUNDS] + [_VECTOR_BIAS_BOUNDS] * (n_classes - 1)
 
     result = minimize(
         neg_log_likelihood,
@@ -134,7 +144,8 @@ def fit_vector_scaling(
     )
 
     optimal_T = float(result.x[0])
-    optimal_b = result.x[1:].astype(float)
+    # Return the full bias vector including the pinned b_0 = 0.
+    optimal_b = np.concatenate([[0.0], result.x[1:]]).astype(float)
 
     logger.debug(
         "Vector scaling fitted: T=%.4f, b=%s (NLL=%.4f).",
@@ -200,6 +211,18 @@ class Calibrator:
         if not self.fitted:
             raise RuntimeError(
                 "Calibrator has not been fitted. Call .fit() first."
+            )
+
+        # NaN logits would propagate silently through softmax to NaN probabilities,
+        # which then yield argmax=0 and crash downstream metrics with length mismatch.
+        # Warn at the boundary so the source of the NaN is obvious in the log.
+        if np.isnan(logits).any():
+            n_nan_rows = int(np.isnan(logits).any(axis=-1 if logits.ndim == 2 else 0).sum())
+            logger.warning(
+                "Calibrator.calibrate received logits with NaN in %d row(s); "
+                "calibrated output rows will be NaN. The caller should slice NaN "
+                "rows out before passing (typical cause: LSTM warm-up window).",
+                n_nan_rows,
             )
 
         # Platt branch: collapse 2D logits into 1D log-odds if needed, then sigmoid via predict_proba.
