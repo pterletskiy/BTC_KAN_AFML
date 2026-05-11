@@ -1,15 +1,12 @@
 """
-6) Cross-Validation Splits
+7) Cross-Validation Splits
 ===============================
-Generate all C(N,k) combinatorial train/test splits per AFML Chapter 12.4,
-apply purging (Chapter 7.4.1) and embargoing (Chapter 7.4.2) to prevent
-information leakage from overlapping triple-barrier labels, and compute
-the path-assignment matrix that maps each (group, split) pair to one of
-the φ[N,k] backtest paths.
+Generate all C(N,k) combinatorial train/test splits (AFML §12.4), apply
+purging (AFML §7.4.1) and embargoing (AFML §7.4.2) to prevent label-overlap
+leakage, and compute the φ[N,k] path-assignment matrix.
 
-The notebook decides N and k by passing them explicitly. The module
-constants ``N_GROUPS`` and ``K_TEST_GROUPS`` exist only as fallback
-defaults for legacy callers; new code should pass values directly.
+The notebook passes N and k explicitly; the module-level constants are
+fallback defaults only.
 """
 
 import logging
@@ -21,17 +18,11 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level constants (defaults only; pass explicitly from the notebook)
-# ---------------------------------------------------------------------------
-N_GROUPS = 8
-K_TEST_GROUPS = 2
-EMBARGO_PCT = 0.01  # fraction of T to embargo after each test boundary
+# --- Module-level defaults (notebook passes these explicitly per run) ------
+N_GROUPS, K_TEST_GROUPS, EMBARGO_PCT = 8, 2, 0.01
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+# --- 1. Public API ----------------------------------------------------------
+# Build every C(N,k) combinatorial split with AFML purging + embargoing.
 def generate_cpcv_splits(
     X: pd.DataFrame,
     t1: pd.Series,
@@ -39,54 +30,34 @@ def generate_cpcv_splits(
     k: int = K_TEST_GROUPS,
     embargo_pct: float = EMBARGO_PCT,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Generate all C(N,k) combinatorial purged cross-validation splits.
+    """Return ``[(train_idx, test_idx), ...]`` covering every C(N,k) test combination.
 
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Feature matrix, chronologically sorted (from alignment).
-    t1 : pd.Series
-        Barrier touch timestamps for each observation, same index as X.
-    n_groups : int
-        Number of contiguous groups to partition the data into.
-    k : int
-        Number of groups in each test set.
-    embargo_pct : float
-        Fraction of T observations to embargo after each test group.
-
-    Returns
-    -------
-    list[tuple[np.ndarray, np.ndarray]]
-        List of (train_indices, test_indices) tuples, one per split.
-        Indices are positional (integer) into X.
+    Indices are positional integers into ``X``; ``t1`` supplies the label
+    end-times that drive the purge condition.
     """
     T = len(X)
     embargo_len = int(embargo_pct * T)
 
-    # partition into groups
+    # Partition the timeline into N contiguous groups; combinations of these become test sets.
     group_bounds = _compute_group_bounds(T, n_groups)
-
-    # all C(N,k) combinations of test groups
     all_combos = list(combinations(range(n_groups), k))
 
     splits = []
     for test_groups in all_combos:
-        # build test index set
+        # Build the union of test groups as a positional index set.
         test_idx = set()
         for g in test_groups:
             start, end = group_bounds[g]
             test_idx.update(range(start, end))
 
-        # build initial train index set (everything not in test)
+        # Start with everything else as training, then strip overlap-purged and embargoed rows.
         train_idx = set(range(T)) - test_idx
 
-        # purge: remove training observations whose labels overlap with test
         purged = _purge_train(
             train_idx, test_groups, group_bounds, X.index, t1
         )
         train_idx -= purged
 
-        # embargo: remove training observations immediately after each test group
         embargoed = _embargo_train(
             train_idx, test_groups, group_bounds, T, embargo_len
         )
@@ -105,41 +76,26 @@ def generate_cpcv_splits(
     return splits
 
 
+# Path-assignment matrix (AFML §12.4.1): maps each (group, occurrence) to a backtest path.
 def build_path_matrix(
     n_groups: int = N_GROUPS, k: int = K_TEST_GROUPS
 ) -> tuple[int, dict]:
-    """Compute the path-assignment matrix per AFML Chapter 12.4.1.
+    """Return ``(n_paths, path_map)`` where ``path_map[p] = [(group, split), ...]``.
 
-    For N=6, k=2 there are φ[6,2] = N-1 = 5 backtest paths. Each group
-    appears in exactly φ[N,k] test sets.
-
-    Parameters
-    ----------
-    n_groups : int
-        Number of groups (N).
-    k : int
-        Test groups per split.
-
-    Returns
-    -------
-    n_paths : int
-        Number of backtest paths (φ[N,k]).
-    path_map : dict
-        ``{path_id: [(group_id, split_id), ...]}``. Each path entry
-        contains N tuples specifying which split's predictions to use
-        for that group.
+    ``n_paths = φ[N,k] = C(N-1, k-1)``: each group appears in exactly φ test sets,
+    and the p-th occurrence of every group forms path p.
     """
-    n_paths = comb(n_groups - 1, k - 1)  # φ[N,k] = C(N-1, k-1)
+    n_paths = comb(n_groups - 1, k - 1)
     all_combos = list(combinations(range(n_groups), k))
 
-    # for each group, collect which splits include it in the test set
+    # For each group, list the split IDs where it appears in the test set.
     group_splits = {g: [] for g in range(n_groups)}
     for split_id, test_groups in enumerate(all_combos):
         for g in test_groups:
             group_splits[g].append(split_id)
 
-    # assign each (group, split) occurrence to a path
-    # each group appears in exactly n_paths test sets
+    # Assign the p-th appearance of every group to path p; by construction every path
+    # ends up with exactly one (group, split) pair per group.
     path_map = {p: [] for p in range(n_paths)}
     for g in range(n_groups):
         for path_id, split_id in enumerate(group_splits[g]):
@@ -153,6 +109,7 @@ def build_path_matrix(
     return n_paths, path_map
 
 
+# Summary builder that prefers pre-computed inputs to avoid double work.
 def get_split_info(
     X: pd.DataFrame,
     t1: pd.Series,
@@ -164,17 +121,9 @@ def get_split_info(
     n_paths: int | None = None,
     print_summary: bool = True,
 ) -> dict:
-    """Compute (or accept) and optionally print a CPCV split-configuration
-    summary.
+    """Compute (or accept) and optionally print a CPCV configuration summary.
 
-    The function originally computed splits and paths every time it was
-    called, which led to duplicate work and duplicate log lines when the
-    notebook also called ``generate_cpcv_splits`` and
-    ``build_path_matrix`` separately. The current signature lets the
-    caller pass already-computed values via ``splits`` / ``path_map`` /
-    ``n_paths``, in which case no recomputation occurs.
-
-    The recommended notebook pattern is now::
+    Recommended notebook pattern, which computes splits and paths exactly once::
 
         splits = generate_cpcv_splits(X, t1, n_groups=N, k=k)
         n_paths, path_map = build_path_matrix(n_groups=N, k=k)
@@ -183,40 +132,13 @@ def get_split_info(
             splits=splits, path_map=path_map, n_paths=n_paths,
         )
 
-    which computes splits and paths once, then summarises without
-    re-running anything. Passing only ``X`` and ``t1`` (the legacy
-    pattern) still works but recomputes splits and paths internally.
-
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Feature matrix.
-    t1 : pd.Series
-        Barrier touch timestamps.
-    n_groups, k, embargo_pct
-        CPCV parameters. Defaults come from the module constants.
-    splits : list, optional
-        Pre-computed splits from ``generate_cpcv_splits``. If None,
-        will be computed. If passed, ``n_groups`` / ``k`` /
-        ``embargo_pct`` must match the values used to compute it.
-    path_map, n_paths : dict and int, optional
-        Pre-computed path matrix from ``build_path_matrix``. If None,
-        will be computed.
-    print_summary : bool, default True
-        Whether to print the human-readable summary block.
-
-    Returns
-    -------
-    dict
-        Summary statistics. The dict also includes the ``splits`` and
-        ``path_map`` if they were computed inside the function, so the
-        caller can avoid a second round of computation.
+    Passing only ``X`` and ``t1`` still works but recomputes splits internally.
     """
     T = len(X)
     embargo_len = int(embargo_pct * T)
     group_bounds = _compute_group_bounds(T, n_groups)
 
-    # compute splits and paths only if not provided
+    # Recompute only what the caller hasn't already produced.
     if splits is None:
         splits = generate_cpcv_splits(X, t1, n_groups, k, embargo_pct)
     if path_map is None or n_paths is None:
@@ -235,23 +157,9 @@ def get_split_info(
     return info
 
 
+# Pure presentation: format the summary dict for human inspection.
 def print_split_summary(info: dict) -> None:
-    """Print the human-readable CPCV split-configuration summary.
-
-    Pure presentation: takes the dict returned by
-    ``_compute_split_info`` and writes the formatted table to stdout.
-    Separated from computation so the caller can recompute or render
-    without redundant work.
-
-    Parameters
-    ----------
-    info : dict
-        Output of ``_compute_split_info`` (or of ``get_split_info``).
-        Must contain: ``T``, ``n_groups``, ``k``, ``n_splits``,
-        ``n_paths``, ``embargo_len``, ``embargo_pct``,
-        ``group_boundaries``, ``avg_train_size``, ``train_pct``,
-        ``avg_test_size``, ``avg_purged_count``, ``avg_embargoed_count``.
-    """
+    """Print the CPCV configuration summary block built by ``_compute_split_info``."""
     print("=" * 60)
     print("CPCV Split Summary")
     print("=" * 60)
@@ -279,9 +187,8 @@ def print_split_summary(info: dict) -> None:
     print("=" * 60)
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+# --- 2. Internal helpers ----------------------------------------------------
+# Assemble the summary statistics dict from already-generated splits.
 def _compute_split_info(
     X: pd.DataFrame,
     splits: list[tuple[np.ndarray, np.ndarray]],
@@ -292,16 +199,10 @@ def _compute_split_info(
     n_paths: int,
     group_bounds: list[tuple[int, int]],
 ) -> dict:
-    """Compute the summary statistics dict from already-generated splits.
-
-    Pure data assembly with no logging or printing. Separated from the
-    public-facing ``get_split_info`` so unit tests can call it
-    independently and so a notebook can re-render the summary without
-    re-generating splits.
-    """
+    """Build the human-readable summary dict; no logging, no side effects."""
     T = len(X)
 
-    # group boundary info
+    # Translate positional bounds into (index, date) tuples for the print block.
     group_boundaries = []
     for g, (start, end) in enumerate(group_bounds):
         group_boundaries.append((
@@ -310,11 +211,12 @@ def _compute_split_info(
             X.index[end - 1].date(),
         ))
 
-    # per-split statistics
     train_sizes = [len(tr) for tr, _ in splits]
     test_sizes = [len(te) for _, te in splits]
 
-    # estimate purge/embargo counts per split by comparing to unpurged sizes
+    # Reconstruct per-split purge and embargo counts by comparing the actual train
+    # size to the unpurged baseline (T − test_size); the residual splits into the
+    # bounded embargo portion and the rest as purge.
     all_combos = list(combinations(range(n_groups), k))
     purge_counts = []
     embargo_counts = []
@@ -326,7 +228,6 @@ def _compute_split_info(
         actual_train = len(splits[i][0])
         total_removed = unpurged_train - actual_train
 
-        # estimate embargo portion: at most embargo_len per test group
         est_embargo = min(embargo_len * len(test_groups), total_removed)
         est_purged = total_removed - est_embargo
 
@@ -350,12 +251,9 @@ def _compute_split_info(
     }
 
 
+# Contiguous partitioning of [0, T) into N groups; remainder absorbed by the last group.
 def _compute_group_bounds(T: int, n_groups: int) -> list[tuple[int, int]]:
-    """Return (start, end) positional index pairs for each group.
-
-    Groups 0..N-2 have size ⌊T/N⌋, group N-1 gets the remainder.
-    End indices are exclusive: [start, end).
-    """
+    """Return ``[(start, end), ...]`` with exclusive end; groups 0..N-2 have size ⌊T/N⌋."""
     base_size = T // n_groups
     bounds = []
     for g in range(n_groups):
@@ -368,6 +266,7 @@ def _compute_group_bounds(T: int, n_groups: int) -> list[tuple[int, int]]:
     return bounds
 
 
+# Overlap-based purging (AFML Snippet 7.1): remove training rows whose label horizon touches any test group.
 def _purge_train(
     train_idx: set[int],
     test_groups: tuple[int, ...],
@@ -375,13 +274,7 @@ def _purge_train(
     index: pd.DatetimeIndex,
     t1: pd.Series,
 ) -> set[int]:
-    """Purge training observations whose labels overlap with any test group.
-
-    Implements AFML Snippet 7.1 overlap conditions:
-      1. t_test_start <= t_i_start <= t_test_end
-      2. t_test_start <= t1[i]     <= t_test_end
-      3. t_i_start <= t_test_start  AND  t_test_end <= t1[i]
-    """
+    """Return training indices to purge based on AFML's three label-overlap conditions."""
     to_purge = set()
 
     for g in test_groups:
@@ -396,17 +289,17 @@ def _purge_train(
             if pd.isna(t_i_end):
                 continue
 
-            # condition 1: training observation starts within test period
+            # Condition 1: training observation starts inside the test window.
             if t_test_start <= t_i_start <= t_test_end:
                 to_purge.add(i)
                 continue
 
-            # condition 2: training label resolves within test period
+            # Condition 2: training label resolves inside the test window.
             if t_test_start <= t_i_end <= t_test_end:
                 to_purge.add(i)
                 continue
 
-            # condition 3: training label spans the entire test period
+            # Condition 3: training label horizon straddles the entire test window.
             if t_i_start <= t_test_start and t_test_end <= t_i_end:
                 to_purge.add(i)
                 continue
@@ -414,6 +307,7 @@ def _purge_train(
     return to_purge
 
 
+# One-sided embargo (AFML §7.4.2): only training rows AFTER each test group are blocked.
 def _embargo_train(
     train_idx: set[int],
     test_groups: tuple[int, ...],
@@ -421,11 +315,10 @@ def _embargo_train(
     T: int,
     embargo_len: int,
 ) -> set[int]:
-    """Remove training observations in the embargo zone after each test group.
+    """Return training indices in the post-test embargo zone.
 
-    Per AFML Chapter 7.4.2, embargo is only needed after the test set
-    (not before), because training labels that resolve before the test
-    begins contain no future information.
+    No pre-test embargo is needed because training labels resolving before the test
+    starts cannot carry future information.
     """
     to_embargo = set()
 

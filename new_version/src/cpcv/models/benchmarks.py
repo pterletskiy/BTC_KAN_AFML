@@ -1,19 +1,16 @@
 """
-8.2) Benchmarks
+10.2) Benchmarks
 ====================
-Two baseline models for the CPCV pipeline:
-  - ARLogistic: econometric baseline using autoregressive lagged returns
-  - LogisticRegressionModel: linear baseline on the full selected feature set
+Two baseline classifiers that define the bar more complex models must beat:
 
-These establish the minimum bar that more complex models (trees, LSTM, KAN)
-must beat to justify their additional complexity.
+  - ARLogistic: econometric autoregressive baseline on lagged log returns only
+  - LogisticRegressionModel: linear ML baseline on the full selected feature set
 
-AR Logistic consumes precomputed lag columns from
-``pre_cpcv.features.compute_lag_features``. Lag features sit alongside
-TA / math / external features in X and are eligible for MDA selection
-for the other models; AR Logistic itself selects its six lag columns
-by name from the pre-MDA feature matrix via the pipeline's
-``X_tr_full`` route, independently of MDA's choices.
+AR Logistic consumes precomputed lag columns from ``pre_cpcv.features.compute_lag_features``.
+The columns live alongside TA / math / external features in X and are eligible
+for MDA selection by the other models; AR Logistic itself selects its ten lag
+columns by name from the pre-MDA matrix via the pipeline's ``X_tr_full`` route,
+independently of what MDA picks.
 """
 
 import logging
@@ -26,37 +23,23 @@ from src.pre_cpcv.features import AR_LAGS, lag_column_names
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level constants
-# ---------------------------------------------------------------------------
-# AR_LAGS lives in src.pre_cpcv.features so the precompute step and the
-# model that consumes the columns share a single source of truth.
+# --- Module-level constants -------------------------------------------------
+# AR_LAGS lives in src.pre_cpcv.features so the precompute step and the model
+# that consumes the columns share a single source of truth.
 LOGISTIC_C = 1.0
 LOGISTIC_PENALTY = "l2"
 LOGISTIC_MAX_ITER = 1000
 
 
-# =====================================================================
-# AR Logistic — Econometric Baseline
-# =====================================================================
+# --- 1. AR Logistic — Econometric Baseline ---------------------------------
+# Autoregressive logistic regression that intentionally sees only lagged log returns.
 class ARLogistic(BaseModel):
-    """Autoregressive logistic regression on lagged log returns.
+    """Autoregressive logistic regression on lagged log returns only.
 
-    Deliberately ignores the engineered feature set and uses only
-    precomputed log-return lags, isolating the purely autoregressive
-    signal as a baseline. A more complex model that cannot beat AR
-    Logistic has not learned anything beyond price autocorrelation.
-
-    Pipeline contract
-    -----------------
-    X must contain the lag columns produced by
-    ``pre_cpcv.features.compute_lag_features``
-    (``log_returns_lag1``, ..., ``log_returns_lag30``). The CPCV
-    pipeline routes ``X_tr_full`` (all pre-selection columns) to AR
-    Logistic so the lag columns are present even when MDA selection
-    drops them from ``selected``. Other models receive the MDA-selected
-    subset, which may or may not include lag columns depending on
-    permutation importance for that fold.
+    A more complex model that cannot beat AR Logistic has not learned anything
+    beyond simple price autocorrelation. The pipeline routes ``X_tr_full`` (all
+    pre-selection columns) to AR Logistic so the precomputed lag columns are
+    present regardless of what MDA selects for the other models.
     """
 
     def __init__(self, n_features: int, n_classes: int = 2, seed: int = 42):
@@ -65,6 +48,7 @@ class ARLogistic(BaseModel):
         self.ar_lags = AR_LAGS
         self._lag_columns = lag_column_names(self.ar_lags)
 
+    # Fit a standard L2 logistic regression on the lag columns only; sample weights from AFML Ch. 4.
     def fit(
         self,
         X_train,
@@ -92,25 +76,23 @@ class ARLogistic(BaseModel):
             len(y_aligned), self.ar_lags,
         )
 
+    # Class probabilities at inference; lag columns must already be populated.
     def predict_proba(self, X) -> np.ndarray:
         X_lagged, _, _ = self._select_lag_features(
             X, None, None, drop_nan=False,
         )
         return self.model.predict_proba(X_lagged)
 
+    # Hard-label prediction.
     def predict(self, X) -> np.ndarray:
         X_lagged, _, _ = self._select_lag_features(
             X, None, None, drop_nan=False,
         )
         return self.model.predict(X_lagged)
 
+    # Log-odds for downstream calibration; symmetric clip matches the tree models.
     def predict_logits(self, X) -> np.ndarray:
-        """Return log-odds (logits) for calibration.
-
-        Uses a symmetric clip matching the tree models (XGBoost, RF) so
-        that all CPCV-pipeline classifiers compute logits via the same
-        numerical-stability convention.
-        """
+        """Return log-odds for calibration, with a symmetric numerical-stability clip."""
         proba = self.predict_proba(X)
         proba = np.clip(proba, 1e-10, 1.0 - 1e-10)
         logits = np.log(proba[:, 1] / proba[:, 0])
@@ -119,32 +101,15 @@ class ARLogistic(BaseModel):
     def get_name(self) -> str:
         return "AR_Logistic"
 
-    # ── internal helpers ──────────────────────────────────────────────
+    # Internal helper: pull lag columns from X, with different NaN policies for train vs predict.
     def _select_lag_features(self, X, y, w, drop_nan: bool):
-        """Select the precomputed lag columns from X.
+        """Extract the precomputed lag columns from ``X``.
 
-        Parameters
-        ----------
-        X : pd.DataFrame
-            Feature matrix containing the precomputed lag columns.
-        y, w : pd.Series or array-like or None
-            Labels and sample weights (training-time only).
-        drop_nan : bool
-            If True (training), drop rows with any NaN in the lag
-            columns and align ``y``, ``w`` to the surviving rows.
-            If False (prediction), require the lag columns to be
-            already populated and raise on any NaN; reordering or
-            dropping rows at predict time would misalign the output
-            predictions with the test fold's timestamps.
-
-        Returns
-        -------
-        np.ndarray
-            Lag feature matrix.
-        np.ndarray or None
-            Aligned labels (None if ``y`` was None).
-        np.ndarray or None
-            Aligned sample weights (None if ``w`` was None).
+        Training (``drop_nan=True``) drops rows with any NaN lag and aligns
+        ``y`` / ``w`` to the survivors. Prediction (``drop_nan=False``) requires
+        the lag columns to be already populated and raises on any NaN, because
+        reordering or dropping rows at predict time would misalign the output
+        predictions with the test fold's timestamps.
         """
         if not isinstance(X, pd.DataFrame):
             raise ValueError(
@@ -152,6 +117,7 @@ class ARLogistic(BaseModel):
                 f"lag columns ({self._lag_columns}); got {type(X).__name__}."
             )
 
+        # Guardrail: missing lag columns mean the pipeline contract was violated upstream.
         missing = [c for c in self._lag_columns if c not in X.columns]
         if missing:
             raise ValueError(
@@ -163,6 +129,7 @@ class ARLogistic(BaseModel):
         lagged = X[self._lag_columns]
 
         if drop_nan:
+            # Training-time: drop the NaN lookback head and align y, w to the survivors.
             valid_mask = lagged.notna().all(axis=1)
             n_dropped = int((~valid_mask).sum())
             if n_dropped > 0:
@@ -189,7 +156,7 @@ class ARLogistic(BaseModel):
                 )
             return lagged.values, y_aligned, w_aligned
 
-        # prediction path: lag columns must already be valid
+        # Prediction-time: raise on NaN because dropping rows would break index alignment downstream.
         if lagged.isna().any().any():
             n_nan_rows = int(lagged.isna().any(axis=1).sum())
             raise ValueError(
@@ -202,19 +169,20 @@ class ARLogistic(BaseModel):
         return lagged.values, None, None
 
 
-# =====================================================================
-# Logistic Regression — Linear ML Baseline
-# =====================================================================
+# --- 2. Logistic Regression — Linear ML Baseline ---------------------------
+# Standard sklearn LogisticRegression on the MDA-selected feature subset.
 class LogisticRegressionModel(BaseModel):
     """Standard logistic regression on the full selected feature set.
 
-    Simple linear baseline that all more complex models must outperform.
+    Simple linear baseline that every nonlinear model must outperform to justify
+    its added complexity.
     """
 
     def __init__(self, n_features: int, n_classes: int = 2, seed: int = 42):
         super().__init__(n_features, n_classes, seed)
         self.model = None
 
+    # Fit on the selected feature subset; solver is auto-chosen from the L1/L2 penalty.
     def fit(
         self,
         X_train,
@@ -227,6 +195,7 @@ class LogisticRegressionModel(BaseModel):
         y = y_train.values if hasattr(y_train, "values") else y_train
         w = sample_weight.values if hasattr(sample_weight, "values") else sample_weight
 
+        # liblinear is required for L1; lbfgs is the standard L2 choice.
         solver = "liblinear" if LOGISTIC_PENALTY == "l1" else "lbfgs"
         self.model = LogisticRegression(
             C=LOGISTIC_C,
@@ -243,16 +212,19 @@ class LogisticRegressionModel(BaseModel):
             X.shape[0], X.shape[1],
         )
 
+    # Class probabilities at inference.
     def predict_proba(self, X) -> np.ndarray:
         X_arr = X.values if hasattr(X, "values") else X
         return self.model.predict_proba(X_arr)
 
+    # Hard-label prediction.
     def predict(self, X) -> np.ndarray:
         X_arr = X.values if hasattr(X, "values") else X
         return self.model.predict(X_arr)
 
+    # Raw decision-function log-odds; cleaner than recomputing from probabilities.
     def predict_logits(self, X) -> np.ndarray:
-        """Return raw log-odds from sklearn's decision_function."""
+        """Return raw log-odds from sklearn's ``decision_function``."""
         X_arr = X.values if hasattr(X, "values") else X
         logits = self.model.decision_function(X_arr)
         return logits.reshape(-1, 1)

@@ -1,18 +1,14 @@
 """
-11) Pipeline
+13) Pipeline
 ================
-Master orchestration function that ties together split generation,
-preprocessing, model training, calibration, and prediction storage
-across all splits × models × seeds.
+Master orchestrator that ties together split generation, preprocessing, model
+training, calibration, and prediction storage across all splits × models × seeds.
 
-Hyperparameter tuning (optional, nested): for each of the 15 CPCV
-splits, Optuna TPE with Purged K-Fold CV tunes hyperparameters using
-only the training data of that split. Each split gets its own optimal
-parameters, correctly simulating how an algorithm would adapt to new
-data in live trading. This nested architecture ensures DSR and PBO
-remain valid (López de Prado, 2018, Ch. 7 & 12).
+Nested tuning (optional): for each outer CPCV split, Optuna TPE + purged K-Fold
+CV tunes hyperparameters on the training data only. Each split gets its own
+optimal parameters, which keeps DSR and PBO valid (AFML Ch. 7 & 12).
 
-Single entry point: ``run_cpcv_pipeline()`` called from the notebook.
+Single entry point: ``run_cpcv_pipeline()``.
 """
 
 import logging
@@ -25,11 +21,7 @@ import pandas as pd
 from sklearn.metrics import f1_score, log_loss, roc_auc_score
 from tqdm import tqdm
 
-from src.cpcv.cv import (
-    build_path_matrix,
-    generate_cpcv_splits,
-    get_split_info,
-)
+from src.cpcv.cv import build_path_matrix, generate_cpcv_splits, get_split_info
 from src.cpcv.preprocessing import preprocess_fold
 from src.cpcv.calibration import Calibrator
 from src.cpcv.models import create_model, list_models
@@ -37,20 +29,10 @@ from src.cpcv.models import create_model, list_models
 logger = logging.getLogger(__name__)
 
 
-# =====================================================================
-# Warning capture for clean tqdm output
-# =====================================================================
-# When a WARNING-level log record is emitted mid-run (e.g. preprocessing
-# saying "Only 3 features with MDA > 0"), it breaks the tqdm progress
-# bar by writing a line above the bar. The bar then re-renders below,
-# producing the visual impression of two progress bars in the cell. To
-# keep the cell aesthetic, this handler captures WARNING+ records into
-# a list during the pipeline run; the run prints them after the ✅
-# completion notice, so they appear as a clean post-run summary instead
-# of interrupting the bar. The file handler in the imports cell still
-# captures everything in real time, so the log file is unaffected.
+# --- 1. Warning capture for clean tqdm output ------------------------------
+# WARNING-level records break the tqdm bar by writing above it; buffer them and replay after the run.
 class _WarningBuffer(logging.Handler):
-    """Capture WARNING+ log records into a list for deferred display."""
+    """Capture WARNING+ log records into a list for deferred replay after the tqdm bar finishes."""
 
     def __init__(self) -> None:
         super().__init__(level=logging.WARNING)
@@ -63,19 +45,12 @@ class _WarningBuffer(logging.Handler):
         self.records.append(self.format(record))
 
 
-# =====================================================================
-# Pristine module-default capture and reset
-# =====================================================================
-# ``_apply_tuned_params`` mutates module-level constants on the model
-# files (LOGISTIC_C, RF_N_ESTIMATORS, KAN_HIDDEN, ...). Without a reset,
-# a second ``run_cpcv_pipeline`` call inherits the previous run's tuned
-# values: e.g. running with tuning, then re-running without tuning,
-# gives the second run's "untuned" models the first run's tuned widths.
-# ``_reset_module_defaults`` snapshots the original constants the first
-# time it is invoked and restores them on every subsequent call.
+# --- 2. Pristine module-default capture and reset --------------------------
+# ``_apply_tuned_params`` mutates module-level constants on each model file;
+# without a reset, a second run inherits the first run's tuned values.
 _PRISTINE_DEFAULTS: dict[str, dict[str, object]] = {}
 
-# Names per module mirror the keys ``_apply_tuned_params`` writes to.
+# Per-module constants that ``_apply_tuned_params`` writes to.
 _TRACKED_CONSTANTS = {
     "benchmarks":  ["LOGISTIC_C", "LOGISTIC_PENALTY"],
     "tree_models": [
@@ -89,8 +64,9 @@ _TRACKED_CONSTANTS = {
 }
 
 
+# Resolve a tracked-module name string to the live module object for read/write of constants.
 def _model_module(name: str):
-    """Resolve a tracked-module name to the live module object."""
+    """Return the live module object for one of the four tracked model files."""
     import src.cpcv.models.benchmarks as bench_mod
     import src.cpcv.models.tree_models as tree_mod
     import src.cpcv.models.lstm_model as lstm_mod
@@ -103,14 +79,13 @@ def _model_module(name: str):
     }[name]
 
 
+# Snapshot import-time defaults on first call, restore them on every subsequent call.
 def _reset_module_defaults() -> None:
-    """Restore tracked module-level constants to their pristine values.
+    """Restore tracked module-level constants to their pristine import-time values.
 
-    On the first call, snapshots the current values (which are the
-    pristine import-time defaults, since this runs before any
-    ``_apply_tuned_params`` mutation). On every subsequent call,
-    restores those snapshots, undoing any tuning-driven mutation
-    from a prior ``run_cpcv_pipeline`` invocation.
+    First call snapshots the current values (which are pristine, since this runs before
+    any ``_apply_tuned_params`` mutation). Later calls restore the snapshot, undoing any
+    tuning-driven mutation from a prior pipeline invocation.
     """
     first_call = not _PRISTINE_DEFAULTS
 
@@ -118,6 +93,7 @@ def _reset_module_defaults() -> None:
         mod = _model_module(mod_name)
 
         if first_call:
+            # Capture once: subsequent restores point back to these values.
             _PRISTINE_DEFAULTS[mod_name] = {
                 a: getattr(mod, a) for a in attr_names if hasattr(mod, a)
             }
@@ -129,26 +105,13 @@ def _reset_module_defaults() -> None:
         logger.debug("Reset tracked module-level constants to pristine defaults.")
 
 
-# =====================================================================
-# Apply tuned hyperparameters to module-level constants
-# =====================================================================
+# --- 3. Apply tuned hyperparameters to module-level constants --------------
+# Write the Optuna best_params into each model file's module-level constants so model __init__s pick them up.
 def _apply_tuned_params(tuning_results: dict) -> dict:
-    """Override module-level constants with tuned hyperparameters.
-
-    Parameters
-    ----------
-    tuning_results : dict
-        Output of tune_all_models(). Keys are model names, values are
-        dicts with "best_params".
-
-    Returns
-    -------
-    dict
-        Summary of applied parameters for logging.
-    """
+    """Override module-level constants with the best params from Optuna; return a per-model summary."""
     applied = {}
 
-    # ── Logistic Regression ──────────────────────────────────────────
+    # Logistic Regression: C and penalty live in benchmarks.py.
     if "logistic" in tuning_results:
         params = tuning_results["logistic"].get("best_params", {})
         if params:
@@ -159,7 +122,7 @@ def _apply_tuned_params(tuning_results: dict) -> dict:
                 bench_mod.LOGISTIC_PENALTY = params["penalty"]
             applied["logistic"] = params
 
-    # ── Random Forest ────────────────────────────────────────────────
+    # Random Forest: 4 constants in tree_models.py.
     if "random_forest" in tuning_results:
         params = tuning_results["random_forest"].get("best_params", {})
         if params:
@@ -168,6 +131,7 @@ def _apply_tuned_params(tuning_results: dict) -> dict:
                 tree_mod.RF_N_ESTIMATORS = params["n_estimators"]
             if "max_depth" in params:
                 v = params["max_depth"]
+                # NaN-safe coercion so None / NaN values fall through cleanly.
                 tree_mod.RF_MAX_DEPTH = int(v) if v is not None and v == v else None
             if "min_samples_leaf" in params:
                 tree_mod.RF_MIN_SAMPLES_LEAF = params["min_samples_leaf"]
@@ -175,7 +139,7 @@ def _apply_tuned_params(tuning_results: dict) -> dict:
                 tree_mod.RF_MAX_FEATURES = params["max_features"]
             applied["random_forest"] = params
 
-    # ── XGBoost ──────────────────────────────────────────────────────
+    # XGBoost: 8 constants in tree_models.py.
     if "xgboost" in tuning_results:
         params = tuning_results["xgboost"].get("best_params", {})
         if params:
@@ -198,7 +162,7 @@ def _apply_tuned_params(tuning_results: dict) -> dict:
                 tree_mod.XGB_REG_LAMBDA = params["reg_lambda"]
             applied["xgboost"] = params
 
-    # ── LSTM ──────────────────────────────────────────────────────────
+    # LSTM: 4 constants in lstm_model.py.
     if "lstm" in tuning_results:
         params = tuning_results["lstm"].get("best_params", {})
         if params:
@@ -213,7 +177,7 @@ def _apply_tuned_params(tuning_results: dict) -> dict:
                 lstm_mod.LSTM_LR = params["learning_rate"]
             applied["lstm"] = params
 
-    # ── KAN ────────────────────────────────────────────────────────────
+    # KAN: 5 constants in kan_model.py; KANModel.__init__ reads them at call time.
     if "kan" in tuning_results:
         params = tuning_results["kan"].get("best_params", {})
         if params:
@@ -233,10 +197,8 @@ def _apply_tuned_params(tuning_results: dict) -> dict:
     return applied
 
 
-
-# =====================================================================
-# Public API
-# =====================================================================
+# --- 4. Public API: run_cpcv_pipeline --------------------------------------
+# The single entry point used by the notebook: builds splits, loops over models × seeds, returns predictions.
 def run_cpcv_pipeline(
     X: pd.DataFrame,
     y: pd.Series,
@@ -258,85 +220,30 @@ def run_cpcv_pipeline(
     n_paths: int | None = None,
     split_info: dict | None = None,
 ) -> dict:
-    """Run the full CPCV evaluation across all models and all splits.
+    """Run the full CPCV evaluation across all models × splits × seeds.
 
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Aligned feature matrix (from Step 9).
-    y : pd.Series
-        Labels, values in {-1, +1}.
-    w : pd.Series
-        Sample weights.
-    t1 : pd.Series
-        Barrier touch timestamps (for purging).
-    bins_ret : pd.Series
-        Return at barrier touch (``bins['ret']``), needed for financial
-        performance computation downstream.
-    n_groups : int, default 8
-        Number of CPCV groups. Used only when ``splits`` is not provided.
-    k : int, default 2
-        Number of test groups per split. Used only when ``splits`` is
-        not provided.
-    embargo_pct : float, default 0.01
-        Embargo fraction. Used only when ``splits`` is not provided.
-    n_seeds : int
-        Number of random seeds per model per fold.
-    models : list[str], optional
-        Model names to evaluate. Defaults to all registered models.
-    ffd_columns : list[str], optional
-        Columns requiring FFD. Defaults to empty (no FFD applied).
-    top_k_frac : float, optional
-        Fraction of features to keep via MDA selection.
-    tune : bool
-        If True, run nested hyperparameter tuning inside each CPCV split
-        using Optuna TPE + Purged K-Fold CV on the training data only.
-        Each split gets its own optimal parameters.
-    tune_models : list[str], optional
-        Which models to tune. Defaults to ["logistic", "random_forest",
-        "xgboost"]. Add "lstm" and/or "kan" for full tuning (slower).
-    n_trials : int, optional
-        Number of Optuna trials per model per split. Overrides the
-        defaults in tuning.py (60 for classical, 40 for neural).
-        Lower values (e.g. 20–30) speed up tuning significantly.
-    splits, path_map, n_paths, split_info : optional
-        Pre-computed CPCV outputs from the notebook's CV cell. When all
-        four are provided, the pipeline uses them directly and does not
-        regenerate splits or the path matrix internally. This is the
-        recommended pattern: it avoids duplicate log lines and ensures
-        the configuration the notebook prints in its CV cell matches
-        the configuration the pipeline actually uses. When any of these
-        are ``None``, the pipeline falls back to computing them from
-        ``n_groups``, ``k``, and ``embargo_pct``.
+    Pre-computed ``splits``, ``path_map``, ``n_paths``, and ``split_info`` from
+    the notebook's CV cell are preferred over recomputing internally: it avoids
+    duplicate log lines and ensures the configuration printed by the CV summary
+    matches what the pipeline trains on. ``ffd_columns`` defaults to empty,
+    meaning no fractional differentiation unless requested.
 
-    Returns
-    -------
-    dict
-        Contains 'predictions', 'split_info', 'path_map', 'n_paths',
-        'n_splits', 'models', 'n_seeds', and optionally 'tuning_results'.
+    When ``tune=True``, Optuna runs INSIDE each outer split on the training
+    fold only, and the resulting best params are written into the model modules'
+    constants via ``_apply_tuned_params``. ``tune_models`` defaults to the three
+    classical models; add ``"lstm"`` or ``"kan"`` to enable neural tuning.
+
+    Returns a dict with ``predictions``, ``split_info``, ``path_map``, ``n_paths``,
+    ``n_splits``, ``models``, ``n_seeds``, and optionally ``tuning_results``.
     """
     pipeline_start = time.time()
 
-    # ── bulletproof warning suppression ───────────────────────────────
-    # The notebook-level ``warnings.filterwarnings("ignore", ...)`` calls
-    # in the imports cell sometimes get overridden mid-run by sklearn's
-    # internal warning manipulation, so deprecation warnings (e.g. the
-    # sklearn 1.8 ``penalty=`` deprecation) leak into the cell output
-    # despite the user's filter intent. ``simplefilter("ignore")``
-    # resets the filter list and prepends a single catch-all rule,
-    # which is much harder for downstream libraries to override.
-    # Applied here so it takes effect every time this function is
-    # called, regardless of what happened earlier in the notebook.
+    # Bulletproof warning suppression: notebook-level filters can be overridden mid-run by sklearn
+    # internals, so we reset the filter list and install a single catch-all rule here.
     warnings.simplefilter("ignore")
 
-    # ── warning capture (for clean tqdm output) ───────────────────────
-    # Install a buffer handler that collects WARNING-level messages
-    # during the pipeline run, and temporarily raise the console
-    # handler's level so those warnings don't break the tqdm bar
-    # mid-run. Captured warnings are printed after the ✅ completion
-    # message at the bottom of this function. The FileHandler set up
-    # in the imports cell is left at its original level so the log
-    # file still records everything in real time.
+    # Install a buffer that captures WARNING+ records during the run; replay after the bar finishes.
+    # The FileHandler set up in the imports cell is left alone, so the log file records everything live.
     warning_buffer = _WarningBuffer()
     root_logger = logging.getLogger()
     root_logger.addHandler(warning_buffer)
@@ -350,12 +257,10 @@ def run_cpcv_pipeline(
             suppressed_handlers.append((h, h.level))
             h.setLevel(logging.ERROR)
 
-    # Restore pristine module constants. Prevents one run's tuned
-    # hyperparameters from leaking into a later run that does not
-    # tune those models.
+    # Restore pristine module constants so a previous run's tuned values do not leak into this run.
     _reset_module_defaults()
 
-    # ── defaults ──────────────────────────────────────────────────────
+    # Resolve defaults for the optional list arguments.
     if models is None:
         models = list_models()
     if ffd_columns is None:
@@ -363,13 +268,7 @@ def run_cpcv_pipeline(
     if tune_models is None:
         tune_models = ["logistic", "random_forest", "xgboost"]
 
-    # ── splits and paths ──────────────────────────────────────────────
-    # Use precomputed values from the notebook's CV cell when provided.
-    # This keeps the configuration printed by the notebook's CV summary
-    # consistent with what the pipeline actually trains on, and avoids
-    # the duplicate log lines that result from regenerating splits and
-    # the path matrix inside this function. Resolved before the header
-    # prints, so the header reflects the actual configuration.
+    # Use precomputed splits/path matrix from the notebook when provided; otherwise compute internally.
     if splits is None:
         splits = generate_cpcv_splits(X, t1, n_groups, k, embargo_pct)
     if path_map is None or n_paths is None:
@@ -380,9 +279,8 @@ def run_cpcv_pipeline(
             splits=splits, path_map=path_map, n_paths=n_paths,
             print_summary=False,
         )
-    # If the caller passed precomputed splits, infer the actual N and k
-    # from split_info so the header below reports what the pipeline
-    # truly trains on rather than the function-argument defaults.
+    # If splits were passed in, re-read N / k / embargo_pct from split_info so the header below
+    # reports what the pipeline actually trains on rather than the function defaults.
     n_groups = split_info["n_groups"]
     k = split_info["k"]
     embargo_pct = split_info["embargo_pct"]
@@ -407,22 +305,18 @@ def run_cpcv_pipeline(
     )
     logger.info("=" * 60)
 
-    # ── map labels: {-1, +1} → {0, 1} ────────────────────────────────
+    # Map labels from {-1, +1} to {0, 1} for sklearn / PyTorch compatibility.
     y_mapped = ((y + 1) // 2).astype(int)
 
-    # ── storage ───────────────────────────────────────────────────────
+    # Result accumulator: keyed by (model_name, split_idx, seed).
     all_predictions = {}
-    all_tuning_results = {}  # per-split tuning results
+    all_tuning_results = {}
     total_tasks = len(splits) * len(models) * n_seeds
     task_counter = 0
 
-    # ── main CPCV loop ────────────────────────────────────────────────
-    # Per-split detail (selected features, best params, per-seed metrics)
-    # is routed through Python's logging module to a FileHandler. The
-    # notebook cell shows only this self-updating tqdm bar plus a final
-    # summary line, which keeps the saved notebook small enough to
-    # avoid the "array buffer allocation failed" error in Jupyter when
-    # serialising cell output to JSON.
+    # Outer CPCV loop. Per-split detail is routed through Python's logging to the FileHandler;
+    # the notebook cell shows only this self-updating tqdm bar plus a final summary line, which
+    # keeps the saved notebook small enough to avoid the "array buffer allocation failed" error.
     pbar_label = (
         f"CPCV ({', '.join(models)})" if len(models) <= 3
         else f"CPCV ({len(models)} models)"
@@ -433,8 +327,7 @@ def run_cpcv_pipeline(
         desc=pbar_label,
         unit="split",
     )
-    # Track aggregate stats so we can show them in the tqdm postfix and
-    # in the final summary line.
+    # Track the most recent task's metrics so the tqdm postfix reflects what's happening right now.
     last_f1 = float("nan")
     last_auc = float("nan")
     for split_idx, (train_idx, test_idx) in pbar:
@@ -444,14 +337,14 @@ def run_cpcv_pipeline(
             f"| last F1={last_f1:.3f} AUC={last_auc:.3f}"
         )
 
-        # ── extract fold data ─────────────────────────────────────────
+        # Extract this fold's labels, weights, barrier times, and barrier-touch returns.
         y_tr = y_mapped.iloc[train_idx]
         y_te = y_mapped.iloc[test_idx]
         w_tr = w.iloc[train_idx]
         t1_tr = t1.iloc[train_idx]
         ret_te = bins_ret.iloc[test_idx]
 
-        # ── preprocessing (shared across all models this fold) ────────
+        # Preprocessing (FFD → scaling → MDA selection) shared across all models this fold.
         needs_selection = not all(m == "ar_logistic" for m in models)
         X_tr_proc, X_te_proc, selected, prep_info = preprocess_fold(
             X, train_idx, test_idx, y_tr, w_tr, t1_tr, ffd_columns, top_k_frac,
@@ -460,20 +353,21 @@ def run_cpcv_pipeline(
             n_splits=len(splits),
         )
 
-        # re-align y, w, t1, ret after FFD may have dropped NaN rows
+        # FFD may drop the lookback-head NaN rows; re-align y / w / t1 to the surviving training index.
         y_tr = y_tr.loc[X_tr_proc.index]
         w_tr = w_tr.loc[X_tr_proc.index]
         t1_tr = t1_tr.loc[X_tr_proc.index]
 
-        # keep pre-selection X for AR Logistic (needs log_ret column)
+        # Keep the pre-selection matrix so AR Logistic can grab its lag columns by name regardless of MDA.
         X_tr_full = X_tr_proc.copy()
         X_te_full = X_te_proc.copy()
 
-        # apply feature selection
+        # MDA-selected feature subset for non-AR models.
         X_tr_sel = X_tr_proc[selected]
         X_te_sel = X_te_proc[selected]
 
-        # ── calibration split: 80% train, 20% calibration ────────────
+        # Calibration split: 80% train / 20% calibration. The calibration slice is held out from
+        # model fitting and consumed only by the Calibrator (Platt or vector scaling).
         cal_boundary = int(len(X_tr_sel) * 0.8)
 
         X_model = X_tr_sel.iloc[:cal_boundary]
@@ -499,17 +393,13 @@ def run_cpcv_pipeline(
             )
             logger.info("  AR Logistic lags: %s", AR_LAGS)
 
-        # ── per-split hyperparameter tuning (nested) ─────────────────
-        # Tune on the FULL training fold (X_tr_sel), not the 80% model
-        # portion. The inner purged K-fold handles its own train/val
-        # splitting. This is the correct nested CV architecture per
-        # López de Prado (2018, Ch. 7).
+        # Per-split nested tuning. Runs on the FULL training fold (X_tr_sel), not the 80% model
+        # portion, because the inner purged K-fold handles its own train/val split. This is the
+        # correct nested-CV architecture per AFML Ch. 7.
         if tune:
             from src.cpcv.tuning import tune_all_models
 
             tune_start = time.time()
-            # tune_all_models prints its own "Tuning (N models) — ..."
-            # header now; we don't need to announce it separately here.
 
             split_tune_results = tune_all_models(
                 X_tr_sel, y_tr, w_tr,
@@ -520,27 +410,23 @@ def run_cpcv_pipeline(
                 n_trials=n_trials,
             )
 
-            # apply tuned params to module-level constants
-            # (KAN widths are written to kan_mod.KAN_HIDDEN / KAN_HIDDEN2,
-            # which KANModel.__init__ reads at call time)
+            # Write the tuned values into the model modules so subsequent model creation picks them up.
+            # KAN widths flow through KAN_HIDDEN / KAN_HIDDEN2, which KANModel.__init__ reads at call time.
             applied = _apply_tuned_params(split_tune_results)
 
-            # tune_all_models already prints its own "Tuning total: X.Xs"
-            # line, so we just track the elapsed and surface the applied
-            # params (which are not redundant).
             _ = time.time() - tune_start
             for m, p in applied.items():
                 logger.info("    applied %s: %s", m, p)
 
             all_tuning_results[split_idx] = split_tune_results
 
-        # ── model × seed loop ────────────────────────────────────────
+        # Inner loop over models × seeds. Each task builds a fresh model, fits, calibrates, predicts.
         for model_name in models:
             for seed in range(n_seeds):
                 task_counter += 1
                 task_start = time.time()
 
-                # create model
+                # AR Logistic takes the pre-selection matrix (needs lag columns); others take MDA subset.
                 if model_name == "ar_logistic":
                     n_feat = X_tr_full.shape[1]
                 else:
@@ -550,7 +436,7 @@ def run_cpcv_pipeline(
                     model_name, n_features=n_feat, seed=seed
                 )
 
-                # select correct X depending on model type
+                # Route the correct X tensors to the model depending on its category.
                 if model_name == "ar_logistic":
                     X_fit = X_model_full
                     X_c = X_cal_full
@@ -560,7 +446,7 @@ def run_cpcv_pipeline(
                     X_c = X_cal
                     X_predict = X_te_sel
 
-                # train
+                # Training: any per-task failure is logged but does not abort the run.
                 try:
                     model.fit(
                         X_fit, y_model,
@@ -574,7 +460,8 @@ def run_cpcv_pipeline(
                     )
                     continue
 
-                # calibrate (handle LSTM index mismatch on calibration set)
+                # Calibration. LSTM windowing produces logits offset by ``window-1`` from the calibration
+                # set head, so we go through fit_from_logits with the LSTM's stored valid_indices to align.
                 try:
                     calibrator = Calibrator()
                     if model_name == "lstm" and hasattr(model, "last_valid_indices"):
@@ -586,6 +473,7 @@ def run_cpcv_pipeline(
                         calibrator.fit(model, X_c, y_cal)
 
                 except Exception as e:
+                    # Fallback path: a failed calibration falls back to uncalibrated probabilities below.
                     logger.warning(
                         "Calibration failed for %s (seed=%d, split=%d): %s. "
                         "Using uncalibrated probabilities.",
@@ -593,7 +481,7 @@ def run_cpcv_pipeline(
                     )
                     calibrator = None
 
-                # predict on test fold
+                # Prediction on the test fold, calibrated if the calibrator was successfully fitted.
                 raw_logits = model.predict_logits(X_predict)
 
                 if calibrator is not None:
@@ -603,7 +491,7 @@ def run_cpcv_pipeline(
 
                 y_pred = np.argmax(cal_proba, axis=1)
 
-                # handle LSTM index mismatch
+                # LSTM offset handling: align the predicted timestamps to the (window-1)-shifted index.
                 if model_name == "lstm" and hasattr(model, "last_valid_indices"):
                     valid_idx = model.last_valid_indices
                     test_timestamps = X_te_proc.index[valid_idx]
@@ -614,6 +502,8 @@ def run_cpcv_pipeline(
                     y_true_aligned = y_te.reindex(test_timestamps).values
                     ret_aligned = ret_te.reindex(test_timestamps).values
 
+                # Per-task evaluation metrics; wrap AUC and log-loss in try/except since they can fail
+                # on single-class predictions or degenerate probability vectors.
                 f1 = f1_score(y_true_aligned, y_pred, average="macro")
                 try:
                     auc = roc_auc_score(y_true_aligned, cal_proba[:, 1])
@@ -624,7 +514,7 @@ def run_cpcv_pipeline(
                 except ValueError:
                     ll = float("nan")
 
-                # store
+                # Store everything downstream evaluation needs: predictions, probabilities, metrics, metadata.
                 store_key = (model_name, split_idx, seed)
                 all_predictions[store_key] = {
                     "y_true": y_true_aligned,
@@ -648,23 +538,19 @@ def run_cpcv_pipeline(
                     task_counter, total_tasks, model_name, seed,
                     f1, auc, ll, elapsed,
                 )
-                # keep latest stats so the tqdm postfix reflects what's
-                # going on right now without flooding cell output
+                # Update postfix stats so the tqdm bar reflects what just finished.
                 last_f1 = f1
                 last_auc = auc
 
-        # Per-split elapsed is captured by tqdm's bar (it/s, ETA); the
-        # explicit "Split N completed in Xs" line that previously printed
-        # here is now redundant and was contributing to notebook bloat.
+        # Per-split elapsed is captured by tqdm's it/s + ETA display; no explicit per-split log line.
         _ = time.time() - split_start
 
-    # ── summary ───────────────────────────────────────────────────────
+    # --- Run-level summary --------------------------------------------------
     total_elapsed = time.time() - pipeline_start
     n_successful = len(all_predictions)
     n_failed = total_tasks - n_successful
 
-    # Detailed summary lives in the log file; the cell shows a single
-    # one-line completion notice so the saved notebook stays small.
+    # Detailed summary lives in the log file; the cell shows a single completion notice.
     logger.info("=" * 60)
     logger.info("CPCV Pipeline Complete")
     logger.info("=" * 60)
@@ -679,7 +565,7 @@ def run_cpcv_pipeline(
         )
     logger.info("=" * 60)
 
-    # One concise visible line in the cell:
+    # One concise visible line in the cell.
     summary_msg = (
         f"\n✅ CPCV complete: {n_successful}/{total_tasks} tasks succeeded "
         f"in {total_elapsed/60:.1f}m."
@@ -691,11 +577,8 @@ def run_cpcv_pipeline(
     if n_failed > 0:
         logger.warning("%d model fits failed during pipeline execution.", n_failed)
 
-    # ── deferred warning replay ───────────────────────────────────────
-    # Print any WARNING-level messages collected during the run, AFTER
-    # the ✅ completion notice. This keeps the tqdm bar visually clean
-    # during the run (no warning lines breaking the bar) while still
-    # surfacing the warnings at the end so the user knows what happened.
+    # Replay deferred WARNING-level messages AFTER the completion notice, so the tqdm bar stayed
+    # clean during the run and warnings still surface at the end.
     if warning_buffer.records:
         print(
             f"\n⚠ {len(warning_buffer.records)} "
@@ -705,10 +588,8 @@ def run_cpcv_pipeline(
         for line in warning_buffer.records:
             print(f"   {line}")
 
-    # ── restore handler state ─────────────────────────────────────────
-    # Put back the console handler levels and remove the WARNING buffer
-    # so a subsequent pipeline call (or any other notebook code) sees
-    # the original logger configuration.
+    # Restore the original console handler levels and remove the warning buffer so subsequent
+    # notebook code sees the pre-pipeline logger configuration.
     for h, level in suppressed_handlers:
         h.setLevel(level)
     root_logger.removeHandler(warning_buffer)

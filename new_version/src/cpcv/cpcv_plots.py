@@ -1,44 +1,17 @@
 """
-CPCV Plotting and Diagnostic Utilities
-=======================================
+8) CV EDA
+============================
 Visualisation and verification helpers for the Combinatorial Purged
-Cross-Validation (CPCV) configuration. The functions in this module
-are meant to be called after the notebook has produced ``X``, ``t1``,
-``splits``, ``path_map``, ``n_paths``, and ``split_info`` from the
-CV cell, so they can show the partitioning, the train/test
-arrangement, the purging/embargo behaviour, and a leakage audit.
+Cross-Validation (CPCV) configuration.
 
-Each function takes the CPCV inputs as parameters and returns either
-a matplotlib Figure (for the visual diagnostics) or a pandas
-DataFrame (for the leakage audit). The functions do not call
-``plt.show()``; the notebook is responsible for displaying or
-saving the returned Figure.
+Each function takes pre-built CPCV inputs (``X``, ``t1``, ``splits``,
+``path_map``, etc.) from the CV cell of the notebook and returns either a
+matplotlib Figure or a pandas DataFrame. None of the plotting functions call
+``plt.show()``; the notebook is responsible for display.
 
-The functions assume ``X`` is already truncated to the analysis
-window (post-CUSUM_START_DATE), so ``X.index[0]`` reflects the
-first labelled event and the visualisations automatically span the
-correct date range without an explicit start-date parameter.
-
-Functions
----------
-pick_demo_splits
-    Helper to choose three illustrative split indices
-    (contiguous-early, one-gap, contiguous-tail) given the
-    combinations list.
-plot_btc_with_groups
-    BTC close price with the N CPCV groups shaded as coloured
-    bands. Toggleable log/linear y-axis.
-plot_train_test_timelines
-    Three sub-panels showing train/test date partitioning for
-    three representative splits.
-print_purge_embargo_detail
-    Per-split text dump of the boundary observations near each
-    test group, showing which training rows were purged
-    (overlapping labels) and which were embargoed.
-audit_cpcv_leakage
-    Full audit across all splits, returning a DataFrame and a
-    print summary indicating whether any training observation
-    has a label end-time inside a test group.
+``X`` is assumed to be already truncated to the analysis window (post
+``CUSUM_START_DATE``), so ``X.index[0]`` reflects the first labelled event
+and every visualisation auto-spans the correct date range.
 """
 
 import logging
@@ -51,8 +24,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-# Eight-color palette for groups. Extends the original six-color set
-# with teal and grey so each of up to N=8 groups is visually distinct.
+# Eight-colour palette: one entry per CPCV group, distinct under normal vision.
 DEFAULT_GROUP_COLORS = [
     "#e74c3c",  # red
     "#e67e22",  # orange
@@ -65,17 +37,10 @@ DEFAULT_GROUP_COLORS = [
 ]
 
 
-# =====================================================================
-# Helpers
-# =====================================================================
+# --- 1. Group-partition helpers --------------------------------------------
+# Mirror of cv._compute_group_bounds so plots show exactly the partition the splits use.
 def _compute_group_bounds(T: int, n_groups: int) -> list[tuple[int, int]]:
-    """Return inclusive-start / exclusive-end positional bounds per group.
-
-    Mirrors the partitioning used inside cv.py so the visualisations
-    show exactly the same group boundaries the splits were generated
-    from. Groups 0..N-2 have size floor(T/N); group N-1 absorbs the
-    remainder.
-    """
+    """Return ``[(start, end), ...]`` with exclusive end; groups 0..N-2 have size ⌊T/N⌋."""
     base_size = T // n_groups
     bounds = []
     for g in range(n_groups):
@@ -85,29 +50,14 @@ def _compute_group_bounds(T: int, n_groups: int) -> list[tuple[int, int]]:
     return bounds
 
 
+# Choose three illustrative splits for the train/test timeline plot.
 def pick_demo_splits(
     all_combos: list[tuple[int, ...]], n_groups: int,
 ) -> list[int]:
-    """Choose three illustrative splits for visualisation.
+    """Return positional indices for [contiguous-early, one-gap, contiguous-tail].
 
-    Picks one contiguous-early split (test groups (0, 1)), one
-    one-gap split (test groups (1, 3) with G2 between them), and
-    one contiguous-tail split (test groups (n_groups-2, n_groups-1)).
-    Returns their positional indices into ``all_combos`` so the
-    caller can index into the ``splits`` list directly.
-
-    Parameters
-    ----------
-    all_combos : list of tuple
-        Output of ``list(combinations(range(n_groups), k))``.
-    n_groups : int
-        Number of CPCV groups.
-
-    Returns
-    -------
-    list of int
-        Three split indices, in the order
-        [contiguous_early, one_gap, contiguous_tail].
+    The three splits cover the visually informative cases: a head-of-series test,
+    a split with a gap between test groups, and an end-of-series test.
     """
     contiguous_early = all_combos.index((0, 1))
     contiguous_tail = all_combos.index((n_groups - 2, n_groups - 1))
@@ -115,9 +65,8 @@ def pick_demo_splits(
     return [contiguous_early, gap_split, contiguous_tail]
 
 
-# =====================================================================
-# 1. BTC price with CPCV group partitions
-# =====================================================================
+# --- 2. BTC price with CPCV group partitions -------------------------------
+# Big-picture plot that shows the N contiguous groups on top of the price series.
 def plot_btc_with_groups(
     X: pd.DataFrame,
     df_raw: pd.DataFrame,
@@ -128,37 +77,8 @@ def plot_btc_with_groups(
 ) -> plt.Figure:
     """BTC close price with CPCV groups shaded as coloured bands.
 
-    The plot spans only the analysis window (``X.index[0]`` to
-    ``X.index[-1]``), which after CUSUM truncation starts at the
-    first labelled event rather than at the raw-data start. The
-    coloured bands show the N contiguous groups the CPCV splits
-    are built from; group labels (G0, G1, ...) sit near the bottom
-    of each band.
-
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Aligned feature matrix; only its index is used.
-    df_raw : pd.DataFrame
-        Raw OHLCV data with a ``Close`` column. Must cover all of
-        ``X.index``.
-    n_groups : int
-        Number of CPCV groups (the same N used in
-        ``generate_cpcv_splits``).
-    use_log_scale : bool
-        If True (default), the y-axis is log-scaled so all groups
-        across BTC's 250x price range are visually balanced. Set
-        False to emphasise the price-level shift between early
-        and recent groups.
-    figsize : tuple
-        Figure size in inches.
-    colors : list of str, optional
-        Eight-color palette overriding ``DEFAULT_GROUP_COLORS``.
-
-    Returns
-    -------
-    plt.Figure
-        The constructed figure.
+    Log scale is the default because BTC spans roughly 250× in price across the
+    analysis window; on linear scale the early groups visually collapse.
     """
     if colors is None:
         colors = DEFAULT_GROUP_COLORS
@@ -182,6 +102,7 @@ def plot_btc_with_groups(
     if use_log_scale:
         ax.set_yscale("log")
 
+    # Shade each group with its palette colour at low alpha so the price line stays readable.
     for g, (start, end) in enumerate(group_bounds):
         ax.axvspan(
             X.index[start], X.index[end - 1],
@@ -189,11 +110,10 @@ def plot_btc_with_groups(
         )
 
     ymin, ymax = ax.get_ylim()
+    # Label offset: multiplicative for log scale, additive for linear.
     if use_log_scale:
-        # Multiplicative offset for log scale.
         label_y = ymin * 1.5
     else:
-        # 3% above bottom for linear scale.
         label_y = ymin + (ymax - ymin) * 0.03
 
     for g, (start, end) in enumerate(group_bounds):
@@ -216,9 +136,8 @@ def plot_btc_with_groups(
     return fig
 
 
-# =====================================================================
-# 2. Train/test timelines for representative splits
-# =====================================================================
+# --- 3. Train/test timelines for representative splits ---------------------
+# Three-panel view of how train and test points scatter along the date axis.
 def plot_train_test_timelines(
     X: pd.DataFrame,
     splits: list[tuple[np.ndarray, np.ndarray]],
@@ -228,38 +147,10 @@ def plot_train_test_timelines(
     panel_height: float = 1.8,
     figsize_width: int = 14,
 ) -> plt.Figure:
-    """Three-panel visualisation of CPCV train/test partitioning.
+    """Three-panel scatter showing train (blue) and test (red) dates per representative split.
 
-    For each of three representative splits (chosen automatically
-    by ``pick_demo_splits`` if ``demo_splits`` is None), draws train
-    points in steelblue and test points in crimson along a date
-    axis. Test groups are also shaded with a faint crimson
-    background so the reader can see which groups make up the test
-    fold for each split.
-
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Aligned feature matrix; only its index is used.
-    splits : list of (train_idx, test_idx)
-        Output of ``generate_cpcv_splits``.
-    n_groups : int
-        Number of CPCV groups.
-    k : int
-        Number of test groups per split.
-    demo_splits : list of int, optional
-        Three split indices to plot. If None, the function calls
-        ``pick_demo_splits`` to choose contiguous-early, one-gap,
-        and contiguous-tail.
-    panel_height : float
-        Per-panel height in inches.
-    figsize_width : int
-        Figure width in inches.
-
-    Returns
-    -------
-    plt.Figure
-        The constructed figure.
+    If ``demo_splits`` is None, the panels show contiguous-early, one-gap, and
+    contiguous-tail combinations chosen by ``pick_demo_splits``.
     """
     T = len(X)
     group_bounds = _compute_group_bounds(T, n_groups)
@@ -278,6 +169,7 @@ def plot_train_test_timelines(
         train_idx, test_idx = splits[split_id]
         test_groups = all_combos[split_id]
 
+        # Scatter train and test along y=0 so the panel reads as a 1-D date strip.
         ax.scatter(
             X.index[train_idx], np.zeros(len(train_idx)),
             c="steelblue", s=2, label="Train", zorder=2,
@@ -287,6 +179,7 @@ def plot_train_test_timelines(
             c="crimson", s=2, label="Test", zorder=3,
         )
 
+        # Shade test groups so the reader sees which groups are out-of-sample.
         for g in test_groups:
             g_start, g_end = group_bounds[g]
             ax.axvspan(
@@ -294,6 +187,7 @@ def plot_train_test_timelines(
                 color="crimson", alpha=0.08, zorder=1,
             )
 
+        # Dashed verticals at every group boundary anchor the eye.
         for g in range(n_groups):
             g_start, _ = group_bounds[g]
             ax.axvline(
@@ -319,9 +213,8 @@ def plot_train_test_timelines(
     return fig
 
 
-# =====================================================================
-# 3. Purging and embargo detail
-# =====================================================================
+# --- 4. Purging and embargo boundary inspection ----------------------------
+# Verification helper: dumps the rows around each test boundary for hand-checking.
 def print_purge_embargo_detail(
     X: pd.DataFrame,
     t1: pd.Series,
@@ -330,36 +223,12 @@ def print_purge_embargo_detail(
     k: int,
     demo_splits: list[int] | None = None,
 ) -> None:
-    """Per-split text dump showing the rows around each test boundary.
+    """Print the last 3 pre-test training rows and first 3 post-test training rows per demo split.
 
-    For the three (or however many were passed) demo splits, prints
-    the last three training rows immediately before each test group
-    (the rows most likely to overlap and be purged) and the first
-    three training rows immediately after (the embargo zone). Each
-    "before" row also gets a check on whether its label end-time
-    ``t1`` resolves before the test starts; ``OK`` means the row
-    is correctly purged, ``OVERLAP`` flags a leakage candidate the
-    leakage audit should catch.
-
-    This is a verification helper, not a plot. It produces no
-    figure and returns nothing -- the value is in the printed
-    output, which the notebook reader uses to confirm the purging
-    and embargo logic is behaving as expected.
-
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Aligned feature matrix; only its index is used.
-    t1 : pd.Series
-        Label end-times indexed identically to X.
-    splits : list of (train_idx, test_idx)
-        Output of ``generate_cpcv_splits``.
-    n_groups : int
-        Number of CPCV groups.
-    k : int
-        Number of test groups per split.
-    demo_splits : list of int, optional
-        Split indices to inspect. If None, uses ``pick_demo_splits``.
+    For each pre-test row the function also checks whether its label end-time ``t1``
+    resolves before the test starts: ``OK`` confirms the row's been correctly
+    handled by purging, ``OVERLAP`` flags a leakage candidate that the audit
+    function (``audit_cpcv_leakage``) should also catch.
     """
     T = len(X)
     group_bounds = _compute_group_bounds(T, n_groups)
@@ -384,6 +253,7 @@ def print_purge_embargo_detail(
             t_test_start = X.index[g_start]
             t_test_end = X.index[g_end - 1]
 
+            # Training rows immediately before and after the test region.
             train_before = sorted([i for i in train_idx if i < g_start])
             train_after = sorted([i for i in train_idx if i >= g_end])
 
@@ -393,6 +263,7 @@ def print_purge_embargo_detail(
                 last_train_before = train_before[-1]
                 purge_gap = g_start - last_train_before - 1
                 print(f"  Pre-test gap (purged): {purge_gap} obs removed")
+                # Inspect the three closest pre-test rows; their t1 must resolve before t_test_start.
                 for i in train_before[-3:]:
                     safe = t1.iloc[i] < t_test_start
                     flag = "OK" if safe else "OVERLAP"
@@ -405,15 +276,15 @@ def print_purge_embargo_detail(
                 first_train_after = train_after[0]
                 embargo_gap = first_train_after - g_end
                 print(f"  Post-test gap (embargo): {embargo_gap} obs removed")
+                # Embargo is positional, so we just show the three closest post-test indices.
                 for i in train_after[:3]:
                     print(f"      idx={i:>4d} ({X.index[i].date()})")
 
         print()
 
 
-# =====================================================================
-# 4. Leakage audit across all splits
-# =====================================================================
+# --- 5. Leakage audit across all splits ------------------------------------
+# Full audit: confirm no training label resolves inside any test group, across every split.
 def audit_cpcv_leakage(
     X: pd.DataFrame,
     t1: pd.Series,
@@ -422,44 +293,11 @@ def audit_cpcv_leakage(
     k: int,
     split_info: dict | None = None,
 ) -> pd.DataFrame:
-    """Per-split leakage audit checking that no training label end-time
-    resolves inside a test group.
+    """Audit every split for label-overlap leakage; print a summary and return the per-split table.
 
-    For every split, walks the training rows whose entry timestamp
-    falls before the test region and checks whether their label
-    end-time ``t1`` resolves *during* the test region. Any such
-    row is a leak: information about the test fold's outcome would
-    bleed into the training set through the overlapping label
-    horizon. AFML's purging step is supposed to remove these rows
-    before they enter the train index, so a clean run reports zero
-    leaks across all splits.
-
-    The function prints a summary table (one line per split) and
-    returns the same data as a DataFrame for further analysis or
-    thesis-table export.
-
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Aligned feature matrix; only its index is used.
-    t1 : pd.Series
-        Label end-times indexed identically to X.
-    splits : list of (train_idx, test_idx)
-        Output of ``generate_cpcv_splits``.
-    n_groups : int
-        Number of CPCV groups.
-    k : int
-        Number of test groups per split.
-    split_info : dict, optional
-        Output of ``get_split_info``. If passed, the function
-        prints the number of backtest paths in the success message;
-        otherwise the path count is omitted.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per split with columns
-        ``["split", "test_groups", "train", "test", "leaks", "status"]``.
+    For each split, count training rows whose entry timestamp falls before a test
+    region but whose label end-time ``t1`` resolves inside that test region. AFML
+    purging is supposed to remove those rows, so a clean run reports zero leaks.
     """
     T = len(X)
     group_bounds = _compute_group_bounds(T, n_groups)
@@ -472,6 +310,7 @@ def audit_cpcv_leakage(
         test_groups = all_combos[i]
         leak_count = 0
 
+        # Sum leaks across every test group within the split.
         for g in test_groups:
             g_start, g_end = group_bounds[g]
             t_test_start = X.index[g_start]
@@ -480,6 +319,7 @@ def audit_cpcv_leakage(
             train_t1 = t1.iloc[train_idx]
             train_times = X.index[train_idx]
 
+            # Vectorised condition: train row starts before test AND its label resolves inside test.
             leaks = train_t1[
                 (train_times < t_test_start)
                 & (train_t1 >= t_test_start)

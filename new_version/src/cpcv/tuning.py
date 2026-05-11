@@ -1,31 +1,17 @@
 """
-9) Hyperparameter Tuning — Optuna TPE + Purged K-Fold CV
+11) Hyperparameter Tuning — Optuna TPE + Purged K-Fold CV
 ============================================================
-Bayesian hyperparameter optimization using Optuna's Tree-structured
-Parzen Estimator (TPE) with Median Pruner and Purged K-Fold CV.
+Bayesian hyperparameter optimisation with Optuna's TPE sampler and the
+Median Pruner, evaluated on a purged K-Fold (K=3, embargo=10 obs) inner CV
+that respects AFML's label-overlap constraints (AFML Ch. 7).
 
-Inner CV: Purged K-Fold (K=3) with an embargo gap of PURGE_EMBARGO
-observations between training and validation folds to prevent label
-leakage from overlapping Triple Barrier labels.
-
-Optimization: Optuna TPE explores the hyperparameter space adaptively,
-concentrating trials in promising regions. The Median Pruner terminates
-underperforming trials after evaluating each fold, cutting computation
-on clearly bad configurations.
-
-Each tune_*() function returns the same interface as before:
-  {"best_params": {...}, "best_log_loss": float, "results_df": DataFrame}
-
-This runs INSIDE each outer CPCV fold using only training data:
+Runs INSIDE each outer CPCV fold using only training data:
   - Inner folds: purged K-fold on the CPCV training set
   - Best params selected by lowest mean log loss across inner folds
-  - Test fold is never seen during tuning (DSR/PBO remain valid)
+  - The outer test fold is never seen during tuning, so DSR / PBO remain valid
 
-References:
-  - Bergstra et al. (2011), Algorithms for Hyper-Parameter Optimization
-  - López de Prado (2018), AFML Ch. 7 (Purged Cross-Validation)
-  - Akiba et al. (2019), Optuna: A Next-generation Hyperparameter
-    Optimization Framework
+Every ``tune_*()`` function returns the same shape:
+  ``{"best_params": {...}, "best_log_loss": float, "results_df": DataFrame}``
 """
 
 import copy
@@ -48,49 +34,26 @@ try:
     from optuna.samplers import TPESampler
     from optuna.pruners import MedianPruner
 except ImportError:
-    raise ImportError(
-        "Optuna is required for tuning. Install: pip install optuna"
-    )
+    raise ImportError("Optuna is required for tuning. Install: pip install optuna")
 
 logger = logging.getLogger(__name__)
 
-# Purged K-Fold configuration
-N_INNER_FOLDS = 3               # number of inner CV folds
-PURGE_EMBARGO = 10              # observations to purge between train/val
-                                # (matches TBL num_days=10)
+# --- Purged K-Fold configuration -------------------------------------------
+N_INNER_FOLDS = 3
+PURGE_EMBARGO = 10              # embargo length in observations (matches TBL num_days=10)
 
-# Optuna configuration
+# --- Optuna configuration ---------------------------------------------------
 N_TRIALS_CLASSICAL = 30         # trials for Logistic, RF, XGBoost
-N_TRIALS_NEURAL = 30            # trials for LSTM, KAN (more expensive)
+N_TRIALS_NEURAL = 30            # trials for LSTM, KAN (more expensive per trial)
 OPTUNA_SEED = 42
 OPTUNA_VERBOSITY = optuna.logging.WARNING
 
 
-# =====================================================================
-# Purged K-Fold Split Generator
-# =====================================================================
+# --- 1. Purged K-Fold Split Generator --------------------------------------
+# Time-ordered contiguous-block splits with embargo gaps; the inner-loop analogue of cv._purge_train.
 def _purged_kfold_splits(X_train, y_train, w_train=None,
                          n_folds=N_INNER_FOLDS, embargo=PURGE_EMBARGO):
-    """Generate time-ordered K-Fold splits with purging and embargo.
-
-    Each fold is a contiguous time block. The training set for each
-    fold excludes observations within `embargo` positions of the
-    validation fold boundaries to prevent leakage from overlapping
-    Triple Barrier labels.
-
-    Parameters
-    ----------
-    X_train : array-like, shape (n_samples, n_features)
-    y_train : array-like, shape (n_samples,)
-    w_train : array-like or None, shape (n_samples,)
-    n_folds : int
-    embargo : int
-        Number of observations to remove between train and val.
-
-    Returns
-    -------
-    list of (X_tr, y_tr, w_tr, X_val, y_val) tuples
-    """
+    """Generate ``[(X_tr, y_tr, w_tr, X_val, y_val), ...]`` with positional embargo on val boundaries."""
     X = X_train.values if hasattr(X_train, "values") else np.array(X_train)
     y = y_train.values if hasattr(y_train, "values") else np.array(y_train)
     w = None
@@ -102,18 +65,17 @@ def _purged_kfold_splits(X_train, y_train, w_train=None,
     splits = []
 
     for fold_idx in range(n_folds):
+        # Contiguous validation block, then embargo zone around it.
         val_start = fold_idx * fold_size
         val_end = (fold_idx + 1) * fold_size if fold_idx < n_folds - 1 else n
 
-        # purge: remove embargo observations around val boundaries
+        # Purge zone: extend val window by ±embargo to drop overlapping training rows.
         purge_start = max(0, val_start - embargo)
         purge_end = min(n, val_end + embargo)
 
-        # training indices: everything outside purged zone
         train_mask = np.ones(n, dtype=bool)
         train_mask[purge_start:purge_end] = False
 
-        # validation indices
         val_indices = np.arange(val_start, val_end)
         train_indices = np.where(train_mask)[0]
 
@@ -131,24 +93,10 @@ def _purged_kfold_splits(X_train, y_train, w_train=None,
     return splits
 
 
-# =====================================================================
-# Evaluate a model on all purged K-Fold splits (with pruning support)
-# =====================================================================
+# --- 2. Generic split evaluator with pruning support -----------------------
+# Run a model_fn across all inner splits, reporting intermediate scores for Optuna pruning.
 def _evaluate_on_splits(splits, model_fn, trial=None):
-    """Evaluate a model factory on all inner splits.
-
-    Parameters
-    ----------
-    splits : list of (X_tr, y_tr, w_tr, X_val, y_val)
-    model_fn : callable(X_tr, y_tr, w_tr) -> model with predict_proba
-    trial : optuna.Trial or None
-        If provided, reports intermediate values for pruning.
-
-    Returns
-    -------
-    float : mean log loss across splits
-    float : mean accuracy across splits
-    """
+    """Return ``(mean_log_loss, mean_accuracy)`` across all inner splits; prunes via ``trial.report``."""
     split_losses = []
     split_accs = []
 
@@ -161,7 +109,7 @@ def _evaluate_on_splits(splits, model_fn, trial=None):
         split_losses.append(ll)
         split_accs.append(acc)
 
-        # report intermediate result for pruning
+        # Mid-trial pruning: Optuna's MedianPruner can terminate clearly bad configs after each fold.
         if trial is not None:
             trial.report(np.mean(split_losses), fold_idx)
             if trial.should_prune():
@@ -170,16 +118,10 @@ def _evaluate_on_splits(splits, model_fn, trial=None):
     return np.mean(split_losses), np.mean(split_accs)
 
 
-# =====================================================================
-# Logistic Regression
-# =====================================================================
+# --- 3. Logistic Regression tuner ------------------------------------------
+# Search C (log-uniform) and penalty (l1 vs l2); solver auto-chosen.
 def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
-    """Tune Logistic Regression via Optuna TPE + Purged K-Fold.
-
-    Search space:
-        C:       log-uniform [1e-4, 1e2]
-        penalty: categorical {l1, l2}
-    """
+    """Tune Logistic Regression: ``C`` log-uniform [1e-4, 1e2], ``penalty`` ∈ {l1, l2}."""
     splits = _purged_kfold_splits(X_train, y_train, w_train)
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
@@ -196,6 +138,7 @@ def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True, n_trial
         penalty = trial.suggest_categorical("penalty", ["l1", "l2"])
         solver = "liblinear" if penalty == "l1" else "lbfgs"
 
+        # Build a fresh classifier per fold so refit costs are reflected in the trial timing.
         def model_fn(X_tr, y_tr, w_tr):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -236,18 +179,11 @@ def tune_logistic(X_train, y_train, w_train=None, seed=42, verbose=True, n_trial
     }
 
 
-# =====================================================================
-# Random Forest
-# =====================================================================
+# --- 4. Random Forest tuner ------------------------------------------------
+# Search depth, leaf size, n_estimators (stepped), and max_features.
 def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
-    """Tune Random Forest via Optuna TPE + Purged K-Fold.
-
-    Search space:
-        n_estimators:     int [100, 250] step 50
-        max_depth:        int [2, 6]
-        min_samples_leaf: int [15, 40]
-        max_features:     categorical {sqrt, log2}
-    """
+    """Tune Random Forest: ``n_estimators`` ∈ [100, 250] step 50, ``max_depth`` ∈ [2, 6],
+    ``min_samples_leaf`` ∈ [15, 40], ``max_features`` ∈ {sqrt, log2}."""
     splits = _purged_kfold_splits(X_train, y_train, w_train)
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
@@ -315,24 +251,10 @@ def tune_random_forest(X_train, y_train, w_train=None, seed=42, verbose=True, n_
     }
 
 
-# =====================================================================
-# XGBoost
-# =====================================================================
+# --- 5. XGBoost tuner ------------------------------------------------------
+# Search depth, learning rate, child weight, subsampling, gamma, L1/L2; early stop on val.
 def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials=None):
-    """Tune XGBoost via Optuna TPE + Purged K-Fold.
-
-    Search space:
-        max_depth:        int [1, 3]
-        learning_rate:    log-uniform [0.01, 0.3]
-        min_child_weight: int [5, 30]
-        subsample:        uniform [0.6, 1.0]
-        colsample_bytree: uniform [0.6, 1.0]
-        gamma:            log-uniform [1e-8, 1.0]
-        reg_alpha:        log-uniform [1e-8, 10.0]
-        reg_lambda:       log-uniform [1e-8, 10.0]
-
-    n_estimators fixed at 500 with early stopping (20 rounds).
-    """
+    """Tune XGBoost across 8 parameters; n_estimators fixed at 500 with 20-round early stopping."""
     splits = _purged_kfold_splits(X_train, y_train, w_train)
     _n = n_trials if n_trials is not None else N_TRIALS_CLASSICAL
 
@@ -345,6 +267,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
     all_results = []
 
     def objective(trial):
+        # 8-parameter search; ranges chosen to span the regularised end of the parameter space.
         max_depth = trial.suggest_int("max_depth", 1, 3)
         lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
         min_child_weight = trial.suggest_int("min_child_weight", 5, 30)
@@ -358,6 +281,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
         split_accs = []
 
         for fold_idx, (X_tr, y_tr, w_tr, X_val, y_val) in enumerate(splits):
+            # scale_pos_weight balances class imbalance natively inside XGBoost.
             n_pos = (y_tr == 1).sum()
             n_neg = (y_tr == 0).sum()
             spw = n_neg / max(n_pos, 1)
@@ -389,7 +313,7 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
             split_losses.append(ll)
             split_accs.append(acc)
 
-            # report for pruning
+            # Mid-trial pruning after each fold.
             trial.report(np.mean(split_losses), fold_idx)
             if trial.should_prune():
                 raise optuna.TrialPruned()
@@ -441,43 +365,18 @@ def tune_xgboost(X_train, y_train, w_train=None, seed=42, verbose=True, n_trials
     }
 
 
-# =====================================================================
-# LSTM
-# =====================================================================
+# --- 6. LSTM tuner ---------------------------------------------------------
+# Locked narrow ranges from sensitivity testing; see project_structure.md for the methodology trail.
 def tune_lstm(X_train, y_train, w_train=None, n_features=None,
               seed=42, verbose=True, n_trials=None):
-    """Tune LSTM via Optuna TPE + Purged K-Fold.
+    """Tune LSTM: ``hidden_size`` ∈ {16, 32}, ``dropout`` ∈ [0.1, 0.5], ``lr`` log-uniform [1e-4, 5e-2].
 
-    Search space (locked thesis configuration):
-        hidden_size:   int [16, 32] step 16  (i.e. {16, 32})
-        num_layers:    fixed at 1 (not searched)
-        dropout:       uniform [0.1, 0.5]
-        learning_rate: log-uniform [1e-4, 5e-2]
+    ``num_layers`` is hardcoded at 1 (multi-layer overfits on ~1,250 events). Window=14
+    and batch_size=64 are fixed. Tuning uses epochs=50 / patience=7 to bound per-trial
+    cost; the production fit re-runs at the full epochs=100 / patience=15 budget.
 
-    Rationale for the narrow ranges:
-        - hidden_size capped at 32 prevents memorisation given (a)
-          LSTM_WINDOW=14 reduces effective training sequences, (b)
-          ~700-sample purged folds, and (c) at higher capacities the
-          model lost to a 6-lag AR baseline in earlier sensitivity
-          runs.
-        - num_layers hardcoded at 1: two- and three-layer LSTMs on
-          ~1,250 events overfit without improving accuracy. Removing
-          the hyperparameter from the search frees Optuna trials for
-          finer exploration of dropout and learning_rate.
-        - dropout floor of 0.1 forces non-trivial regularisation.
-
-    Sensitivity analysis (May 2026):
-        A wider search was tested — hidden_size ∈ {16, 32, 48, 64},
-        num_layers ∈ [1, 2], dropout ∈ [0.0, 0.5]. The expanded
-        configuration produced a 0.11 decline in median Sharpe over
-        seven CPCV paths and was rejected. The narrow locked ranges
-        above are retained as both theoretically and empirically
-        supported by the failed expansion.
-
-    Fixed: window=14 (BTC bi-week), batch_size=64. Tuning runs fewer
-    epochs and a shorter patience window than production (epochs=50,
-    patience=7) to keep per-trial cost bounded; the production fit
-    re-runs at epochs=100, patience=15.
+    Search ranges are locked from a wider-search sensitivity test that produced worse
+    out-of-sample Sharpe and was rejected.
     """
     from torch.utils.data import TensorDataset, DataLoader
     from src.cpcv.models.lstm_model import LSTMClassifier, create_sequences
@@ -489,13 +388,13 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Match production lstm_model.py: LSTM_WINDOW=14, short early stop budget
+    # Match production lstm_model.py constants, but use a shorter early-stop budget for tuning.
     window = 14
     batch_size = 64
     epochs = 50
     patience = 7
 
-    # pre-build sequences for all splits
+    # Pre-build all sliding-window sequences once so each Optuna trial only repeats the training step.
     seq_splits = []
     for X_tr, y_tr, w_tr, X_val, y_val in splits:
         X_seq, y_seq, w_seq, _ = create_sequences(X_tr, y_tr, w_tr, window=window)
@@ -532,12 +431,9 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        # Narrow ranges per the locked thesis configuration. The
-        # alternative wider ranges were tested in May 2026 and
-        # produced worse out-of-sample Sharpe; see function docstring
-        # for the sensitivity-analysis trail.
+        # Locked narrow ranges; num_layers hardcoded so Optuna spends trials on dropout / lr instead.
         hidden_size = trial.suggest_int("hidden_size", 16, 32, step=16)
-        num_layers = 1  # hardcoded; not searched
+        num_layers = 1
         dropout = trial.suggest_float("dropout", 0.1, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
 
@@ -545,10 +441,12 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
 
         for fold_idx, s in enumerate(seq_splits):
             try:
+                # Seed every RNG so an identical (hidden, dropout, lr) reproduces the same val loss.
                 torch.manual_seed(seed)
                 np.random.seed(seed)
                 python_random.seed(seed)
 
+                # Class-frequency-inverse weighting inside the loss.
                 cc = np.bincount(s["y_seq_np"], minlength=2)
                 cw = 1.0 / (cc + 1e-8)
                 cw = cw / cw.sum() * 2
@@ -561,6 +459,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                     dropout=dropout,
                 ).to(device)
 
+                # Same loss + optimiser stack as the production training loop.
                 criterion = nn.CrossEntropyLoss(
                     weight=cw_t, reduction="none",
                     label_smoothing=0.1,
@@ -584,6 +483,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                 best_state = None
                 patience_counter = 0
 
+                # Training loop with early stopping on val loss.
                 for epoch in range(epochs):
                     net.train()
                     for X_b, y_b, w_b in train_dl:
@@ -616,6 +516,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                 if best_state is not None:
                     net.load_state_dict(best_state)
 
+                # Final scoring on val using the best-weights snapshot.
                 net.eval()
                 with torch.no_grad():
                     logits = net(s["X_val_t"])
@@ -624,11 +525,11 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
                 ll = log_loss(s["y_val_np"], proba)
                 split_losses.append(ll)
 
+                # Free GPU memory between folds to avoid OOM on long tuning runs.
                 del net, optimizer
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-                # report for pruning
                 trial.report(np.mean(split_losses), fold_idx)
                 if trial.should_prune():
                     raise optuna.TrialPruned()
@@ -636,6 +537,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
             except optuna.TrialPruned:
                 raise
             except Exception as e:
+                # Per-fold failure should not kill the trial; record and continue.
                 logger.debug("LSTM tuning fold failed: %s", e)
                 continue
 
@@ -672,7 +574,7 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     return {
         "best_params": {
             "hidden_size": best["hidden_size"],
-            "num_layers": 1,  # hardcoded; not searched
+            "num_layers": 1,
             "dropout": best["dropout"],
             "learning_rate": best["learning_rate"],
         },
@@ -681,40 +583,19 @@ def tune_lstm(X_train, y_train, w_train=None, n_features=None,
     }
 
 
-# =====================================================================
-# KAN (efficient-kan + AdamW)
-# =====================================================================
+# --- 7. KAN tuner (efficient-kan + AdamW) -----------------------------------
+# Locked narrow ranges from sensitivity testing; see project_structure.md for the methodology trail.
 def tune_kan(X_train, y_train, w_train=None, n_features=None,
              seed=42, verbose=True, n_trials=None):
-    """Tune KAN via Optuna TPE + Purged K-Fold.
+    """Tune KAN: ``width1`` ∈ [2, 6], ``grid`` ∈ {3, 5}, ``lr`` log-uniform [5e-4, 5e-2],
+    ``weight_decay`` log-uniform [1e-5, 5e-3].
 
-    Search space (locked thesis configuration):
-        width1:       int [2, 6]
-        width2:       fixed at 0 (single hidden layer; not searched)
-        grid:         categorical {3, 5}
-        lr:           log-uniform [5e-4, 5e-2]
-        weight_decay: log-uniform [1e-5, 5e-3]
+    ``width2`` is hardcoded at 0 (single hidden layer keeps the symbolic formula tractable;
+    nested compositions stress sympy and lose interpretability). B-spline order ``k=3``,
+    epochs=200, patience=20, full-batch training, tanh input normalisation.
 
-    Rationale for the narrow ranges:
-        - width1 capped at 6 keeps the symbolic-extraction formula
-          tractable (at most 6 input-derived terms per output before
-          pruning).
-        - width2 hardcoded at 0 ensures the formula has a single
-          hidden layer, avoiding nested trigonometric compositions
-          that lose interpretability and stress sympy.
-        - grid limited to {3, 5} prevents memorisation on
-          ~700-sample purged folds (drop the 8-knot option).
-
-    Sensitivity analysis (May 2026):
-        A wider search was tested — width1 ∈ [3, 8], width2 ∈ [0, 3],
-        grid ∈ {3, 5, 7}, lr log-uniform [5e-4, 5e-3]. The expanded
-        configuration produced a 0.07 decline in median Sharpe over
-        seven CPCV paths and was rejected. The narrow locked ranges
-        above are retained as both theoretically and empirically
-        supported by the failed expansion.
-
-    Fixed: k=3 (B-spline order), epochs=200, patience=20, full-batch,
-    tanh normalization.
+    Search ranges are locked from a wider-search sensitivity test that produced worse
+    out-of-sample Sharpe and was rejected.
     """
     from efficient_kan import KAN
 
@@ -725,6 +606,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Fixed training-loop hyperparameters; only the four searched params vary across trials.
     k = 3
     epochs = 200
     patience = 20
@@ -740,17 +622,14 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     all_results = []
 
     def objective(trial):
-        # Narrow ranges per the locked thesis configuration. The
-        # alternative wider ranges were tested in May 2026 and
-        # produced worse out-of-sample Sharpe; see function docstring
-        # for the sensitivity-analysis trail.
+        # Locked ranges; width2 hardcoded to keep symbolic extraction tractable.
         width1 = trial.suggest_int("width1", 2, 6)
-        width2 = 0  # hardcoded; single hidden layer for symbolic clarity
+        width2 = 0
         lr = trial.suggest_float("lr", 5e-4, 5e-2, log=True)
         wd = trial.suggest_float("weight_decay", 1e-5, 5e-3, log=True)
         grid = trial.suggest_categorical("grid", [3, 5])
 
-        # Single hidden layer always (width2 == 0)
+        # Single hidden layer architecture: [features, width1, 2].
         widths = [n_features, width1, 2]
 
         split_losses = []
@@ -771,13 +650,13 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                 else:
                     w_t = torch.ones(len(y_t), dtype=torch.float32).to(device)
 
-                # tanh normalization
+                # Tanh normalisation: matches the production KAN training stack.
                 input_mean = X_t.mean(dim=0)
                 input_std = X_t.std(dim=0) + 1e-8
                 X_t = torch.tanh((X_t - input_mean) / input_std)
                 X_val_t = torch.tanh((X_val_t - input_mean) / input_std)
 
-                # class weights
+                # Class weights inside the cross-entropy loss.
                 cc = np.bincount(y_tr, minlength=2)
                 cw = 1.0 / (cc + 1e-8)
                 cw = cw / cw.sum() * 2
@@ -809,6 +688,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                 best_state = None
                 patience_counter = 0
 
+                # Full-batch training step + per-epoch val score for early stopping.
                 for epoch in range(epochs):
                     model.train()
                     optimizer.zero_grad()
@@ -849,11 +729,11 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
                 ll = log_loss(y_val, proba)
                 split_losses.append(ll)
 
+                # Free GPU memory between folds.
                 del model, optimizer
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-                # report for pruning
                 trial.report(np.mean(split_losses), fold_idx)
                 if trial.should_prune():
                     raise optuna.TrialPruned()
@@ -900,7 +780,7 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     return {
         "best_params": {
             "width1": best["width1"],
-            "width2": 0,  # hardcoded; not searched
+            "width2": 0,
             "grid": best["grid"],
             "lr": best["lr"],
             "weight_decay": best["weight_decay"],
@@ -910,29 +790,16 @@ def tune_kan(X_train, y_train, w_train=None, n_features=None,
     }
 
 
-# =====================================================================
-# Tune all models
-# =====================================================================
+# --- 8. Orchestrator -------------------------------------------------------
+# Dispatch table: run the per-model tuner for each requested model, return a combined results dict.
 def tune_all_models(
     X_train, y_train, w_train=None, n_features=None,
     models=None, seed=42, verbose=True, n_trials=None,
 ):
-    """Run Optuna TPE hyperparameter tuning for all specified models.
+    """Run Optuna TPE tuning for every requested model and return ``{model: result_dict}``.
 
-    Parameters
-    ----------
-    models : list[str], optional
-        Models to tune. Defaults to ["logistic", "random_forest", "xgboost"].
-        Add "lstm" and/or "kan" for neural model tuning.
-    n_trials : int, optional
-        Number of Optuna trials per model. If None, uses defaults
-        (60 for classical, 40 for neural).
-
-    Returns
-    -------
-    dict[str, dict]
-        {model_name: {"best_params": {...}, "best_log_loss": float,
-                       "results_df": DataFrame}}
+    ``models`` defaults to ``["logistic", "random_forest", "xgboost"]``; pass
+    ``["lstm"]`` or ``["kan"]`` to add neural tuning.
     """
     if models is None:
         models = ["logistic", "random_forest", "xgboost"]
@@ -942,6 +809,7 @@ def tune_all_models(
             X_train.shape[1] if hasattr(X_train, "shape") else len(X_train[0])
         )
 
+    # Lambda-wrapped dispatch keeps the call site flat.
     dispatch = {
         "logistic": lambda: tune_logistic(X_train, y_train, w_train, seed, verbose, n_trials),
         "random_forest": lambda: tune_random_forest(X_train, y_train, w_train, seed, verbose, n_trials),
@@ -986,19 +854,10 @@ def tune_all_models(
     return all_results
 
 
-# =====================================================================
-# Helpers
-# =====================================================================
+# --- 9. Helpers -------------------------------------------------------------
+# One-line study summary; the full per-trial table lives in the returned results_df.
 def _print_study_summary(study, df, model_name):
-    """Print a one-line Optuna study summary.
-
-    The previous version dumped a "Top 5 configurations" table per model
-    per split, which produced 5 × 6 × 28 = 840 lines of near-identical
-    configurations across a full pipeline run. The single-line summary
-    below preserves the actionable information (best params and
-    completed/pruned trial counts); the full study object remains
-    available in the returned ``results_df`` for offline inspection.
-    """
+    """Log a single-line summary: best params + completed/pruned trial counts."""
     n_complete = len([t for t in study.trials
                       if t.state == optuna.trial.TrialState.COMPLETE])
     n_pruned = len([t for t in study.trials

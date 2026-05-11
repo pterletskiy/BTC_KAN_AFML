@@ -1,28 +1,19 @@
 """
-7) Preprocessing
+9) Preprocessing
 ====================
-The three transformations that MUST happen inside the CPCV loop, fitted
-on training data only: fractional differentiation (AFML Chapter 5),
-feature scaling, and feature selection (AFML Chapter 8).
+The three per-fold transformations that must happen inside the CPCV loop,
+fitted on training data only:
 
-Each function takes train/test data and returns transformed data,
-ensuring zero leakage.
+  1. Fractional differentiation (AFML Ch. 5)
+  2. Feature scaling (RobustScaler, median/IQR)
+  3. Feature selection via Multi-Model MDA with purged inner CV (AFML §8.4)
 
-Feature selection uses Multi-Model Mean Decrease Accuracy (MDA) with
-purged inner cross-validation (AFML §8.4). Permutation importance is
-computed using both a Random Forest (captures nonlinear interactions)
-and a Logistic Regression (captures linear effects), then averaged.
-This prevents selection bias toward any single model architecture.
-A feature is selected if its averaged MDA > 0 and it ranks in the
-top K by averaged MDA value.
-
-Lag features are part of the global feature universe alongside TA,
-mathematical, and external features. All non-AR models receive lag
-features through the standard MDA selection step (lags compete on
-equal footing with engineered features for the top-k cap). AR
-Logistic continues to consume the six precomputed lag columns by
-name from the pre-MDA feature matrix, preserving its role as the
-pure-autoregressive baseline.
+Multi-Model MDA averages permutation importance from a Random Forest (nonlinear
+interactions) and a Logistic Regression (linear effects), so no single model
+architecture dominates selection. Lag features sit inside the MDA pool on equal
+footing with TA, math, and external features; AR Logistic still consumes its
+ten lag columns by name from the pre-MDA matrix and is unaffected by what MDA
+selects for the other models.
 """
 
 import logging
@@ -36,35 +27,29 @@ from statsmodels.tsa.stattools import adfuller
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level constants
-# ---------------------------------------------------------------------------
+# --- Module-level constants -------------------------------------------------
 
-# FFD
+# FFD (AFML Ch. 5) — d* sweep and weight truncation.
 FFD_D_RANGE = (0.0, 1.0, 0.05)     # (start, stop, step) for d sweep
 FFD_THRESHOLD = 1e-4                 # weight truncation threshold τ
 FFD_ADF_SIGNIFICANCE = 0.05          # ADF rejection threshold
 FFD_MAX_LOOKBACK = 200               # hard cap on FFD lookback length
 
-# Feature selection (multi-model MDA with purged inner CV)
+# Multi-Model MDA (AFML §8.4). The notebook overrides MDA_TOP_K_FRAC to lock
+# the per-fold selected-feature count for the production configuration.
 MDA_N_ESTIMATORS = 500
 MDA_N_INNER_FOLDS = 3
-MDA_TOP_K_FRAC = 0.4                 # cap at top 40% of total features
+MDA_TOP_K_FRAC = 0.4                 # cap at top 40% of total features (notebook overrides this)
 
-# Minimum features to keep (hard floor)
+# Hard floor on the number of selected features.
 MIN_FEATURES = 5
 
 
-# =====================================================================
-# FFD — Fractional Differentiation (AFML Chapter 5)
-# =====================================================================
+# --- 1. FFD — Fractional Differentiation (AFML Ch. 5) ----------------------
+# Recursive FFD weight kernel: ω_0 = 1, ω_k = -ω_{k-1} · (d - k + 1) / k.
 def _compute_ffd_weights(d: float, threshold: float = FFD_THRESHOLD,
                          max_lookback: int = FFD_MAX_LOOKBACK) -> np.ndarray:
-    """Compute FFD weights via the recursive formula.
-
-    ω_0 = 1, ω_k = -ω_{k-1} × (d - k + 1) / k, truncated when
-    |ω_k| < threshold or k reaches max_lookback.
-    """
+    """Return the FFD weight vector for order ``d``, truncated when |ω_k| < threshold."""
     weights = [1.0]
     k = 1
     while True:
@@ -76,33 +61,18 @@ def _compute_ffd_weights(d: float, threshold: float = FFD_THRESHOLD,
     return np.array(weights, dtype=np.float64)
 
 
+# d* search: minimum order achieving ADF-stationary FFD output on the training slice.
 def find_optimal_d(
     series: pd.Series,
     d_range: tuple[float, float, float] = FFD_D_RANGE,
     threshold: float = FFD_THRESHOLD,
     significance: float = FFD_ADF_SIGNIFICANCE,
 ) -> float:
-    """Find the minimum fractional differentiation order d* that achieves stationarity.
-
-    Parameters
-    ----------
-    series : pd.Series
-        Price-level series (e.g., log close) from the training fold only.
-    d_range : tuple
-        (start, stop, step) for the d sweep.
-    threshold : float
-        FFD weight truncation threshold.
-    significance : float
-        ADF p-value rejection threshold.
-
-    Returns
-    -------
-    float
-        Optimal d* value.
-    """
+    """Sweep d ∈ d_range and return the smallest value whose FFD output rejects the ADF unit root."""
     d_values = np.arange(d_range[0], d_range[1] + d_range[2] / 2, d_range[2])
     sweep_results = {}
 
+    # For each candidate d, run FFD on the series and store the ADF p-value.
     for d in d_values:
         d = round(d, 4)
         if d == 0.0:
@@ -121,6 +91,7 @@ def find_optimal_d(
         except (ValueError, np.linalg.LinAlgError):
             sweep_results[d] = 1.0
 
+    # Take the smallest d achieving stationarity; AFML's "minimum memory loss" principle.
     d_star = None
     for d in sorted(sweep_results.keys()):
         if sweep_results[d] < significance:
@@ -143,31 +114,17 @@ def find_optimal_d(
     return d_star
 
 
+# Fixed-width window FFD: convolve the series with the truncated weight vector.
 def apply_ffd(
     series: pd.Series, d: float, threshold: float = FFD_THRESHOLD
 ) -> pd.Series:
-    """Apply fixed-width window fractional differentiation at order *d*.
-
-    Parameters
-    ----------
-    series : pd.Series
-        Input series (price-level or log-price).
-    d : float
-        Fractional differentiation order.
-    threshold : float
-        Weight truncation threshold.
-
-    Returns
-    -------
-    pd.Series
-        FFD-transformed series, same index as input. First K rows are NaN
-        where K is the lookback length (number of FFD weights - 1).
-    """
+    """Return ``series`` fractionally-differenced at order ``d``; first ``K-1`` rows are NaN."""
     weights = _compute_ffd_weights(d, threshold)
     K = len(weights)
     values = series.values
     n = len(values)
 
+    # Each output is the dot product of the K most recent values (reversed) with the weights.
     result = np.full(n, np.nan)
     for t in range(K - 1, n):
         result[t] = np.dot(weights, values[t - K + 1 : t + 1][::-1])
@@ -175,36 +132,22 @@ def apply_ffd(
     return pd.Series(result, index=series.index, name=series.name)
 
 
+# Per-fold FFD orchestrator: estimates d* from train only, then applies FFD to the full series.
 def ffd_transform(
     X_full: pd.DataFrame,
     train_idx: np.ndarray,
     test_idx: np.ndarray,
     ffd_columns: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """Orchestrate FFD for the current fold.
+    """Apply FFD to the full series (so test rows have lookback) with d* from train only.
 
-    Applies FFD to the FULL series (so test observations have lookback
-    history), but estimates d* from training data only.
-
-    Parameters
-    ----------
-    X_full : pd.DataFrame
-        Complete feature matrix (all observations, not yet split).
-    train_idx, test_idx : np.ndarray
-        Positional indices for this fold.
-    ffd_columns : list[str]
-        Columns requiring FFD transformation.
-
-    Returns
-    -------
-    X_train_ffd, X_test_ffd : pd.DataFrame
-        Transformed and NaN-free feature matrices for this fold.
-    ffd_info : dict
-        ``{column_name: d_star_value}``.
+    Returns the train and test slices with FFD-induced NaN rows dropped on the
+    FFD columns. Non-FFD columns are forward/backward-filled to handle external-data gaps.
     """
     ffd_info = {}
     X_transformed = X_full.copy()
 
+    # Fit d* on each FFD column using only the training slice, then apply to the full series.
     for col in ffd_columns:
         if col not in X_transformed.columns:
             logger.warning("FFD: column '%s' not found, skipping.", col)
@@ -221,7 +164,7 @@ def ffd_transform(
     X_train = X_transformed.iloc[train_idx].copy()
     X_test = X_transformed.iloc[test_idx].copy()
 
-    # forward-fill NaN in non-FFD columns (from external data availability gaps)
+    # Non-FFD columns are ffill/bfill'd for external-data availability gaps.
     ffd_cols_present = [c for c in ffd_columns if c in X_train.columns]
     non_ffd_cols = [c for c in X_train.columns if c not in ffd_cols_present]
 
@@ -229,7 +172,7 @@ def ffd_transform(
         X_train[non_ffd_cols] = X_train[non_ffd_cols].ffill().bfill()
         X_test[non_ffd_cols] = X_test[non_ffd_cols].ffill().bfill()
 
-    # only drop rows where FFD columns have NaN (from lookback)
+    # Drop rows only where the FFD columns themselves are NaN (the lookback head).
     if ffd_cols_present:
         train_mask = X_train[ffd_cols_present].notna().all(axis=1)
         test_mask = X_test[ffd_cols_present].notna().all(axis=1)
@@ -253,23 +196,12 @@ def ffd_transform(
     return X_train, X_test, ffd_info
 
 
-# =====================================================================
-# Scaling
-# =====================================================================
+# --- 2. Scaling ------------------------------------------------------------
+# RobustScaler chosen over StandardScaler: median/IQR is resilient to fat-tailed BTC features.
 def scale_features(
     X_train: pd.DataFrame, X_test: pd.DataFrame
 ) -> tuple[pd.DataFrame, pd.DataFrame, RobustScaler]:
-    """Fit a RobustScaler on X_train and transform both sets.
-
-    RobustScaler uses median/IQR, making it resistant to fat-tailed
-    outliers common in BTC features.
-
-    Returns
-    -------
-    X_train_scaled, X_test_scaled : pd.DataFrame
-    scaler : RobustScaler
-        Fitted scaler for potential inverse-transformation.
-    """
+    """Fit a RobustScaler on ``X_train`` and apply to both sets; return the fitted scaler too."""
     scaler = RobustScaler()
     X_train_scaled = pd.DataFrame(
         scaler.fit_transform(X_train),
@@ -277,6 +209,7 @@ def scale_features(
         columns=X_train.columns,
     )
 
+    # Guard against empty test slices (can happen if FFD drops the whole test head).
     if len(X_test) == 0:
         logger.warning("Scaling: test set is empty (0 rows). Returning empty DataFrame.")
         X_test_scaled = X_test.copy()
@@ -291,9 +224,8 @@ def scale_features(
     return X_train_scaled, X_test_scaled, scaler
 
 
-# =====================================================================
-# Feature Selection — Multi-Model MDA (AFML Chapter 8)
-# =====================================================================
+# --- 3. Feature Selection — Multi-Model MDA (AFML Ch. 8) -------------------
+# Permutation-importance loop on a single classifier with purged inner CV.
 def _compute_mda_single_model(
     clf,
     X_train: pd.DataFrame,
@@ -301,23 +233,7 @@ def _compute_mda_single_model(
     w_train: pd.Series,
     t1_train: pd.Series,
 ) -> pd.Series:
-    """Compute MDA using a single classifier via purged inner CV.
-
-    This is the core permutation importance loop. Called once per
-    inner model (RF and Logistic Regression).
-
-    Parameters
-    ----------
-    clf : sklearn estimator (unfitted)
-        Classifier to use. Will be cloned/refitted per inner fold.
-    X_train, y_train, w_train, t1_train : pd.DataFrame / pd.Series
-        Training data for the current outer CPCV fold.
-
-    Returns
-    -------
-    pd.Series
-        Mean MDA per feature, sorted descending.
-    """
+    """Per-feature mean MDA score across ``MDA_N_INNER_FOLDS`` purged inner folds."""
     n_folds = MDA_N_INNER_FOLDS
     T = len(X_train)
     fold_size = T // n_folds
@@ -326,13 +242,14 @@ def _compute_mda_single_model(
     mda_scores = pd.DataFrame(index=X_train.columns)
 
     for fold_i in range(n_folds):
+        # Contiguous-block inner test slice; everything else is candidate inner train.
         inner_test_start = fold_i * fold_size
         inner_test_end = (fold_i + 1) * fold_size if fold_i < n_folds - 1 else T
 
         inner_test_idx = list(range(inner_test_start, inner_test_end))
         inner_train_idx = list(range(0, inner_test_start)) + list(range(inner_test_end, T))
 
-        # purge: remove inner-train observations whose t1 overlaps inner-test
+        # Purge inner-train rows whose t1 overlaps the inner-test window (AFML Snippet 7.1).
         if len(inner_test_idx) > 0:
             t_test_start = X_train.index[inner_test_idx[0]]
             t_test_end = X_train.index[inner_test_idx[-1]]
@@ -360,13 +277,14 @@ def _compute_mda_single_model(
         X_te = X_train.iloc[inner_test_idx]
         y_te = y_train.iloc[inner_test_idx]
 
-        # clone and fit the classifier
+        # Clone-and-fit so the original estimator object stays unfitted across folds.
         from sklearn.base import clone
         model = clone(clf)
         model.fit(X_tr, y_tr, sample_weight=w_tr)
 
         baseline_f1 = f1_score(y_te, model.predict(X_te), average="macro")
 
+        # Permute one column at a time and measure the F1 drop; that drop is the MDA.
         fold_mda = {}
         for col in X_train.columns:
             X_te_perm = X_te.copy()
@@ -380,30 +298,20 @@ def _compute_mda_single_model(
     return avg_mda
 
 
+# Multi-Model MDA: average permutation importance from a Random Forest and a Logistic Regression.
 def compute_multi_model_mda(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     w_train: pd.Series,
     t1_train: pd.Series,
 ) -> pd.DataFrame:
-    """Multi-Model MDA: average permutation importance from RF and LR.
+    """Return ``DataFrame[MDA_RF, MDA_LR, MDA]`` sorted by averaged MDA descending.
 
-    Computes MDA separately using a Random Forest (captures nonlinear
-    interactions and ensemble effects) and a Logistic Regression
-    (captures linear relationships). The final MDA is the average of
-    both, ensuring no single model architecture dominates feature
-    selection.
-
-    A feature ranks high only if it demonstrably contributes to BOTH
-    a linear and nonlinear classifier, or contributes very strongly
-    to one of them.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: MDA_RF, MDA_LR, MDA (average). Sorted by MDA descending.
+    A feature ranks high only if it contributes meaningfully to a linear AND a
+    nonlinear classifier, or very strongly to one of them; this guards against
+    selection bias toward any single model architecture.
     """
-    # ── Random Forest MDA ─────────────────────────────────────────────
+    # Random Forest captures nonlinear and interaction effects.
     rf_clf = RandomForestClassifier(
         n_estimators=MDA_N_ESTIMATORS,
         class_weight="balanced",
@@ -413,7 +321,7 @@ def compute_multi_model_mda(
     logger.info("Computing MDA (Random Forest)...")
     mda_rf = _compute_mda_single_model(rf_clf, X_train, y_train, w_train, t1_train)
 
-    # ── Logistic Regression MDA ───────────────────────────────────────
+    # Logistic Regression captures linear effects on the standardised feature scale.
     lr_clf = LogisticRegression(
         class_weight="balanced",
         max_iter=1000,
@@ -422,7 +330,7 @@ def compute_multi_model_mda(
     logger.info("Computing MDA (Logistic Regression)...")
     mda_lr = _compute_mda_single_model(lr_clf, X_train, y_train, w_train, t1_train)
 
-    # ── Average ───────────────────────────────────────────────────────
+    # The final score is the simple average; a feature wins only by performing in both worlds.
     results = pd.DataFrame({
         "MDA_RF": mda_rf,
         "MDA_LR": mda_lr,
@@ -432,6 +340,7 @@ def compute_multi_model_mda(
     return results.sort_values("MDA", ascending=False)
 
 
+# Public feature-selection entry point: two-stage filter (MDA > 0, then top-K cap).
 def select_features(
     X_train: pd.DataFrame,
     y_train: pd.Series,
@@ -442,56 +351,27 @@ def select_features(
     split_idx: int | None = None,
     n_splits: int | None = None,
 ) -> list[str]:
-    """Select features via multi-model MDA (AFML §8.4).
+    """Select features via multi-model MDA (AFML §8.4); return their column names sorted.
 
     Two-stage selection:
-      1. Compute averaged MDA (RF + Logistic Regression).
-         Keep features with MDA > 0 (permuting them hurts at least
-         one model type on average).
-      2. Cap at top_k_frac of total features (by MDA rank).
-         Minimum floor of MIN_FEATURES enforced.
+      1. Keep features whose averaged MDA > 0 (permuting them hurts at least one model).
+      2. Cap the surviving pool at ``top_k_frac`` of total features, with ``MIN_FEATURES`` floor.
 
-    Using both a linear and nonlinear model for permutation importance
-    prevents selection bias toward any single architecture. Features
-    must demonstrate value across model families to rank high.
+    Lag features participate in MDA on equal footing with TA, math, and external
+    features; AR Logistic still consumes its ten lag columns by name from the
+    pre-MDA matrix via the pipeline's ``X_tr_full`` route, so its behaviour is
+    independent of what MDA selects for the other models.
 
-    All columns of ``X_train`` enter the MDA pool, including lag
-    features. Lag and engineered features compete on equal footing
-    for the top-k cap; whether a given fold selects lags depends on
-    their permutation importance relative to TA, math, and external
-    features. AR Logistic still consumes its six lag columns by name
-    from the pre-MDA matrix routed through ``X_tr_full`` in the
-    pipeline, so its behaviour is unaffected by what MDA selects.
-
-    Parameters
-    ----------
-    top_k_frac : float, optional
-        Cap selection at this fraction of total features.
-        Default from MDA_TOP_K_FRAC module constant.
-    split_idx : int, optional
-        Zero-based index of the current CPCV split. When provided,
-        any warning emitted by this function is prefixed with the
-        split identifier so the deferred-warning summary printed by
-        ``run_cpcv_pipeline`` can show which fold(s) actually
-        triggered the warning. Pass via keyword only.
-    n_splits : int, optional
-        Total number of CPCV splits. Used together with ``split_idx``
-        to render the prefix as ``[split K/N]``.
-
-    Returns
-    -------
-    list[str]
-        Sorted list of selected feature names.
+    ``split_idx`` and ``n_splits`` are used to prefix any warning with ``[split K/N]``
+    so the deferred-warning summary printed by ``run_cpcv_pipeline`` identifies
+    which folds actually triggered the warning.
     """
     if top_k_frac is None:
         top_k_frac = MDA_TOP_K_FRAC
 
     n_total = X_train.shape[1]
 
-    # Build a per-fold prefix for warning messages so the post-run
-    # summary printed by ``run_cpcv_pipeline`` identifies which split
-    # triggered the warning rather than leaving the reader to assume
-    # the issue applied to every fold.
+    # Build a per-fold prefix so warnings can be attributed to a specific split downstream.
     if split_idx is not None and n_splits is not None:
         split_prefix = f"[split {split_idx + 1}/{n_splits}] "
     elif split_idx is not None:
@@ -499,16 +379,16 @@ def select_features(
     else:
         split_prefix = ""
 
-    # ── Compute multi-model MDA on the full feature universe ──────────
+    # Stage 1: compute averaged MDA across the full feature universe.
     mda_results = compute_multi_model_mda(X_train, y_train, w_train, t1_train)
 
-    # ── Select: all features with averaged MDA > 0 ────────────────────
+    # Filter to strictly positive MDA; everything else is eliminated by the linear/nonlinear consensus.
     mda_positive = mda_results[mda_results["MDA"] > 0]
     mda_eliminated = mda_results[mda_results["MDA"] <= 0]
     n_passed = len(mda_positive)
     n_eliminated = len(mda_eliminated)
 
-    # fallback: if too few pass, take top MIN_FEATURES by MDA
+    # Fallback: if positive-MDA set is too small, take the top MIN_FEATURES by score.
     if n_passed < MIN_FEATURES:
         logger.warning(
             "%sOnly %d features with MDA > 0. Taking top %d by MDA value.",
@@ -518,7 +398,7 @@ def select_features(
     else:
         selected_df = mda_positive
 
-    # ── Cap via top_k_frac ────────────────────────────────────────────
+    # Stage 2: cap at top_k_frac · n_total, with a hard floor at MIN_FEATURES.
     if top_k_frac is not None:
         max_features = max(int(n_total * top_k_frac), MIN_FEATURES)
         if len(selected_df) > max_features:
@@ -530,9 +410,7 @@ def select_features(
 
     selected = sorted(selected_df.index.tolist())
 
-    # ── Log full rankings at DEBUG (kept available for diagnostics, but
-    # not flooded into the notebook by default; raise the logger to DEBUG
-    # to see them again).
+    # Full ranking is only emitted at DEBUG to keep notebook output manageable.
     mda_results["selected"] = mda_results.index.isin(selected)
     logger.debug(
         "Feature selection rankings:\n%s", mda_results.to_string()
@@ -548,17 +426,12 @@ def select_features(
             len(selected), top_k_frac,
         )
     logger.info("  Selected (%d): %s", len(selected), selected)
-    # The dropped-features list is the complement of `selected`; it adds
-    # ~44 names per split with no new information and dominates notebook
-    # output size. Use `set(X_train.columns) - set(selected)` if you
-    # ever need it outside the pipeline output.
 
     return selected
 
 
-# =====================================================================
-# Orchestration
-# =====================================================================
+# --- 4. Orchestration ------------------------------------------------------
+# Per-fold pipeline: FFD → re-align labels → scale → select. Returns full-column matrices.
 def preprocess_fold(
     X_full: pd.DataFrame,
     train_idx: np.ndarray,
@@ -573,69 +446,29 @@ def preprocess_fold(
     split_idx: int | None = None,
     n_splits: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict]:
-    """Full preprocessing for one CPCV fold: FFD → scaling → selection.
+    """Run full preprocessing for one CPCV fold; return (X_train, X_test, selected, info).
 
-    Returns DataFrames with ALL columns (pre-selection) so the pipeline
-    can provide full-column DataFrames to AR Logistic. The selected
-    feature list is returned separately for the pipeline to apply.
+    Returned ``X_train`` and ``X_test`` carry ALL columns (pre-selection) so the
+    pipeline can route the full pre-MDA matrix to AR Logistic via ``X_tr_full``.
+    The selected feature list is returned separately and applied by the caller.
 
-    Lag columns sit alongside engineered features in the returned
-    DataFrames and are now eligible for MDA selection on equal footing
-    with TA, math, and external features. AR Logistic continues to
-    consume its six lag columns by name from the pre-selection matrix
-    via the pipeline's ``X_tr_full`` route, independently of whether
-    MDA happens to select any lag columns for the other models.
-
-    Parameters
-    ----------
-    X_full : pd.DataFrame
-        Complete feature matrix (all observations).
-    train_idx, test_idx : np.ndarray
-        Positional indices for this fold.
-    y_train, w_train, t1_train : pd.Series
-        Labels, weights, and barrier timestamps for training observations.
-    ffd_columns : list[str]
-        Columns requiring FFD transformation.
-    top_k_frac : float, optional
-        Cap selection at this fraction of total features. Default from
-        MDA_TOP_K_FRAC module constant.
-    skip_selection : bool
-        If True, skip feature selection and return all columns.
-        Used when only AR Logistic is being evaluated.
-    split_idx : int, optional
-        Zero-based index of the current CPCV split. Forwarded to
-        ``select_features`` so any warning it emits identifies the
-        fold that triggered it. Pass via keyword only.
-    n_splits : int, optional
-        Total number of CPCV splits. Forwarded together with
-        ``split_idx`` to render warning prefixes as ``[split K/N]``.
-
-    Returns
-    -------
-    X_train : pd.DataFrame
-        Processed training features (all columns, pre-selection).
-    X_test : pd.DataFrame
-        Processed test features (all columns, pre-selection).
-    selected : list[str]
-        Names of selected features.
-    info : dict
-        Preprocessing metadata (FFD d* values, scaler, selected features).
+    ``skip_selection=True`` is used when only AR Logistic is being evaluated.
     """
-    # 1. FFD on price-level columns (applied to full series, d* from train only)
+    # 1. FFD on price-level columns: d* from train slice, applied to the full series.
     X_train, X_test, ffd_info = ffd_transform(
         X_full, train_idx, test_idx, ffd_columns
     )
 
-    # 2. Re-align y, w, t1 after FFD drops NaN rows
+    # 2. Re-align labels/weights/t1 because FFD drops the lookback-head NaN rows.
     common_train = X_train.index.intersection(y_train.index)
     y_train = y_train.loc[common_train]
     w_train = w_train.loc[common_train]
     t1_train = t1_train.loc[common_train]
 
-    # 3. Scale all features
+    # 3. Scale every feature using a RobustScaler fitted on train only.
     X_train, X_test, scaler = scale_features(X_train, X_test)
 
-    # 4. Select features
+    # 4. Feature selection (skipped when only AR Logistic is being evaluated).
     if skip_selection:
         selected = sorted(X_train.columns.tolist())
         logger.info("Feature selection skipped (AR Logistic uses lagged returns only)")
@@ -645,13 +478,7 @@ def preprocess_fold(
             split_idx=split_idx, n_splits=n_splits,
         )
 
-    n_cal = int(len(X_train) * 0.2)
-    # Note: the per-fold sample sizes (train + cal + test) are stored in
-    # `info` and surfaced once per split by the calling pipeline, so we no
-    # longer print them here per call. Two `preprocess_fold` invocations
-    # per split (one per model in some configurations) was producing two
-    # near-identical lines that bloated the cell output.
-
+    # Per-fold sample sizes are surfaced once by the calling pipeline; we no longer print here.
     info = {
         "ffd": ffd_info,
         "scaler": scaler,

@@ -1,26 +1,24 @@
 """
-10) Calibration
+12) Calibration
 ===================
-Calibrate raw model probabilities so that predicted confidence levels
-correspond to empirical accuracy. Essential because downstream bet sizing
-converts probabilities directly into position sizes via De Prado's
-S-curve, so poorly calibrated probabilities produce systematically wrong
+Calibrate raw model probabilities so predicted confidence corresponds to
+empirical accuracy. Essential because downstream bet sizing converts
+probabilities into position sizes via López de Prado's S-curve; poorly
+calibrated probabilities translate directly into systematically wrong
 bet sizes.
 
-Two methods:
-  - Platt scaling (Platt 1999): for sklearn models (logistic, RF, XGBoost,
-    AR). Fits a sigmoid mapping from raw logits to calibrated probabilities.
-  - Vector scaling (Guo et al. 2017): for PyTorch models (LSTM, KAN). Fits
-    a temperature T plus a per-class bias vector b that minimise the NLL of
-    softmax((logits + b) / T). Adding the bias term lets the calibrator
-    correct directional miscalibration that standard temperature scaling
-    cannot. Pure temperature scaling preserves the argmax of the raw
-    logits; on this dataset that property left a systematic short-bias
-    in PyTorch model outputs that bet-sizing then converted into negative
-    drift. Vector scaling is the natural extension recommended in the
-    same Guo et al. (2017) paper for cases where temperature alone is
-    insufficient.
+Two methods, routed automatically by model family:
 
+  - Platt scaling (Platt 1999): sklearn models (Logistic, RF, XGBoost, AR).
+    Fits a sigmoid mapping from raw logits to calibrated probabilities.
+  - Vector scaling (Guo et al. 2017 §4.2): PyTorch models (LSTM, KAN).
+    Fits a temperature T plus a per-class bias vector b minimising the
+    NLL of ``softmax((logits + b) / T)``. The bias term lets the calibrator
+    correct directional miscalibration that pure temperature scaling
+    cannot, because pure temperature scaling preserves the argmax of the
+    raw logits. On this dataset that property left a systematic short-bias
+    in PyTorch model outputs which bet sizing then converted into negative
+    drift; vector scaling fixes it.
 """
 
 import logging
@@ -31,46 +29,35 @@ from sklearn.linear_model import LogisticRegression
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level constants
-# ---------------------------------------------------------------------------
+# --- Module-level constants -------------------------------------------------
 CALIBRATION_METHOD_SKLEARN = "platt"
 CALIBRATION_METHOD_PYTORCH = "vector"     # default for LSTM / KAN
 CALIBRATION_METHOD_TEMPERATURE = "temperature"  # available for opt-in / tests
 
-# Models that use vector scaling (PyTorch-based, 2D logits)
+# Models routed to vector scaling rather than Platt.
 _PYTORCH_MODELS = {"LSTM", "KAN"}
 
-# Vector-scaling optimiser bounds
+# Vector-scaling optimiser bounds; intentionally generous on temperature so the
+# bounded LBFGS does not pin the optimum at an edge.
 _VECTOR_T_BOUNDS = (0.05, 20.0)
 _VECTOR_BIAS_BOUNDS = (-5.0, 5.0)
 
 
-# =====================================================================
-# Platt Scaling
-# =====================================================================
+# --- 1. Platt Scaling -------------------------------------------------------
+# Sigmoid fit from raw log-odds to calibrated probability; the standard 1D method.
 def fit_platt_scaling(
     logits: np.ndarray, y_true: np.ndarray
 ) -> LogisticRegression:
-    """Fit a sigmoid mapping from raw logits to calibrated probabilities.
+    """Fit a sigmoid ``σ(a·logit + b)`` mapping raw log-odds to calibrated probabilities.
 
-    Parameters
-    ----------
-    logits : np.ndarray
-        1D array of log-odds or decision function values.
-    y_true : np.ndarray
-        True binary labels (0 or 1).
-
-    Returns
-    -------
-    LogisticRegression
-        Fitted model. Calibrate via
-        ``platt_model.predict_proba(new_logits.reshape(-1, 1))``.
+    Returns the fitted LogisticRegression; calibrate via
+    ``platt_model.predict_proba(new_logits.reshape(-1, 1))``.
     """
     logits_2d = logits.reshape(-1, 1)
 
+    # C=1e10 disables regularisation so the fit is purely data-driven.
     platt = LogisticRegression(
-        C=1e10,        # no regularization, purely data-driven sigmoid
+        C=1e10,
         solver="lbfgs",
         max_iter=1000,
     )
@@ -83,31 +70,16 @@ def fit_platt_scaling(
     return platt
 
 
-# =====================================================================
-# Temperature Scaling (Guo et al. 2017)
-# =====================================================================
+# --- 2. Temperature Scaling (Guo et al. 2017) ------------------------------
+# Single-scalar variant kept for opt-in / unit-test use; not the default for any model.
 def fit_temperature_scaling(
     logits: np.ndarray, y_true: np.ndarray,
 ) -> float:
-    """Learn a single scalar T that minimizes NLL of softmax(logits / T).
+    """Learn the scalar T that minimises the NLL of ``softmax(logits / T)``.
 
-    Standard temperature scaling as introduced in Guo et al. (2017),
-    "On Calibration of Modern Neural Networks". Treats all samples
-    equally; no per-sample weighting.
-
-    Parameters
-    ----------
-    logits : np.ndarray
-        Shape (n_samples, n_classes), raw pre-softmax logits.
-    y_true : np.ndarray
-        True labels (0-indexed integers).
-
-    Returns
-    -------
-    float
-        Optimal temperature T > 0. Calibrate via
-        ``softmax(new_logits / T, axis=1)``.
+    Returns the optimal T > 0; calibrate via ``softmax(new_logits / T, axis=1)``.
     """
+    # NLL of softmax(logits / T) expressed in log-sum-exp form for numerical stability.
     def nll(T):
         scaled = logits / T
         log_probs = scaled - logsumexp(scaled, axis=1, keepdims=True)
@@ -124,43 +96,21 @@ def fit_temperature_scaling(
     return optimal_T
 
 
-# =====================================================================
-# Vector Scaling (Guo et al. 2017, Section 4.2)
-# =====================================================================
+# --- 3. Vector Scaling (Guo et al. 2017 §4.2) ------------------------------
+# Temperature + per-class bias; extends temperature scaling to correct directional miscalibration.
 def fit_vector_scaling(
     logits: np.ndarray, y_true: np.ndarray,
 ) -> tuple[float, np.ndarray]:
-    """Learn a temperature T and per-class bias b minimising the NLL of
-    ``softmax((logits + b) / T)``.
+    """Learn ``T`` and bias vector ``b`` minimising the NLL of ``softmax((logits + b) / T)``.
 
-    Vector scaling extends temperature scaling with a per-class additive
-    bias, allowing it to correct directional miscalibration as well as
-    sharpness. The parameterisation has one redundant degree of freedom
-    in the bias (softmax is invariant to a constant shift across all
-    classes); the optimiser handles this without issue and the resulting
-    calibrated probabilities are unambiguous.
-
-    Parameters
-    ----------
-    logits : np.ndarray
-        Shape ``(n_samples, n_classes)``, raw pre-softmax logits.
-    y_true : np.ndarray
-        True labels (0-indexed integers).
-
-    Returns
-    -------
-    T : float
-        Optimal temperature, ``T > 0``.
-    b : np.ndarray
-        Per-class bias vector, shape ``(n_classes,)``.
-
-    Notes
-    -----
-    Calibrate new logits via
-    ``softmax((new_logits + b) / T, axis=1)``.
+    The parameterisation has one redundant degree of freedom (softmax is invariant
+    to a constant shift across all classes); the LBFGS optimiser handles this without
+    issue and the resulting calibrated probabilities are unambiguous. Calibrate new
+    logits via ``softmax((new_logits + b) / T, axis=1)``.
     """
     n_classes = logits.shape[1]
 
+    # NLL with composite parameter vector ``[T, b_0, b_1, ..., b_{C-1}]``.
     def neg_log_likelihood(params: np.ndarray) -> float:
         T = params[0]
         b = params[1:]
@@ -171,6 +121,7 @@ def fit_vector_scaling(
         correct_log_probs = log_probs[np.arange(len(y_true)), y_true]
         return -float(np.mean(correct_log_probs))
 
+    # Initialise at T=1, b=0 (the identity calibrator) and let LBFGS refine.
     x0 = np.zeros(1 + n_classes)
     x0[0] = 1.0
     bounds = [_VECTOR_T_BOUNDS] + [_VECTOR_BIAS_BOUNDS] * n_classes
@@ -194,23 +145,20 @@ def fit_vector_scaling(
     return optimal_T, optimal_b
 
 
-# =====================================================================
-# Unified Calibrator
-# =====================================================================
+# --- 4. Unified Calibrator --------------------------------------------------
+# Routes sklearn models to Platt and PyTorch models to vector scaling; same interface either way.
 class Calibrator:
-    """Unified calibration wrapper for both sklearn and PyTorch models.
+    """Auto-routing calibration wrapper for both sklearn and PyTorch models.
 
-    PyTorch models (LSTM, KAN) are calibrated with vector scaling by
-    default. sklearn-compatible models use Platt scaling. Temperature
-    scaling is supported as an opt-in method for backward compatibility
-    and unit tests but is not the default for any model.
+    PyTorch models (LSTM, KAN) get vector scaling; sklearn-compatible models get
+    Platt. Temperature scaling is supported as an opt-in via ``fit_from_logits``
+    but is not the default for any model.
 
-    Usage
-    -----
-    >>> cal = Calibrator()
-    >>> cal.fit(model, X_cal, y_cal)
-    >>> raw_logits = model.predict_logits(X_new)
-    >>> calibrated_proba = cal.calibrate(raw_logits)
+    Usage::
+
+        cal = Calibrator()
+        cal.fit(model, X_cal, y_cal)
+        cal_proba = cal.calibrate(model.predict_logits(X_new))
     """
 
     def __init__(self):
@@ -220,18 +168,9 @@ class Calibrator:
         self.bias = None            # used only by vector scaling
         self.fitted = False
 
+    # Fit by inspecting the model: PyTorch → vector scaling, sklearn → Platt.
     def fit(self, model, X_cal, y_cal) -> None:
-        """Fit calibration on a held-out calibration set.
-
-        Parameters
-        ----------
-        model : BaseModel
-            Trained model with ``predict_logits`` and ``get_name`` methods.
-        X_cal : np.ndarray or pd.DataFrame
-            Calibration features.
-        y_cal : np.ndarray or pd.Series
-            True labels (0-indexed).
-        """
+        """Fit calibration on a held-out calibration set; routes by model name."""
         y = y_cal.values if hasattr(y_cal, "values") else np.asarray(y_cal)
         model_name = model.get_name()
 
@@ -242,7 +181,7 @@ class Calibrator:
         else:
             self.method = CALIBRATION_METHOD_SKLEARN
             logits = model.predict_logits(X_cal)
-            # convert 2D logits (n, n_classes) to 1D log-odds for Platt
+            # Platt needs 1D log-odds; collapse the per-class logits into class-1-vs-class-0 difference.
             if logits.ndim == 2 and logits.shape[1] >= 2:
                 logits = logits[:, 1] - logits[:, 0]
             logits = logits.ravel()
@@ -251,55 +190,44 @@ class Calibrator:
         self.fitted = True
         logger.debug("Calibrator fitted: method=%s, model=%s.", self.method, model_name)
 
+    # Apply the fitted calibration map to fresh raw logits.
     def calibrate(self, logits: np.ndarray) -> np.ndarray:
-        """Apply fitted calibration to raw logits.
+        """Return calibrated probabilities ``(n_samples, n_classes)`` from raw logits.
 
-        Parameters
-        ----------
-        logits : np.ndarray
-            For Platt: shape (n,) or (n, 1), raw log-odds.
-            For vector / temperature: shape (n, n_classes), raw pre-softmax
-            logits.
-
-        Returns
-        -------
-        np.ndarray
-            Calibrated probabilities, shape (n_samples, n_classes),
-            rows sum to 1.
+        Platt accepts ``(n,)`` or ``(n, 1)`` log-odds; vector and temperature accept
+        ``(n, n_classes)`` raw pre-softmax logits.
         """
         if not self.fitted:
             raise RuntimeError(
                 "Calibrator has not been fitted. Call .fit() first."
             )
 
+        # Platt branch: collapse 2D logits into 1D log-odds if needed, then sigmoid via predict_proba.
         if self.method == CALIBRATION_METHOD_SKLEARN:
-            # convert 2D logits (n, n_classes) to 1D log-odds for Platt
             if logits.ndim == 2 and logits.shape[1] >= 2:
                 logits = logits[:, 1] - logits[:, 0]
             logits_2d = logits.reshape(-1, 1)
             return self.platt_model.predict_proba(logits_2d)
 
+        # Vector branch: (logits + b) / T then softmax.
         if self.method == CALIBRATION_METHOD_PYTORCH:
             scaled = (logits + self.bias) / self.temperature
             return softmax(scaled, axis=1)
 
+        # Temperature-only branch: logits / T then softmax.
         if self.method == CALIBRATION_METHOD_TEMPERATURE:
             scaled = logits / self.temperature
             return softmax(scaled, axis=1)
 
         raise ValueError(f"Unknown calibration method: {self.method}")
 
+    # Alternate entry point: fit from pre-computed logits, bypassing the model interface.
     def fit_from_logits(self, logits, y_cal, method=CALIBRATION_METHOD_PYTORCH):
         """Fit calibration directly from pre-computed logits.
 
-        Used by the LSTM training loop where index alignment requires
-        pre-computed logits rather than re-running ``predict_logits``
-        through the model's interface.
-
-        Parameters
-        ----------
-        method : str
-            One of ``"vector"`` (default), ``"temperature"``, or ``"platt"``.
+        Used by the LSTM training loop, where the windowing alignment requires
+        pre-computed logits rather than re-running ``predict_logits`` through the
+        model interface. ``method`` ∈ ``{"vector", "temperature", "platt"}``.
         """
         y = y_cal.values if hasattr(y_cal, "values") else np.asarray(y_cal)
 
@@ -318,6 +246,7 @@ class Calibrator:
         self.fitted = True
         logger.debug("Calibrator fitted from pre-computed logits: method=%s.", self.method)
 
+    # Compact one-line representation for logging.
     def __repr__(self) -> str:
         if not self.fitted:
             return "Calibrator(fitted=False)"

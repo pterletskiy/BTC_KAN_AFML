@@ -1,7 +1,8 @@
 """
-8.3) Tree-Based
-====================
+10.3) Tree-Based Models
+============================
 Random Forest and XGBoost classifiers wrapped in the BaseModel interface.
+XGBoost uses early stopping when a validation set is provided.
 """
 
 import logging
@@ -13,14 +14,15 @@ from src.cpcv.models.base import BaseModel
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level constants
-# ---------------------------------------------------------------------------
+# --- Module-level constants -------------------------------------------------
+
+# Random Forest: ensemble depth left unconstrained, leaf size limits overfit on noisy labels.
 RF_N_ESTIMATORS = 500
 RF_MAX_FEATURES = "sqrt"
 RF_MAX_DEPTH = None
 RF_MIN_SAMPLES_LEAF = 5
 
+# XGBoost: shallow trees + heavy regularisation to manage the low-signal regime.
 XGB_N_ESTIMATORS = 300
 XGB_MAX_DEPTH = 3
 XGB_LEARNING_RATE = 0.05
@@ -33,16 +35,16 @@ XGB_REG_LAMBDA = 2.0
 XGB_EARLY_STOPPING_ROUNDS = 20
 
 
-# =====================================================================
-# Random Forest
-# =====================================================================
+# --- 1. Random Forest -------------------------------------------------------
+# Sklearn Random Forest with balanced subsampling for class-imbalance handling.
 class RandomForestModel(BaseModel):
-    """Sklearn Random Forest with balanced subsampling."""
+    """Sklearn Random Forest with class-balanced subsampling per tree."""
 
     def __init__(self, n_features: int, n_classes: int = 2, seed: int = 42):
         super().__init__(n_features, n_classes, seed)
         self.model = None
 
+    # Fit RF; sample_weight carries AFML weights, class_weight=balanced_subsample handles imbalance.
     def fit(self, X_train, y_train, sample_weight=None, X_val=None, y_val=None) -> None:
         X = X_train.values if hasattr(X_train, "values") else X_train
         y = y_train.values if hasattr(y_train, "values") else y_train
@@ -64,16 +66,19 @@ class RandomForestModel(BaseModel):
             X.shape[0], X.shape[1], RF_N_ESTIMATORS,
         )
 
+    # Class probabilities from the bagged tree votes.
     def predict_proba(self, X) -> np.ndarray:
         X_arr = X.values if hasattr(X, "values") else X
         return self.model.predict_proba(X_arr)
 
+    # Hard-label prediction.
     def predict(self, X) -> np.ndarray:
         X_arr = X.values if hasattr(X, "values") else X
         return self.model.predict(X_arr)
 
+    # Log-odds for downstream calibration; symmetric clip prevents inf at probability extremes.
     def predict_logits(self, X) -> np.ndarray:
-        """Convert probabilities to log-odds for calibration."""
+        """Convert RF probabilities to log-odds for calibration."""
         proba = self.predict_proba(X)
         proba = np.clip(proba, 1e-10, 1 - 1e-10)
         logits = np.log(proba[:, 1] / proba[:, 0])
@@ -83,23 +88,24 @@ class RandomForestModel(BaseModel):
         return "Random_Forest"
 
 
-# =====================================================================
-# XGBoost
-# =====================================================================
+# --- 2. XGBoost -------------------------------------------------------------
+# Gradient-boosted trees with optional early stopping; native sample_weight support.
 class XGBoostModel(BaseModel):
-    """XGBoost gradient-boosted trees with optional early stopping."""
+    """XGBoost gradient-boosted trees with optional validation-driven early stopping."""
 
     def __init__(self, n_features: int, n_classes: int = 2, seed: int = 42):
         super().__init__(n_features, n_classes, seed)
         self.model = None
 
+    # Fit XGBoost; if X_val/y_val are passed, early stopping fires after XGB_EARLY_STOPPING_ROUNDS no-improvement rounds.
     def fit(
         self,
         X_train,
         y_train,
         sample_weight=None,
         X_val=None,
-        y_val=None,) -> None:
+        y_val=None,
+    ) -> None:
         X = X_train.values if hasattr(X_train, "values") else X_train
         y = y_train.values if hasattr(y_train, "values") else y_train
         w = sample_weight.values if hasattr(sample_weight, "values") else sample_weight
@@ -119,6 +125,7 @@ class XGBoostModel(BaseModel):
             "random_state": self.seed,
         }
 
+        # Wire early stopping only when validation data is provided.
         if X_val is not None and y_val is not None:
             init_params["early_stopping_rounds"] = XGB_EARLY_STOPPING_ROUNDS
 
@@ -145,16 +152,19 @@ class XGBoostModel(BaseModel):
                 X.shape[0], XGB_N_ESTIMATORS,
             )
 
+    # Class probabilities from the boosted ensemble.
     def predict_proba(self, X) -> np.ndarray:
         X_arr = X.values if hasattr(X, "values") else X
         return self.model.predict_proba(X_arr)
 
+    # Hard-label prediction.
     def predict(self, X) -> np.ndarray:
         X_arr = X.values if hasattr(X, "values") else X
         return self.model.predict(X_arr)
 
+    # Log-odds for downstream calibration.
     def predict_logits(self, X) -> np.ndarray:
-        """Convert probabilities to log-odds for calibration."""
+        """Convert XGBoost probabilities to log-odds for calibration."""
         proba = self.predict_proba(X)
         proba = np.clip(proba, 1e-10, 1 - 1e-10)
         logits = np.log(proba[:, 1] / proba[:, 0])
