@@ -400,9 +400,10 @@ def run_cpcv_pipeline(
 
         w_model = w_tr.iloc[:val_boundary]
         w_val = w_tr.iloc[val_boundary:cal_boundary]
-        # w_cal is captured for future use (e.g. weighted Platt) but currently Platt is fit
-        # unweighted by design (see calibration.py docstring); kept here for parity.
-        _w_cal = w_tr.iloc[cal_boundary:]  # noqa: F841
+        # Weighted Platt / vector scaling: align the calibration objective with the
+        # AFML-weighted training loss. Motivated by the audit's persistent 4-7pp
+        # under-prediction across models; see fit_platt_scaling docstring for the trade-off.
+        w_cal = w_tr.iloc[cal_boundary:]
 
         if needs_selection:
             logger.info(
@@ -492,6 +493,8 @@ def run_cpcv_pipeline(
 
                 # Calibration on the truly-held-out X_c. LSTM produces NaN at warm-up rows
                 # (M1 contract), so slice cal logits to valid indices before vector scaling.
+                # w_cal is passed through so the calibration NLL matches the AFML-weighted
+                # training loss; either branch defaults to unweighted if w_cal is None.
                 try:
                     calibrator = Calibrator()
                     if model_name == "lstm" and hasattr(model, "last_valid_indices"):
@@ -499,9 +502,13 @@ def run_cpcv_pipeline(
                         cal_valid_idx = model.last_valid_indices
                         cal_logits = cal_logits_full[cal_valid_idx]
                         y_cal_aligned = y_cal.iloc[cal_valid_idx]
-                        calibrator.fit_from_logits(cal_logits, y_cal_aligned, method="vector")
+                        w_cal_aligned = w_cal.iloc[cal_valid_idx]
+                        calibrator.fit_from_logits(
+                            cal_logits, y_cal_aligned, method="vector",
+                            sample_weight=w_cal_aligned,
+                        )
                     else:
-                        calibrator.fit(model, X_c, y_cal)
+                        calibrator.fit(model, X_c, y_cal, sample_weight=w_cal)
 
                 except Exception as e:
                     # Fallback path: a failed calibration falls back to uncalibrated probabilities below.

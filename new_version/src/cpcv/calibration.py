@@ -46,20 +46,32 @@ _VECTOR_BIAS_BOUNDS = (-5.0, 5.0)
 # --- 1. Platt Scaling -------------------------------------------------------
 # Sigmoid fit from raw log-odds to calibrated probability; the standard 1D method.
 def fit_platt_scaling(
-    logits: np.ndarray, y_true: np.ndarray
+    logits: np.ndarray,
+    y_true: np.ndarray,
+    sample_weight: np.ndarray | None = None,
 ) -> LogisticRegression:
     """Fit a sigmoid ``σ(a·logit + b)`` mapping raw log-odds to calibrated probabilities.
 
     Returns the fitted LogisticRegression; calibrate via
     ``platt_model.predict_proba(new_logits.reshape(-1, 1))``.
 
-    Note on sample weights: the training side uses AFML sample weights end-to-end,
-    but Platt is fit unweighted by design. Calibration estimates the conditional
-    ``P(class | logit)`` of the underlying data-generating process, which is a
-    property of the data distribution rather than of the AFML training signal.
-    Fitting Platt with AFML weights would tilt the sigmoid toward high-weight
-    samples instead of toward the empirical class frequency at each logit, which
-    is the opposite of what calibration should measure.
+    Sample-weighting trade-off. The training side uses AFML sample weights end-to-end,
+    so the model's logits are produced by a weighted decision boundary. There are two
+    defensible philosophies for the calibrator:
+
+    1. Unweighted (``sample_weight=None``, default): estimates the natural ``P(class
+       | logit)`` of the underlying data-generating process at the empirical event
+       density. Tilts toward the calibration set's raw class balance.
+
+    2. Weighted (``sample_weight=w_cal``): aligns the calibration objective with the
+       training objective, so the calibrator measures the conditional probability under
+       the same weighted distribution the model was fit against. Defensible when the
+       training and test populations differ in regime composition (e.g. test events
+       sample regimes with different overlap structure than train events).
+
+    Either is defensible. The choice matters most when AFML weights correlate
+    systematically with class balance, which is the case on this dataset (the audit
+    finding of persistent 4-7pp under-prediction motivates the weighted path).
     """
     logits_2d = logits.reshape(-1, 1)
 
@@ -69,11 +81,14 @@ def fit_platt_scaling(
         solver="lbfgs",
         max_iter=1000,
     )
-    platt.fit(logits_2d, y_true)
+    if sample_weight is not None:
+        platt.fit(logits_2d, y_true, sample_weight=sample_weight)
+    else:
+        platt.fit(logits_2d, y_true)
 
     logger.debug(
-        "Platt scaling fitted: coef=%.4f, intercept=%.4f.",
-        platt.coef_[0, 0], platt.intercept_[0],
+        "Platt scaling fitted: coef=%.4f, intercept=%.4f, weighted=%s.",
+        platt.coef_[0, 0], platt.intercept_[0], sample_weight is not None,
     )
     return platt
 
@@ -107,7 +122,9 @@ def fit_temperature_scaling(
 # --- 3. Vector Scaling (Guo et al. 2017 §4.2) ------------------------------
 # Temperature + per-class bias; extends temperature scaling to correct directional miscalibration.
 def fit_vector_scaling(
-    logits: np.ndarray, y_true: np.ndarray,
+    logits: np.ndarray,
+    y_true: np.ndarray,
+    sample_weight: np.ndarray | None = None,
 ) -> tuple[float, np.ndarray]:
     """Learn ``T`` and bias vector ``b`` minimising the NLL of ``softmax((logits + b) / T)``.
 
@@ -118,8 +135,22 @@ def fit_vector_scaling(
     zero and only ``T`` plus ``b_1, ..., b_{C-1}`` are optimised. The returned
     ``b`` is the full vector with ``b[0] = 0``. Calibrate new logits via
     ``softmax((new_logits + b) / T, axis=1)``.
+
+    ``sample_weight`` (optional). When provided, the per-sample NLL is weighted
+    before averaging, aligning the calibration objective with the AFML-weighted
+    training loss. Same trade-off as ``fit_platt_scaling``: weighted is defensible
+    when train/test distributions differ in regime composition, unweighted is
+    defensible as a measurement of the natural ``P(class | logit)``.
     """
     n_classes = logits.shape[1]
+
+    # Normalise weights so the NLL stays on the same numeric scale as the unweighted variant
+    # (the L-BFGS-B termination tolerances are scale-sensitive on tight calibration sets).
+    if sample_weight is not None:
+        w = np.asarray(sample_weight, dtype=float)
+        w = w / w.mean()  # mean-1 normalisation
+    else:
+        w = None
 
     # NLL with reduced parameter vector ``[T, b_1, ..., b_{C-1}]``; b_0 is implicitly zero.
     def neg_log_likelihood(params: np.ndarray) -> float:
@@ -129,6 +160,8 @@ def fit_vector_scaling(
         scaled = (logits + b) / T
         log_probs = scaled - logsumexp(scaled, axis=1, keepdims=True)
         correct_log_probs = log_probs[np.arange(len(y_true)), y_true]
+        if w is not None:
+            return -float(np.average(correct_log_probs, weights=w))
         return -float(np.mean(correct_log_probs))
 
     # Initialise at T=1, b_1..b_{C-1}=0 (the identity calibrator with b_0 pinned at 0).
@@ -148,10 +181,11 @@ def fit_vector_scaling(
     optimal_b = np.concatenate([[0.0], result.x[1:]]).astype(float)
 
     logger.debug(
-        "Vector scaling fitted: T=%.4f, b=%s (NLL=%.4f).",
+        "Vector scaling fitted: T=%.4f, b=%s (NLL=%.4f, weighted=%s).",
         optimal_T,
         np.array2string(optimal_b, precision=4),
         result.fun,
+        sample_weight is not None,
     )
     return optimal_T, optimal_b
 
@@ -180,15 +214,23 @@ class Calibrator:
         self.fitted = False
 
     # Fit by inspecting the model: PyTorch → vector scaling, sklearn → Platt.
-    def fit(self, model, X_cal, y_cal) -> None:
-        """Fit calibration on a held-out calibration set; routes by model name."""
+    def fit(self, model, X_cal, y_cal, sample_weight=None) -> None:
+        """Fit calibration on a held-out calibration set; routes by model name.
+
+        ``sample_weight`` is optional. When provided, both the Platt branch and the
+        vector-scaling branch fit a weighted NLL/log-loss. See the trade-off discussion
+        in ``fit_platt_scaling``.
+        """
         y = y_cal.values if hasattr(y_cal, "values") else np.asarray(y_cal)
+        w = None
+        if sample_weight is not None:
+            w = sample_weight.values if hasattr(sample_weight, "values") else np.asarray(sample_weight)
         model_name = model.get_name()
 
         if model_name in _PYTORCH_MODELS:
             self.method = CALIBRATION_METHOD_PYTORCH
             logits = model.predict_logits(X_cal)     # (n, n_classes)
-            self.temperature, self.bias = fit_vector_scaling(logits, y)
+            self.temperature, self.bias = fit_vector_scaling(logits, y, sample_weight=w)
         else:
             self.method = CALIBRATION_METHOD_SKLEARN
             logits = model.predict_logits(X_cal)
@@ -196,7 +238,7 @@ class Calibrator:
             if logits.ndim == 2 and logits.shape[1] >= 2:
                 logits = logits[:, 1] - logits[:, 0]
             logits = logits.ravel()
-            self.platt_model = fit_platt_scaling(logits, y)
+            self.platt_model = fit_platt_scaling(logits, y, sample_weight=w)
 
         self.fitted = True
         logger.debug("Calibrator fitted: method=%s, model=%s.", self.method, model_name)
@@ -245,24 +287,31 @@ class Calibrator:
         raise ValueError(f"Unknown calibration method: {self.method}")
 
     # Alternate entry point: fit from pre-computed logits, bypassing the model interface.
-    def fit_from_logits(self, logits, y_cal, method=CALIBRATION_METHOD_PYTORCH):
+    def fit_from_logits(self, logits, y_cal, method=CALIBRATION_METHOD_PYTORCH, sample_weight=None):
         """Fit calibration directly from pre-computed logits.
 
         Used by the LSTM training loop, where the windowing alignment requires
         pre-computed logits rather than re-running ``predict_logits`` through the
         model interface. ``method`` ∈ ``{"vector", "temperature", "platt"}``.
+
+        ``sample_weight`` is optional and only affects ``vector`` and ``platt`` paths;
+        temperature scaling is single-parameter and weighted variants don't carry
+        meaningful additional information.
         """
         y = y_cal.values if hasattr(y_cal, "values") else np.asarray(y_cal)
+        w = None
+        if sample_weight is not None:
+            w = sample_weight.values if hasattr(sample_weight, "values") else np.asarray(sample_weight)
 
         if method == CALIBRATION_METHOD_PYTORCH:
             self.method = CALIBRATION_METHOD_PYTORCH
-            self.temperature, self.bias = fit_vector_scaling(logits, y)
+            self.temperature, self.bias = fit_vector_scaling(logits, y, sample_weight=w)
         elif method == CALIBRATION_METHOD_TEMPERATURE:
             self.method = CALIBRATION_METHOD_TEMPERATURE
             self.temperature = fit_temperature_scaling(logits, y)
         elif method == CALIBRATION_METHOD_SKLEARN:
             self.method = CALIBRATION_METHOD_SKLEARN
-            self.platt_model = fit_platt_scaling(logits.ravel(), y)
+            self.platt_model = fit_platt_scaling(logits.ravel(), y, sample_weight=w)
         else:
             raise ValueError(f"Unknown calibration method: {method}")
 

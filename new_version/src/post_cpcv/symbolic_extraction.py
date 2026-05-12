@@ -16,6 +16,7 @@ share the same ``[n_features, HIDDEN, n_classes]`` architecture and B-spline
 basis, so the symbolic re-training is faithful to the CPCV-evaluated model.
 """
 
+import contextlib
 import copy
 import io
 import logging
@@ -29,6 +30,7 @@ import pandas as pd
 import sympy
 import torch
 import torch.nn as nn
+from tqdm.auto import tqdm
 
 from src.cpcv.cv import generate_cpcv_splits
 from src.cpcv.preprocessing import apply_ffd
@@ -37,6 +39,17 @@ from src.cpcv.preprocessing import apply_ffd
 from src.cpcv.models.kan_model import KAN_HIDDEN, KAN_GRID, KAN_K
 
 logger = logging.getLogger(__name__)
+
+
+# Context manager to suppress pykan's internal print() noise (suggest_symbolic's pandas table,
+# "saving model version 0.x", "checkpoint directory created", etc). Use sparingly and only
+# around pykan API calls; our own logger.warning lines go to stderr so they survive this redirect.
+@contextlib.contextmanager
+def _suppress_pykan_stdout():
+    """Redirect stdout to /dev/null during pykan calls; stderr (warnings) unaffected."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        yield buf
 
 # --- PyKAN-specific training constants -------------------------------------
 # Phase 1: Adam with weight decay (main learning phase, no KAN-specific regularisation).
@@ -156,12 +169,13 @@ def _count_active_edges(model, threshold: float) -> tuple[int, int]:
     return total, active
 
 
-# Per-checkpoint diagnostic: prints train + val accuracy, returns the pair.
-def _log_diagnostic(label: str, model, X_train, y_train, X_val, y_val):
-    """Print and log a ``[label] train_acc=X val_acc=Y`` checkpoint; return ``(train_acc, val_acc)``."""
+# Per-checkpoint diagnostic: returns (train_acc, val_acc); only prints when verbose=True.
+def _log_diagnostic(label: str, model, X_train, y_train, X_val, y_val, verbose: bool = True):
+    """Compute train + val accuracy. Print only when ``verbose``; always log to file."""
     train_acc = _compute_accuracy(model, X_train, y_train)
     val_acc = _compute_accuracy(model, X_val, y_val)
-    print(f"    [{label}] train_acc={train_acc:.4f}, val_acc={val_acc:.4f}")
+    if verbose:
+        print(f"    [{label}] train_acc={train_acc:.4f}, val_acc={val_acc:.4f}")
     logger.info("%s: train_acc=%.4f, val_acc=%.4f", label, train_acc, val_acc)
     return train_acc, val_acc
 
@@ -441,11 +455,11 @@ def prepare_extraction_data(
     else:
         X_train = X_train[selected_features]
 
-    # S4: 80/20 train/val split. The CPCV pipeline (post-T5) uses 80/10/10 because its
-    # KAN predictions get fed through a calibration step, but pykan's symbolic extraction
-    # consumes none of those probabilistic outputs downstream — the val set's only role here
-    # is best-state tracking inside train_pykan. So 80/20 (no calibration partition) is the
-    # right local choice, not a stale leftover from a previous pipeline convention.
+    # 80/20 train/val split. The CPCV pipeline uses 70/15/15 because its KAN predictions get
+    # fed through a calibration step, but pykan's symbolic extraction consumes none of those
+    # probabilistic outputs downstream — the val set's only role here is best-state tracking
+    # inside train_pykan. So 80/20 (no calibration partition) is the right local choice,
+    # not a stale leftover from a previous pipeline convention.
     cal_boundary = int(len(X_train) * 0.8)
     X_model = X_train.iloc[:cal_boundary]
     X_val = X_train.iloc[cal_boundary:]
@@ -664,19 +678,16 @@ def train_pykan(
         total_edges = n_features * hidden + hidden * n_classes
     total_params_est = total_edges * params_per_edge
 
-    print(f"    {model_type} architecture: {width}")
-    print(f"      width1: {hidden} [{arch_source}]")
-    print(f"      width2: {extraction_w2} [{width2_source}]")
-    print(f"      grid:   {extraction_grid} [{grid_source}]")
     print(
-        f"    {total_edges} edges, ~{total_params_est} params for {n_train} samples, "
-        f"ratio={n_train/max(total_params_est,1):.1f}x"
+        f"    {model_type} architecture: {width}  "
+        f"(width1={hidden} [{arch_source}], grid={extraction_grid} [{grid_source}])  "
+        f"→ {total_edges} edges, ~{total_params_est} params for {n_train} samples "
+        f"(ratio={n_train/max(total_params_est,1):.1f}x)"
     )
 
     if n_train / max(total_params_est, 1) < 2:
         print(
-            f"    ⚠ WARNING: samples/params ratio < 2. "
-            f"Memorization is very likely."
+            f"    ⚠ samples/params ratio < 2. Memorization risk."
         )
 
     if use_multkan:
@@ -697,8 +708,8 @@ def train_pykan(
         PYKAN_ADAM_STEPS, PYKAN_ADAM_WEIGHT_DECAY, PYKAN_NOISE_STD,
     )
     print(
-        f"    Phase 1: Adam ({PYKAN_ADAM_STEPS} steps, "
-        f"wd={PYKAN_ADAM_WEIGHT_DECAY}, noise_std={PYKAN_NOISE_STD})..."
+        f"    Phase 1 — Adam ({PYKAN_ADAM_STEPS} steps, "
+        f"wd={PYKAN_ADAM_WEIGHT_DECAY}, noise_std={PYKAN_NOISE_STD})"
     )
     optimizer_adam = torch.optim.Adam(
         model.parameters(), lr=PYKAN_ADAM_LR,
@@ -709,7 +720,8 @@ def train_pykan(
     best_state = None
 
     # Adam training loop with periodic val-loss tracking for best-state restoration.
-    for step in range(PYKAN_ADAM_STEPS):
+    adam_pbar = tqdm(range(PYKAN_ADAM_STEPS), desc="    Adam", leave=False, unit="step")
+    for step in adam_pbar:
         model.train()
         optimizer_adam.zero_grad()
 
@@ -726,17 +738,20 @@ def train_pykan(
             model.eval()
             with torch.no_grad():
                 val_loss = criterion(model(X_val_t), y_val_t).item()
+            adam_pbar.set_postfix(val_loss=f"{val_loss:.4f}")
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_state = copy.deepcopy(model.state_dict())
+    adam_pbar.close()
 
     if best_state is not None:
         model.load_state_dict(best_state)
 
     # Diagnostic: did Adam actually learn anything beyond random?
     train_acc, val_acc = _log_diagnostic(
-        "After Adam", model, X_t, y_t, X_val_t, y_val_t
+        "After Adam", model, X_t, y_t, X_val_t, y_val_t, verbose=False,
     )
+    print(f"    ✓ Adam done. train_acc={train_acc:.4f}, val_acc={val_acc:.4f}")
 
     # S6: gate val_acc against the majority-class baseline, not just the absolute floor.
     # If the post-drop_rare class balance is e.g. 55/45, a model achieving 0.53 is BELOW
@@ -764,10 +779,10 @@ def train_pykan(
     # Phase 2 (optional): grid extension. Skipped by default for small data per the constant.
     if PYKAN_GRID_EXTEND and n_train > 1000:
         try:
-            model = model.refine(KAN_GRID)
+            with _suppress_pykan_stdout():
+                model = model.refine(KAN_GRID)
             logger.info("Grid extended: %d → %d", extraction_grid, KAN_GRID)
-            print(f"    Grid extended: {extraction_grid} → {KAN_GRID}")
-            _log_diagnostic("After grid extend", model, X_t, y_t, X_val_t, y_val_t)
+            print(f"    ✓ Grid extended: {extraction_grid} → {KAN_GRID}")
         except Exception as e:
             # S7: broad catch is intentional. pykan's refine API has varied across versions:
             # different method names, different signatures, returning either a new model or
@@ -777,9 +792,8 @@ def train_pykan(
             print(f"    Grid extension failed: {type(e).__name__}: {e}")
     else:
         print(
-            f"    Grid extension SKIPPED (n_train={n_train}, "
-            f"grid stays at {extraction_grid}). "
-            f"Too few samples for finer grid."
+            f"    Grid extension skipped (n_train={n_train} ≤ 1000, "
+            f"grid stays at {extraction_grid})"
         )
 
     # Phase 2: LBFGS, split into a warmup half (no regularisation) and a sparsity half.
@@ -788,7 +802,7 @@ def train_pykan(
 
     # Phase 2a: LBFGS warmup with no regularisation, so the loss can settle before sparsity kicks in.
     logger.info("Extraction Phase 2a: LBFGS warmup (%d steps, no reg)", lbfgs_warmup_steps)
-    print(f"    Phase 2a: LBFGS warmup ({lbfgs_warmup_steps} steps, lamb=0)...")
+    print(f"    Phase 2a — LBFGS warmup ({lbfgs_warmup_steps} steps, lamb=0)")
 
     optimizer_lbfgs = torch.optim.LBFGS(
         model.parameters(), lr=PYKAN_LBFGS_LR, max_iter=10,
@@ -800,7 +814,8 @@ def train_pykan(
     best_state = copy.deepcopy(model.state_dict())
     patience_counter = 0
 
-    for step in range(lbfgs_warmup_steps):
+    warmup_pbar = tqdm(range(lbfgs_warmup_steps), desc="    LBFGS warmup", leave=False, unit="step")
+    for step in warmup_pbar:
         model.train()
 
         # LBFGS requires a closure that re-evaluates loss and computes gradients on each step.
@@ -817,6 +832,7 @@ def train_pykan(
             model.eval()
             with torch.no_grad():
                 val_loss = criterion(model(X_val_t), y_val_t).item()
+            warmup_pbar.set_postfix(val_loss=f"{val_loss:.4f}")
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_state = copy.deepcopy(model.state_dict())
@@ -826,17 +842,21 @@ def train_pykan(
             if patience_counter >= PYKAN_PATIENCE:
                 logger.info("LBFGS warmup early stop at step %d", step + 1)
                 break
+    warmup_pbar.close()
 
     model.load_state_dict(best_state)
 
-    _log_diagnostic("After LBFGS warmup", model, X_t, y_t, X_val_t, y_val_t)
+    train_acc, val_acc = _log_diagnostic(
+        "After LBFGS warmup", model, X_t, y_t, X_val_t, y_val_t, verbose=False,
+    )
+    print(f"    ✓ LBFGS warmup done. train_acc={train_acc:.4f}, val_acc={val_acc:.4f}")
 
     # Phase 2b: LBFGS with sparsity regularisation (L1 + entropy) to prepare for symbolification.
     logger.info(
         "Extraction Phase 2b: LBFGS sparsity (%d steps, lamb=%.4f)",
         lbfgs_sparse_steps, PYKAN_LAMB,
     )
-    print(f"    Phase 2b: LBFGS sparsity ({lbfgs_sparse_steps} steps, lamb={PYKAN_LAMB})...")
+    print(f"    Phase 2b — LBFGS sparsity ({lbfgs_sparse_steps} steps, lamb={PYKAN_LAMB})")
 
     optimizer_lbfgs2 = torch.optim.LBFGS(
         model.parameters(), lr=PYKAN_LBFGS_LR, max_iter=10,
@@ -847,7 +867,8 @@ def train_pykan(
     best_state_sparse = copy.deepcopy(model.state_dict())
     patience_counter = 0
 
-    for step in range(lbfgs_sparse_steps):
+    sparse_pbar = tqdm(range(lbfgs_sparse_steps), desc="    LBFGS sparsity", leave=False, unit="step")
+    for step in sparse_pbar:
         model.train()
 
         # Sparsity closure: add lamb * (L1 + entropy) terms when PyKAN exposes regularization_loss.
@@ -876,6 +897,7 @@ def train_pykan(
             model.eval()
             with torch.no_grad():
                 val_loss = criterion(model(X_val_t), y_val_t).item()
+            sparse_pbar.set_postfix(val_loss=f"{val_loss:.4f}")
             if val_loss < best_val_loss_sparse:
                 best_val_loss_sparse = val_loss
                 best_state_sparse = copy.deepcopy(model.state_dict())
@@ -885,13 +907,15 @@ def train_pykan(
             if patience_counter >= PYKAN_PATIENCE:
                 logger.info("LBFGS sparsity early stop at step %d", step + 1)
                 break
+    sparse_pbar.close()
 
     model.load_state_dict(best_state_sparse)
     model.eval()
 
     train_acc, val_acc = _log_diagnostic(
-        "After LBFGS sparsity (final)", model, X_t, y_t, X_val_t, y_val_t
+        "After LBFGS sparsity", model, X_t, y_t, X_val_t, y_val_t, verbose=False,
     )
+    print(f"    ✓ LBFGS sparsity done. train_acc={train_acc:.4f}, val_acc={val_acc:.4f}")
 
     # S9: return diagnostic state explicitly via a dict instead of stashing on the model
     # instance. The previous side-channel `model._pre_symbolic_accuracy` was fragile: re-running
@@ -920,11 +944,6 @@ def prune_network(model, dataset: dict):
     # Pre-prune diagnostic: which edges are active under the threshold.
     total_edges, active_edges = _count_active_edges(model, PRUNE_THRESHOLD)
     if total_edges > 0:
-        print(
-            f"    Edge analysis (threshold={PRUNE_THRESHOLD}): "
-            f"{active_edges}/{total_edges} edges active "
-            f"({active_edges/total_edges:.0%} survival rate)"
-        )
         logger.info(
             "Pre-prune edge analysis: %d/%d active (%.1f%%)",
             active_edges, total_edges, 100 * active_edges / max(total_edges, 1),
@@ -933,13 +952,11 @@ def prune_network(model, dataset: dict):
         # Very low edge survival is usually a symptom of over-aggressive sparsity regularisation.
         if active_edges < 3:
             print(
-                "    ⚠ WARNING: Very few active edges. Regularization may have "
-                "been too aggressive. Symbolic extraction will likely yield constants."
+                "    ⚠ Very few active edges; regularization may have been too aggressive."
             )
 
     # Accuracy gate before pruning: warn if PyKAN never learned past random.
-    # S6: majority-class baseline check. The 0.53 floor was below the trivial baseline for
-    # any class balance worse than ~53/47; gate against the actual majority class.
+    # S6: majority-class baseline check.
     val_acc = _compute_accuracy(
         model, dataset["test_input"], dataset["test_label"].long()
     )
@@ -952,25 +969,23 @@ def prune_network(model, dataset: dict):
     effective_min_acc = max(PYKAN_MIN_ACCURACY, majority_baseline + 0.01)
     if val_acc < effective_min_acc:
         print(
-            f"    ⚠ WARNING: Pre-prune val_acc={val_acc:.4f} < {effective_min_acc:.4f} "
-            f"(majority baseline {majority_baseline:.4f}, floor {PYKAN_MIN_ACCURACY}). "
-            f"Model hasn't learned meaningful patterns."
+            f"    ⚠ Pre-prune val_acc={val_acc:.4f} < {effective_min_acc:.4f} "
+            f"(majority baseline {majority_baseline:.4f}). Model hasn't learned meaningful patterns."
         )
 
     try:
-        model.attribute()
+        with _suppress_pykan_stdout():
+            model.attribute()
     except Exception as e:
         # S12: attribute() populates the importance scores that prune() uses. When it fails
         # silently, subsequent prune may operate on stale/uninitialised attribution and yield
         # an unreliable pruned architecture rather than an outright error. Surface this clearly.
         logger.warning(
-            "model.attribute() failed (%s: %s). Pruning will proceed but may use "
-            "stale attribution scores; the pruned architecture is unreliable in this case.",
+            "model.attribute() failed (%s: %s). Pruning may use stale attribution.",
             type(e).__name__, e,
         )
         print(
-            f"    ⚠ model.attribute() failed ({type(e).__name__}). "
-            f"Pruning may be unreliable; consider re-running or disabling prune."
+            f"    ⚠ model.attribute() failed ({type(e).__name__}); pruning may be unreliable."
         )
 
     pre_prune_model = model
@@ -978,15 +993,18 @@ def prune_network(model, dataset: dict):
     # PyKAN's prune API varies by version: try threshold=, then node_th=/edge_th=, then no-args.
     pruned = False
     try:
-        model = model.prune(threshold=PRUNE_THRESHOLD)
+        with _suppress_pykan_stdout():
+            model = model.prune(threshold=PRUNE_THRESHOLD)
         pruned = True
     except TypeError:
         try:
-            model = model.prune(node_th=PRUNE_THRESHOLD, edge_th=PRUNE_THRESHOLD)
+            with _suppress_pykan_stdout():
+                model = model.prune(node_th=PRUNE_THRESHOLD, edge_th=PRUNE_THRESHOLD)
             pruned = True
         except TypeError:
             try:
-                model = model.prune()
+                with _suppress_pykan_stdout():
+                    model = model.prune()
                 pruned = True
             except Exception as e:
                 logger.warning("model.prune() failed: %s. Returning unpruned.", e)
@@ -1017,15 +1035,15 @@ def prune_network(model, dataset: dict):
 
     # Post-prune diagnostic counts.
     post_total, post_active = _count_active_edges(model, PRUNE_THRESHOLD)
-    print(f"    Pruned: {original_width} → {pruned_width}")
-    if post_total > 0:
-        print(f"    Post-prune edges: {post_total} remaining")
-    logger.info("Pruned: %s → %s", original_width, pruned_width)
-
     post_acc = _compute_accuracy(
         model, dataset["test_input"], dataset["test_label"].long()
     )
-    print(f"    Post-prune val_acc: {post_acc:.4f}")
+    print(
+        f"    ✓ Pruned: {original_width} → {pruned_width}  "
+        f"({active_edges}/{total_edges} → {post_active}/{post_total} active edges)  "
+        f"val_acc={post_acc:.4f}"
+    )
+    logger.info("Pruned: %s → %s", original_width, pruned_width)
 
     _save_plot(model, "kan_pruned_network.png")
     return model
@@ -1055,12 +1073,14 @@ def symbolify_network(model, dataset: dict):
                 print("    ⚠ Model outputs are near-constant. Activations may be flat.")
             else:
                 logit_diff = (out[:, 1] - out[:, 0]) if out.shape[1] > 1 else out[:, 0]
-                print(
-                    f"    Activation check: logit_diff std={logit_diff.std().item():.4f}, "
-                    f"range=[{logit_diff.min().item():.3f}, {logit_diff.max().item():.3f}]"
+                logger.info(
+                    "Activation check: logit_diff std=%.4f, range=[%.3f, %.3f]",
+                    logit_diff.std().item(),
+                    logit_diff.min().item(),
+                    logit_diff.max().item(),
                 )
     except Exception as e:
-        print(f"    Activation check failed: {e}")
+        logger.warning("Activation check failed: %s", e)
 
     # Record pre-symbolic accuracy and snapshot state for potential rollback after fine-tuning.
     with torch.no_grad():
@@ -1075,7 +1095,20 @@ def symbolify_network(model, dataset: dict):
     fallback_count = 0
     r2_values = []
 
+    # Pre-count edges so the progress bar has a known total. Mirrors model.width's structure.
+    total_edges_expected = 0
+    for _l in range(len(model.width) - 1):
+        _n_in = model.width[_l]
+        _n_out = model.width[_l + 1]
+        if isinstance(_n_in, (list, tuple)):
+            _n_in = _n_in[0] if _n_in else 0
+        if isinstance(_n_out, (list, tuple)):
+            _n_out = _n_out[0] if _n_out else 0
+        total_edges_expected += _n_in * _n_out
+
     # Walk every (layer, in_node, out_node) triple and try to symbolify that edge.
+    # pykan's per-edge "function fitting r2" table is suppressed via the stdout redirect.
+    edge_pbar = tqdm(total=total_edges_expected, desc="    Symbolify", leave=False, unit="edge")
     for l in range(len(model.width) - 1):
         n_in = model.width[l]
         n_out = model.width[l + 1]
@@ -1088,37 +1121,36 @@ def symbolify_network(model, dataset: dict):
         for i in range(n_in):
             for j in range(n_out):
                 total_edges += 1
+                edge_pbar.update(1)
 
                 # Try the curated SYMBOLIC_LIBRARY first; if PyKAN doesn't recognise a name, fall back
                 # to its built-in default library before giving up.
                 try:
-                    suggestions = model.suggest_symbolic(
-                        l, i, j, topk=SYMBOLIC_TOPK, lib=SYMBOLIC_LIBRARY,
-                    )
-                except Exception as e:
-                    # S7: broad catch is intentional. KeyError is the most common failure
-                    # (pykan rejecting a name in SYMBOLIC_LIBRARY it doesn't recognise), but
-                    # this code path also has to absorb the various TypeError / AttributeError
-                    # / RuntimeError failures pykan raises across versions when symbolic
-                    # fitting hits degenerate edge data. Falling back to pykan defaults is the
-                    # right recovery in all of these cases.
-                    try:
+                    with _suppress_pykan_stdout():
                         suggestions = model.suggest_symbolic(
-                            l, i, j, topk=SYMBOLIC_TOPK,
+                            l, i, j, topk=SYMBOLIC_TOPK, lib=SYMBOLIC_LIBRARY,
                         )
+                except Exception as e:
+                    # S7: broad catch absorbs the various TypeError/AttributeError/RuntimeError
+                    # failures pykan raises across versions when symbolic fitting hits degenerate
+                    # edge data. Fall back to pykan's default library.
+                    try:
+                        with _suppress_pykan_stdout():
+                            suggestions = model.suggest_symbolic(
+                                l, i, j, topk=SYMBOLIC_TOPK,
+                            )
                         if fallback_count < 3:
-                            print(
-                                f"    ℹ Edge ({l},{i},{j}): custom lib failed "
-                                f"({type(e).__name__}), used PyKAN defaults."
+                            logger.info(
+                                "Edge (%d,%d,%d): custom lib failed (%s), using pykan defaults.",
+                                l, i, j, type(e).__name__,
                             )
                         fallback_count += 1
                     except Exception as e2:
                         if skipped_edges < 5:
-                            print(
-                                f"    ⚠ suggest_symbolic({l},{i},{j}) error: "
-                                f"{type(e2).__name__}: {e2}"
+                            logger.warning(
+                                "suggest_symbolic(%d,%d,%d) failed: %s: %s",
+                                l, i, j, type(e2).__name__, e2,
                             )
-                        logger.debug("suggest_symbolic(%d,%d,%d) failed: %s", l, i, j, e2)
                         skipped_edges += 1
                         continue
 
@@ -1136,12 +1168,12 @@ def symbolify_network(model, dataset: dict):
                 best_r2 = 0.0
 
                 try:
-                    # Debug dump for the first few edges so version mismatches surface immediately.
+                    # Debug dump for the first few edges so version mismatches surface in the log.
                     if total_edges <= 2:
-                        print(
-                            f"    [DEBUG] Edge ({l},{i},{j}): "
-                            f"type={type(suggestions).__name__}, "
-                            f"repr={repr(suggestions)[:200]}"
+                        logger.debug(
+                            "Edge (%d,%d,%d): type=%s, repr=%s",
+                            l, i, j, type(suggestions).__name__,
+                            repr(suggestions)[:200],
                         )
 
                     # CASE 1: DataFrame return.
@@ -1319,9 +1351,9 @@ def symbolify_network(model, dataset: dict):
                         continue
                 except Exception as e:
                     if skipped_edges < 5:
-                        print(
-                            f"    ⚠ Edge ({l},{i},{j}) parse error: "
-                            f"{type(e).__name__}: {e}"
+                        logger.warning(
+                            "Edge (%d,%d,%d) parse error: %s: %s",
+                            l, i, j, type(e).__name__, e,
                         )
                     logger.debug(
                         "Edge (%d,%d,%d): failed to parse suggestions: %s",
@@ -1340,7 +1372,8 @@ def symbolify_network(model, dataset: dict):
                 # Apply the symbolic replacement only when R² clears the threshold.
                 if best_r2 >= SYMBOLIC_R2_THRESHOLD:
                     try:
-                        model.fix_symbolic(l, i, j, best_fn)
+                        with _suppress_pykan_stdout():
+                            model.fix_symbolic(l, i, j, best_fn)
                         symbolified_edges += 1
                         logger.info(
                             "Edge (%d,%d,%d): %s (R²=%.4f) ✓",
@@ -1356,33 +1389,31 @@ def symbolify_network(model, dataset: dict):
                         "Edge (%d,%d,%d): best=%s R²=%.4f < %.2f, keeping spline.",
                         l, i, j, best_fn, best_r2, SYMBOLIC_R2_THRESHOLD,
                     )
+    edge_pbar.close()
 
+    # Single-line summary; the per-edge / R²-distribution / top-5 detail goes to the log.
     sym_rate = symbolified_edges / max(total_edges, 1)
-    print(
-        f"  Symbolified: {symbolified_edges}/{total_edges} edges ({sym_rate:.0%})"
-        f"  [skipped: {skipped_edges}, fallback to defaults: {fallback_count}]"
-    )
-
-    # R² distribution diagnostic so the reader sees what the symbolic library actually fit.
     if r2_values:
         r2_scores = [v[4] for v in r2_values]
+        r2_min, r2_med, r2_max = min(r2_scores), float(np.median(r2_scores)), max(r2_scores)
         print(
-            f"  R² distribution: min={min(r2_scores):.4f}, "
-            f"median={np.median(r2_scores):.4f}, "
-            f"max={max(r2_scores):.4f}, "
-            f"above threshold ({SYMBOLIC_R2_THRESHOLD}): "
-            f"{sum(1 for r in r2_scores if r >= SYMBOLIC_R2_THRESHOLD)}/{len(r2_scores)}"
+            f"    ✓ Symbolified {symbolified_edges}/{total_edges} edges ({sym_rate:.0%})  "
+            f"[skipped {skipped_edges}, fallback {fallback_count}, "
+            f"R² min/med/max = {r2_min:.3f}/{r2_med:.3f}/{r2_max:.3f}]"
         )
+        # Top 5 edges by R² goes to logger.info for thesis-audit traceability.
         top5 = sorted(r2_values, key=lambda x: x[4], reverse=True)[:5]
-        print("  Top 5 edges by R²:")
-        for l, i, j, fn, r2 in top5:
-            print(f"    Edge ({l},{i},{j}): {fn} (R²={r2:.4f})")
+        for l_, i_, j_, fn, r2 in top5:
+            logger.info("Top edge (%d,%d,%d): %s (R²=%.4f)", l_, i_, j_, fn, r2)
     else:
-        print("  ⚠ No R² values collected — all edges were skipped.")
+        print(
+            f"    ⚠ No R² values collected; symbolification skipped all "
+            f"{total_edges} edges."
+        )
 
     # Step 4 of Algorithm 1: fine-tune the affine parameters around the now-fixed symbolic activations.
     if symbolified_edges > 0:
-        print(f"  Fine-tuning affine parameters ({AFFINE_FINETUNE_STEPS} steps)...")
+        print(f"    Affine fine-tune ({AFFINE_FINETUNE_STEPS} steps)")
         try:
             dataset_fit = {
                 "train_input": dataset["train_input"],
@@ -1390,6 +1421,8 @@ def symbolify_network(model, dataset: dict):
                 "test_input": dataset["test_input"],
                 "test_label": dataset["test_label"].long(),
             }
+            # pykan's own tqdm bar shows progress here; we don't suppress its stdout because
+            # silencing it would also silence the per-step train/test loss readout.
             model.fit(
                 dataset_fit, opt="LBFGS", lr=AFFINE_LR,
                 steps=AFFINE_FINETUNE_STEPS,
@@ -1744,9 +1777,14 @@ def run_symbolic_extraction(
         f"\n  but does not exactly equal the CPCV-evaluated efficient-kan's. The pre/post symbolic"
         f"\n  accuracy gap above quantifies how faithful the symbolic substitution is."
     )
-    print(f"\n  Decision function:")
-    print(f"    {result['decision_function']}")
-    print(f"\n  P(up) = {result['p_up_formula']}")
+    print(f"\n  Decision function (first 240 chars):")
+    decision_str = result["decision_function"]
+    if len(decision_str) > 240:
+        print(f"    {decision_str[:240]}…")
+        print(f"    ({len(decision_str)} chars total; access via result['decision_function'])")
+    else:
+        print(f"    {decision_str}")
+    print(f"\n  P(up) = 1 / (1 + exp(-decision))  [see result['p_up_formula']]")
     print(f"{'='*60}")
 
     return result
@@ -1850,11 +1888,23 @@ def _safe_eval_at_point(deriv, point: dict) -> float:
 
 
 # Print the headline outputs of run_symbolic_extraction.
-def print_symbolic_decision(symbolic: dict) -> None:
-    """Print the decision function, P(up) formula, and surviving features (thesis-quotable items)."""
+def print_symbolic_decision(symbolic: dict, max_chars: int = 240) -> None:
+    """Print the decision function (truncated to ``max_chars`` for readability), P(up)
+    formula reference, and surviving features.
+
+    Long sympy expressions can take noticeable time for Jupyter to render due to the
+    cell's syntax highlighting and word-wrap calculations. Passing ``max_chars=None``
+    prints the full expression; the default 240 keeps the cell snappy and the full
+    string remains available via ``symbolic['decision_function']``.
+    """
+    decision_str = symbolic["decision_function"]
     print("Decision function:")
-    print(f"  {symbolic['decision_function']}")
-    print(f"\nP(up) = {symbolic['p_up_formula']}")
+    if max_chars is not None and len(decision_str) > max_chars:
+        print(f"  {decision_str[:max_chars]}…")
+        print(f"  ({len(decision_str)} chars total; access via symbolic['decision_function'])")
+    else:
+        print(f"  {decision_str}")
+    print(f"\nP(up) = 1 / (1 + exp(-decision))  [full string in symbolic['p_up_formula']]")
     print(f"\nSurviving features: {symbolic['surviving_features']}")
 
 

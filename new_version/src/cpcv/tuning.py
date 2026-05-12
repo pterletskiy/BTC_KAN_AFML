@@ -434,7 +434,7 @@ def tune_xgboost(X_train, y_train, w_train=None, t1_train=None,
 # Locked narrow ranges from sensitivity testing; see project_structure.md for the methodology trail.
 def tune_lstm(X_train, y_train, w_train=None, t1_train=None, n_features=None,
               seed=42, verbose=True, n_trials=None):
-    """Tune LSTM: ``hidden_size`` ∈ {16, 32}, ``dropout`` ∈ [0.1, 0.5], ``lr`` log-uniform [1e-4, 5e-2].
+    """Tune LSTM: ``hidden_size`` ∈ {8, 16}, ``dropout`` ∈ [0.2, 0.5], ``lr`` log-uniform [1e-4, 5e-2].
 
     ``num_layers`` is hardcoded at 1 (multi-layer overfits on ~1,250 events). Window=14
     and batch_size=64 are fixed. Tuning uses epochs=50 / patience=7 to bound per-trial
@@ -506,9 +506,13 @@ def tune_lstm(X_train, y_train, w_train=None, t1_train=None, n_features=None,
 
     def objective(trial):
         # Locked narrow ranges; num_layers hardcoded so Optuna spends trials on dropout / lr instead.
-        hidden_size = trial.suggest_int("hidden_size", 16, 32, step=16)
+        # hidden_size tightened from {16, 32} to {8, 16} and dropout floor raised from 0.1 to 0.2
+        # after the LOO-PBO audit showed LSTM driving the bulk of the multi-model selection-bias
+        # signal (Δ -0.257 when excluded). The new ranges halve the upper-end parameter count and
+        # remove the "near-zero dropout" regime that contributed to in-sample-rank instability.
+        hidden_size = trial.suggest_int("hidden_size", 8, 16, step=8)
         num_layers = 1
-        dropout = trial.suggest_float("dropout", 0.1, 0.5)
+        dropout = trial.suggest_float("dropout", 0.2, 0.5)
         lr = trial.suggest_float("learning_rate", 1e-4, 5e-2, log=True)
 
         split_losses = []
