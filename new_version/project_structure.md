@@ -1061,7 +1061,7 @@ Each component (`compute_pbo`, `compute_auc_significance`, `compute_feature_stab
 
 ### Step 17 — Symbolic Extraction (`symbolic_extraction.py`)
 
-**~2,200 lines.** The most complex file in the project. Re-trains a PyKAN model independently from efficient-kan, following Algorithm 1 from the VIX KAN paper, with extensive robustness engineering for PyKAN's fragile APIs.
+**~2,300 lines.** The most complex file in the project. Re-trains a PyKAN model independently from efficient-kan, following Algorithm 1 from the VIX KAN paper, with extensive robustness engineering for PyKAN's fragile APIs.
 
 **Workflow honesty.** What's transferred from CPCV to symbolic extraction is the *hyperparameter set* (width1, width2, grid, k), not the learned weights. The two libraries use different spline parameterisations under the hood, so direct weight transfer is not feasible. The PyKAN is retrained from scratch on the same training fold via the staged optimiser below. The extracted symbolic formula therefore represents a PyKAN with matching architecture and training data, whose decision boundary approximates but does not equal the CPCV-evaluated efficient-kan's. The pre/post symbolic accuracy and pre-symbolic val accuracy diagnostics quantify how close this approximation is for any given fold; large gaps signal the symbolic formula is not faithful to the CPCV-evaluated KAN and the thesis chapter flags the fold accordingly.
 
@@ -1149,6 +1149,8 @@ This faithful-by-default behaviour replaces an earlier configuration that hardco
 | 2a. LBFGS warmup | LBFGS (lr=0.01) | 20 | No regularization. Light refinement only. |
 | 2b. LBFGS sparsity | LBFGS (lr=0.01) | 20 | L1 + entropy regularization via `model.regularization_loss()`. Encourages sparse, interpretable activations. |
 
+**Per-phase progress bars.** Each of the three training phases is wrapped in a `tqdm.auto.tqdm` progress bar (`leave=False` so the bar disappears when the phase completes) with the val-loss appended as a `set_postfix` field every `PYKAN_VAL_INTERVAL` steps. When the phase completes the bar is replaced with a one-line summary `✓ <phase> done. train_acc=X, val_acc=Y`. The architecture preamble that earlier versions printed across five separate lines (width1, width2, grid, edge count, params/sample ratio) is now consolidated into one line. The earlier `[After Adam]`, `[After LBFGS warmup]`, and `[After LBFGS sparsity (final)]` checkpoint prints have been removed from stdout; `_log_diagnostic` now defaults to `verbose=False` and the file-level logger still receives the per-phase metrics for audit retrieval.
+
 Grid extension is gated to `n_train > 1000` at runtime. `PYKAN_GRID_EXTEND = True` enables the feature; the runtime size check then disables it on the project's ~350-sample extraction folds where additional grid parameters would cause memorisation. Flipping the constant to `False` disables the feature unconditionally.
 
 **Accuracy gate (majority-class-aware).** The 0.53 minimum-accuracy gate from earlier versions has been replaced with a majority-class-aware gate: the function computes `majority_baseline = max(P(y=0), P(y=1))` from the training labels and gates at `max(0.53, majority_baseline + 0.01)`. If the post-`drop_rare(0.085)` class balance is 55/45, the gate becomes 0.56 rather than 0.53; an absolute 0.53 floor would have let a "predict the majority class" trivial baseline pass on imbalanced folds. The gate logs a warning rather than raising, so symbolic extraction proceeds on weak folds but with visible methodological caveat in the cell output.
@@ -1158,29 +1160,36 @@ Grid extension is gated to `n_train > 1000` at runtime. `PYKAN_GRID_EXTEND = Tru
 #### Step 17.e — Pruning (`prune_network`)
 
 1. Forward pass to populate cached activations
-2. Edge survival analysis: counts active edges (above threshold) vs total
-3. `model.attribute()` for importance scoring. Failure logs a clear warning and prints to stdout that pruning may proceed with stale attribution scores and produce an unreliable architecture; an earlier version logged the failure at warning level only, which made the unreliable-prune risk invisible in the notebook output
-4. `model.prune(threshold=0.01)` with multi-API fallback (PyKAN versions vary)
+2. Edge survival analysis: counts active edges (above threshold) vs total; logged at `INFO` level, not printed
+3. `model.attribute()` for importance scoring, wrapped in the module's `_suppress_pykan_stdout()` context manager so pykan's `saving model version 0.x` checkpoint-noise stays out of the notebook cell. Failure logs a warning at file level AND prints a single visible line in the cell, since attribution failures mean subsequent pruning operates on stale scores
+4. `model.prune(threshold=0.01)` with multi-API fallback (PyKAN versions vary), again wrapped in `_suppress_pykan_stdout()`
 5. Verifies pruned model can still forward-pass; reverts if broken
-6. Post-prune accuracy check (against the majority-class-aware gate from Step 17.d) + network visualization saved to `cache/kan_pruned_network.png`
+6. Post-prune accuracy check against the majority-class-aware gate from Step 17.d, plus the saved network visualisation at `cache/kan_pruned_network.png`
+
+The four previously-printed lines (`Edge analysis (threshold=0.01)`, `Pruned: a → b`, `Post-prune edges: N remaining`, `Post-prune val_acc: X`) are consolidated into a single result line of the form `✓ Pruned: a → b (active before/after) val_acc=X`. Edge-analysis detail still flows to the file logger at `INFO` level.
 
 Typical result: `[12, 5, 2] → [5, 3, 2]` or similar compression.
 
 #### Step 17.f — Symbolification (`symbolify_network`)
 
-The most complex function (~350 lines) due to PyKAN's inconsistent API. For each surviving edge:
+The most complex function (~350 lines) due to PyKAN's inconsistent API. The edge loop is wrapped in a single `tqdm.auto.tqdm` bar across all `(layer, in_node, out_node)` triples, with `leave=False` so the bar collapses into a single summary line on completion. Per-edge `model.suggest_symbolic` and `model.fix_symbolic` calls are wrapped in `_suppress_pykan_stdout()` to silence the per-edge `function | fitting r2 | r2 loss | complexity | total loss` pandas table pykan prints on every iteration. The notebook cell therefore shows the moving progress bar followed by one result line, rather than ~15 tables interleaved with debug prints.
+
+For each surviving edge:
 
 1. `model.suggest_symbolic(l, i, j, topk=5, lib=SYMBOLIC_LIBRARY)` — tries custom library first
-2. Falls back to PyKAN's built-in default library if custom fails (`KeyError` on unrecognized function names)
+2. Falls back to PyKAN's built-in default library if custom fails (`KeyError` on unrecognized function names). Fallback occurrences are logged at `INFO` level for audit retrieval, not printed
 3. **Parses suggestions through three format handlers** (PyKAN versions return different types):
    - DataFrame (rows = candidates)
    - Flat tuple `(fn_name, lambdas, R², complexity)`
    - Nested tuple of tuples
+   Parse errors are logged at `WARNING` level to the file rather than printed inline
 4. **Constant-skip logic:** If `"0"` wins (due to zero complexity in total_loss), runs brute-force: tries each candidate via `fix_symbolic`, captures R² from PyKAN's stdout via two regex patterns (`r"r2 is ([\d.eE+-]+)"` and `r"r\^?2\s*[:=]\s*([\d.eE+-]+)"`, both case-insensitive) to tolerate format drift across PyKAN versions, keeps the best non-constant function. When every candidate misses both regex patterns on a given edge, a warning fires noting that PyKAN's `fix_symbolic` log format may have changed and the brute-force fallback is no longer recovering R² values; the warning points at the `R2_PATTERNS` constant in the source so the user can add a new pattern variant rather than discovering the silent regression through downstream sensitivity diagnostics
-5. If best R² ≥ 0.3: `model.fix_symbolic(l, i, j, best_fn)`
+5. If best R² ≥ 0.3: `model.fix_symbolic(l, i, j, best_fn)` (also wrapped in `_suppress_pykan_stdout()` for the post-fix checkpoint noise)
 6. If best R² < 0.3: keeps spline (partial symbolification)
 
-**Affine fine-tuning** (Step 4 of Algorithm 1): After symbolification, trains remaining affine parameters (a, b, c, d per symbolic edge) with LBFGS for 30 steps at lr=0.0004. NaN detection reverts to pre-fine-tune state.
+The post-loop output is one summary line of the form `✓ Symbolified N/M edges (X%) [skipped K, fallback L, R² min/med/max = a/b/c]`. The per-top-5-edge breakdown (which previously printed inline) now goes to `logger.info` for the audit log, keeping the cell output to a single result line.
+
+**Affine fine-tuning** (Step 4 of Algorithm 1): After symbolification, trains remaining affine parameters (a, b, c, d per symbolic edge) with LBFGS for 30 steps at lr=0.0004. NaN detection reverts to pre-fine-tune state. This is the one pykan call NOT wrapped in `_suppress_pykan_stdout()`, because pykan's own progress-bar postfix (`train_loss`, `test_loss`, `reg`) carries information worth showing.
 
 Saves `cache/kan_symbolified_network.png`.
 
@@ -1222,10 +1231,16 @@ Saves `cache/kan_symbolified_network.png`.
 symbolic = run_symbolic_extraction(results, X, y, w, t1,
                                    n_top_features=5, fold_selection="last")
 
-# Decision-function summary
+# Decision-function summary. Long expressions truncate to 240 chars by default;
+# pass max_chars=None for the full expression (slow to render in Jupyter for
+# large formulas). The full string is always in symbolic["decision_function"].
 print_symbolic_decision(symbolic)
+# print_symbolic_decision(symbolic, max_chars=None)  # full expression
 
-# Pre/post symbolic accuracy + symbolification rate + pruned architecture
+# Pre/post symbolic accuracy + symbolification rate + pruned architecture.
+# This is a small fixed-size readout; the perceived slowness sometimes
+# attributed to this helper is actually Jupyter's render time on the
+# preceding decision-function string above.
 print_extraction_metrics(symbolic)
 
 # Symbolic partial derivative of the decision function w.r.t. each feature
