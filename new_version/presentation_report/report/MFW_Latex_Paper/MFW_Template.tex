@@ -272,30 +272,37 @@ To my family and God.
 %
 % Topics to cover, mapping the paper_outline narrative:
 %   - Frame around Q1 to Q4 / C1 to C4 from the outline.
-%   - Headline numbers from the locked run:
+%   - Headline numbers from the locked run (v4, 3 seeds across all six models):
 %       * No model achieves DSR >= 0.95 (top DSR among trained models =
-%         0.3925, LSTM).
+%         0.2376, XGBoost).
 %       * Buy-and-hold posts a higher median Sharpe (2.2321) than every
 %         trained model; DSR is not defined for buy-and-hold since it
 %         does not enter the Optuna selection pool.
-%       * PBO = 0.3714 lands in the moderate-overfitting regime (13 of
+%       * PBO = 0.343 lands in the moderate-overfitting regime (12 of
 %         35 IS/OOS partitions); rankings are partially reproducible but
-%         not robust, and the LSTM bootstrap 95\% CI (0.4062, 1.5380)
-%         is the only one among trained models that stays strictly
+%         not robust. Every trained-model bootstrap 95\% CI crosses
+%         zero; only buy-and-hold's CI (1.9766, 2.6408) stays strictly
 %         positive. Leave-one-out PBO sharpens the picture asymmetrically:
-%         excluding Logistic Regression reduces PBO most (to 0.143),
-%         followed by KAN (0.229) and XGBoost (0.257); excluding AR
+%         excluding Logistic Regression reduces PBO most (to 0.114),
+%         followed by XGBoost (0.200) and LSTM (0.257); excluding AR
 %         Logistic or Random Forest leaves PBO unchanged; excluding
-%         LSTM raises PBO to 0.429, making LSTM the only stabilising
-%         anchor in the cross-section.
-%       * Symbolic extraction succeeds: 100\% symbolification rate (14
-%         of 14 edges), five surviving features (eth\_btc\_ratio,
-%         skewness, bb\_width, us2y, kurtosis), post-symbolic accuracy
-%         60.15\% (a 4.5 pp gain over pre-symbolic 55.64\%). The skewness
-%         subset bug from earlier configurations is resolved, and the
-%         Phase-1 53\% gate is cleared at val\_acc 0.6241.
-%   - Position the symbolic contribution as the first closed-form classification
-%     formula extracted from a CPCV-trained KAN under the full AFML evaluation.
+%         KAN raises PBO to 0.514, past the random-selection threshold,
+%         making KAN the only stabilising anchor in the cross-section.
+%       * Symbolic extraction succeeds: 93\% symbolification rate (13
+%         of 14 edges; 1 edge skipped), five surviving features
+%         (eth\_btc\_ratio, bb\_width, skewness, log\_returns\_lag1,
+%         natgas\_ret\_30), post-symbolic accuracy 60.90\% (a 1.5 pp
+%         gain over pre-symbolic 59.40\%). The skewness subset bug
+%         from earlier configurations is resolved (skewness reaches
+%         the extraction step), but the Phase-1 53\% gate fails again
+%         at val\_acc 0.5038 and recovery happens only in the
+%         subsequent LBFGS phases. For the first time a lag feature
+%         (log\_returns\_lag1) survives extraction, and a macro feature
+%         (natgas\_ret\_30) enters through an Abs primitive whose pole
+%         at the dataset mean leaves its sensitivity undefined.
+%   - Position the symbolic contribution as the first closed-form
+%     classification formula extracted from a CPCV-trained KAN under
+%     the full AFML evaluation.
 This dissertation evaluates whether Kolmogorov-Arnold Networks can predict Bitcoin daily price direction and extract interpretable symbolic formulas, benchmarked against five models within López de Prado's Advances in Financial Machine Learning framework. Using Combinatorial Purged Cross-Validation with the Deflated Sharpe Ratio and Probability of Backtest Overfitting, the study finds that no model achieves statistically significant predictive performance, consistent with market efficiency. The core contribution is KAN symbolic expression extraction, deriving closed-form decision functions from the trained network.
 
 \vspace{1em}
@@ -379,33 +386,40 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %     full AFML framework (CUSUM + TBL + FFD + sample weights + CPCV +
 %     DSR + PBO + DeLong).
 %   - It benchmarks KAN against five models (AR Logistic, LR, RF, XGBoost,
-%     LSTM) under CPCV with N=8, k=2, 28 splits, and 7 backtest paths.
+%     LSTM) under CPCV with N=8, k=2, 28 splits, and 7 backtest paths;
+%     the locked configuration uses 3 seeds across all six models,
+%     producing 504 prediction entries.
 %   - The novel deliverable is a closed-form symbolic decision function
 %     extracted from the trained KAN.
 %
 % Telegraph the headline findings immediately (T-R1, T-R3) using the
-% locked-run numbers:
+% locked-run v4 numbers:
 %   - No model achieves DSR >= 0.95 (top DSR among trained models =
-%     0.3925, LSTM). Buy-and-hold posts a higher median Sharpe (2.2321)
+%     0.2376, XGBoost). Buy-and-hold posts a higher median Sharpe (2.2321)
 %     than every trained model but is excluded from DSR since it does
 %     not enter the selection pool.
-%   - PBO = 0.3714 sits in the moderate-overfitting regime (13 of 35
-%     IS/OOS partitions); rankings are partially reproducible, the
-%     LSTM bootstrap CI is the only one among trained models that stays
-%     strictly positive, but no model survives multiple-testing
-%     correction. Leave-one-out PBO sharpens the picture asymmetrically:
-%     excluding Logistic Regression reduces PBO most (to 0.143),
-%     excluding KAN reduces it to 0.229, excluding XGBoost to 0.257,
-%     excluding AR Logistic or Random Forest leaves PBO unchanged, and
-%     excluding LSTM raises PBO to 0.429. LSTM is the only model whose
+%   - PBO = 0.343 sits in the moderate-overfitting regime (12 of 35
+%     IS/OOS partitions); rankings are partially reproducible, but every
+%     trained-model bootstrap 95\% CI crosses zero (only buy-and-hold
+%     stays strictly positive at (1.9766, 2.6408)), and no model
+%     survives multiple-testing correction. Leave-one-out PBO sharpens
+%     the picture asymmetrically: excluding Logistic Regression reduces
+%     PBO most (to 0.114), excluding XGBoost reduces it to 0.200,
+%     excluding LSTM to 0.257, excluding AR Logistic or Random Forest
+%     leaves PBO unchanged, and excluding KAN raises PBO to 0.514 past
+%     the random-selection threshold. KAN is the only model whose
 %     presence stabilises the cross-section; the instability is
-%     concentrated in Logistic Regression, KAN, and XGBoost rotating in
+%     concentrated in Logistic Regression, XGBoost, and LSTM rotating in
 %     the IS-best slot.
-%   - The symbolic extraction pipeline succeeds with 100\% symbolification
-%     rate (14 of 14 edges); five features survive (eth\_btc\_ratio,
-%     skewness, bb\_width, us2y, kurtosis); post-symbolic accuracy
-%     60.15\% (a 4.5 pp gain over pre-symbolic 55.64\%). The Phase-1
-%     53\% gate is cleared at val\_acc 0.6241 before pruning.
+%   - The symbolic extraction pipeline succeeds with 93\% symbolification
+%     rate (13 of 14 edges; one edge skipped); five features survive
+%     (eth\_btc\_ratio, bb\_width, skewness, log\_returns\_lag1,
+%     natgas\_ret\_30); post-symbolic accuracy 60.90\% (a 1.5 pp gain
+%     over pre-symbolic 59.40\%). For the first time a lag feature
+%     enters the surviving set, and a macro feature (natgas\_ret\_30)
+%     introduces a non-differentiability at the dataset mean through the
+%     Abs primitive. The Phase-1 53\% gate fails at val\_acc 0.5038;
+%     recovery happens only in the subsequent LBFGS phases.
 %
 % KAN reference here is one sentence only. No theorem, no splines, no
 % architecture details. Save those for Section 2.1.
@@ -923,7 +937,7 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %   - When the fitting scheme is optimised (daily re-estimation,
 %     2.5 to 4 year training window), the simpler model wins.
 %   - Directly relevant to this thesis: the negative results (top DSR
-%     0.3925, well below the 0.95 significance threshold) align with
+%     0.2376, well below the 0.95 significance threshold) align with
 %     this finding; properly evaluated baselines are hard to beat in
 %     a weak-signal regime like BTC.
 %   - Reinforces Q1 framing: methodology dominates model choice in
@@ -2293,32 +2307,35 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 % T-R1, T-R3.
 %
 % Three opening sentences, each leading with the strongest claim:
-%   - "No model achieves DSR >= 0.95. The top DSR (LSTM) is 0.3925, far
-%      below significance after correcting for selection bias across the
-%      six compared models. Buy-and-hold posts a higher median Sharpe
-%      (2.2321) than every trained model, illustrating how punishing the
-%      AFML correction layer is for trading strategies on a trending
-%      asset."
-%   - "PBO = 0.3714 lands in the moderate-overfitting regime: in 13 of
+%   - "No model achieves DSR >= 0.95. The top DSR among trained models
+%      (XGBoost) is 0.2376, far below significance after correcting for
+%      selection bias across the six compared models. Buy-and-hold
+%      posts a higher median Sharpe (2.2321) than every trained model,
+%      illustrating how punishing the AFML correction layer is for
+%      trading strategies on a trending asset."
+%   - "PBO = 0.343 lands in the moderate-overfitting regime: in 12 of
 %      35 IS/OOS partitions the in-sample best model underperforms the
 %      out-of-sample median. Selection across the six models is
 %      reproducible enough to claim that some configurations beat
 %      others, but not robust enough to support a confident pick.
 %      Leave-one-out PBO sharpens the picture asymmetrically: excluding
-%      logistic, kan, or xgboost reduces PBO (to 0.143, 0.229, and
-%      0.257 respectively), while excluding lstm actually raises PBO to
-%      0.429. The variance lives in the rotating IS-winners among
-%      Logistic Regression, KAN, and XGBoost; LSTM is the only model
+%      logistic, xgboost, or lstm reduces PBO (to 0.114, 0.200, and
+%      0.257 respectively), while excluding kan actually raises PBO to
+%      0.514. The variance lives in the rotating IS-winners among
+%      Logistic Regression, XGBoost, and LSTM; KAN is the only model
 %      whose presence stabilises the cross-section."
 %   - "The symbolic extraction pipeline produces a closed-form decision
-%      function with 100\% symbolification rate (14 of 14 edges) on five
-%      surviving features (eth\_btc\_ratio, skewness, bb\_width, us2y,
-%      kurtosis). Post-symbolic accuracy is 60.15\%, a 4.5 percentage-
-%      point gain over the pre-symbolic 55.64\%. The skewness subset
-%      bug that affected the earlier locked configuration is resolved
-%      (all top-5 stable features now reach the extraction step), and
-%      the Phase-1 53\% gate is cleared (val\_acc = 0.6241 after Adam,
-%      vs. 0.4812 previously)."
+%      function with 93\% symbolification rate (13 of 14 edges) on five
+%      surviving features (eth\_btc\_ratio, bb\_width, skewness,
+%      log\_returns\_lag1, natgas\_ret\_30). Post-symbolic accuracy is
+%      60.90\%, a 1.5 percentage-point gain over the pre-symbolic
+%      59.40\%. The skewness subset bug is resolved (skewness reaches
+%      the extraction step), but the Phase-1 53\% gate fails again
+%      (val\_acc = 0.5038 after Adam) and recovery happens only in the
+%      subsequent LBFGS phases. For the first time a lag feature
+%      (log\_returns\_lag1) survives extraction, and a macro feature
+%      (natgas\_ret\_30) enters through an Abs(.) primitive whose pole
+%      at the dataset mean leaves its sensitivity undefined."
 %
 % Roadmap: 4.2 model comparison, 4.3 classification, 4.4 financial,
 % 4.5 stability, 4.6 symbolic.
@@ -2345,87 +2362,98 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %
 % Locked-run numbers (paste into the table):
 %   1 | Buy-and-Hold          | 2.2321  | (1.9766, 2.6408)  | 0.6715 | n/a    |  2.2931 |  2.4863 | n/a    | n/a    | n/a    | -0.9998 | 52849.15 | 0.5539 | 1.2956
-%   2 | LSTM                  | 1.3377  | (0.4062, 1.5380)  | 0.8284 | 0.3925 |  1.0629 |  0.1939 | 0.4367 | 0.5259 | 0.5124 | -0.2256 |   0.3329 | 0.5000 | 1.3055
-%   3 | XGBoost               | 0.9176  | (-0.8493, 1.3837) | 1.2783 | 0.2262 |  0.1899 |  0.1732 | 0.4481 | 0.5336 | 0.5099 | -0.2438 |   0.1417 | 0.5455 | 1.2963
-%   4 | Random Forest         | 0.6919  | (-0.5494, 1.2077) | 1.2019 | 0.1596 |  0.2023 |  0.1213 | 0.4383 | 0.5331 | 0.5096 | -0.1955 |   0.0975 | 0.5000 | 1.2263
-%   5 | Logistic Regression   | 0.5637  | (-0.5423, 1.5779) | 1.5672 | 0.1287 |  0.2230 |  0.1099 | 0.4165 | 0.5332 | 0.5261 | -0.2308 |   0.0544 | 0.5342 | 1.1385
-%   6 | KAN                   | 0.3834  | (-0.3750, 2.0819) | 1.4409 | 0.0920 |  0.2332 |  0.0488 | 0.4282 | 0.5415 | 0.5211 | -0.2774 |   0.0530 | 0.5185 | 1.1196
+%   2 | XGBoost               | 0.9483  | (-1.6369, 1.5260) | 1.6147 | 0.2376 |  0.3774 |  0.2184 | 0.4422 | 0.5309 | 0.5106 | -0.2308 |   0.1298 | 0.5374 | 1.4018
+%   3 | KAN                   | 0.8375  | (-0.5868, 1.5681) | 1.3346 | 0.2012 |  0.4221 |  0.1268 | 0.4301 | 0.5377 | 0.5205 | -0.2254 |   0.1097 | 0.5517 | 1.2752
+%   4 | LSTM                  | 0.6029  | (-0.3630, 1.1349) | 1.1890 | 0.1375 |  0.4529 |  0.0835 | 0.4484 | 0.5259 | 0.5078 | -0.2871 |   0.1399 | 0.4854 | 1.1342
+%   5 | Logistic Regression   | 0.4640  | (-0.7817, 1.0774) | 1.4700 | 0.1073 |  0.3064 |  0.0690 | 0.4217 | 0.5286 | 0.5109 | -0.3506 |   0.1168 | 0.5183 | 1.1002
+%   6 | Random Forest         | 0.3265  | (-1.4870, 0.8769) | 1.3004 | 0.0825 |  0.1818 |  0.0337 | 0.4348 | 0.5336 | 0.5102 | -0.2801 |   0.0473 | 0.5202 | 1.1143
 %   7 | AR Logistic           | -0.1864 | (-0.5538, 0.1112) | 0.7677 | 0.0262 | -0.1472 | -0.0413 | 0.4682 | 0.5292 | 0.5070 | -0.2778 |  -0.0668 | 0.5177 | 0.9762
 %
 % Key observations (state facts here, save interpretation for 5.1):
-%   - DSR. Top DSR among trained models is LSTM at 0.3925; all six
+%   - DSR. Top DSR among trained models is XGBoost at 0.2376; all six
 %     trained-model values fall below 0.95. No model demonstrates
 %     predictive ability that survives correction for selection bias.
-%     The top three DSRs (LSTM 0.3925, XGBoost 0.2262, Random Forest
-%     0.1596) span 0.23, with smaller gaps to Logistic Regression
-%     (0.1287), KAN (0.0920), and AR Logistic (0.0262). Buy-and-hold is
-%     excluded from the DSR computation because it is not an Optuna-
-%     tuned model and does not enter the selection pool.
-%   - Sharpe confidence intervals. 5 of 7 entries have a 95\% bootstrap
-%     CI that crosses zero (XGBoost, Random Forest, Logistic Regression,
-%     KAN, AR Logistic). Only buy-and-hold (1.9766, 2.6408) and LSTM
-%     (0.4062, 1.5380) have CIs that stay strictly positive. This is an
-%     independent confirmation of the DSR finding: the median Sharpe of
-%     every trained model except LSTM is not statistically
-%     distinguishable from zero under bootstrap resampling.
+%     The top three DSRs (XGBoost 0.2376, KAN 0.2012, LSTM 0.1375)
+%     span 0.10, with smaller gaps to Logistic Regression (0.1073),
+%     Random Forest (0.0825), and AR Logistic (0.0262). Buy-and-hold
+%     is excluded from the DSR computation because it is not an
+%     Optuna-tuned model and does not enter the selection pool.
+%   - Sharpe confidence intervals. 6 of 7 entries have a 95\% bootstrap
+%     CI that crosses zero (every trained model). Only buy-and-hold
+%     (1.9766, 2.6408) has a CI that stays strictly positive. This is
+%     an independent confirmation of the DSR finding: the median
+%     Sharpe of every trained model is not statistically
+%     distinguishable from zero under bootstrap resampling. The
+%     previous run had LSTM as the only trained model with a strictly
+%     positive CI; in the current locked configuration LSTM's CI
+%     (-0.3630, 1.1349) also crosses zero, removing that one piece of
+%     supporting evidence for trained-model significance.
 %   - Buy-and-hold reference point. Buy-and-hold posts the highest
 %     median Sharpe (2.2321) and the highest cumulative return
 %     (approximately 52,849x over the 2015 to 2026 period). Its median
 %     max drawdown is -0.9998 (essentially -100\%): the position
 %     experiences the full BTC drawdown profile, which is precisely
 %     what bet sizing and the dual-weighted loss are designed to
-%     mitigate. Trained models trade off return for downside protection:
-%     LSTM's cumulative return of 0.3329 is two orders of magnitude
-%     smaller than buy-and-hold's, but its max drawdown of -0.2256 is
-%     also four times shallower. This is the financial-management
-%     framing in which the DSR result should be read.
-%   - Ranking. LSTM leads with median Sharpe 1.3377; XGBoost is second
-%     at 0.9176; Random Forest third at 0.6919; Logistic Regression
-%     fourth at 0.5637; KAN fifth at 0.3834; AR Logistic last at
+%     mitigate. Trained models trade off return for downside
+%     protection: LSTM's cumulative return of 0.1399 is roughly five
+%     orders of magnitude smaller than buy-and-hold's, but its max
+%     drawdown of -0.2871 is also three to four times shallower. This
+%     is the financial-management framing in which the DSR result
+%     should be read.
+%   - Ranking. XGBoost leads with median Sharpe 0.9483; KAN is second
+%     at 0.8375; LSTM third at 0.6029; Logistic Regression fourth at
+%     0.4640; Random Forest fifth at 0.3265; AR Logistic last at
 %     -0.1864 (the only model with a negative median Sharpe). The
-%     previous run's ranking (LSTM, KAN, RF, XGBoost, AR Logistic,
-%     Logistic) reshuffled materially: Logistic Regression moved up
-%     from last to fourth, KAN dropped from second to fifth, and AR
-%     Logistic moved from fifth to last. The reshuffle is consistent
-%     with the expanded feature universe (73 vs. 62) giving Logistic
-%     Regression a broader linear basis, while costing KAN the on-chain
-%     features that had survived to its previous symbolic representation.
-%   - AUC compression. All mean AUCs sit in the 0.5070 to 0.5261 band.
+%     previous run's ranking (LSTM, XGBoost, Random Forest, Logistic,
+%     KAN, AR Logistic) reshuffled materially: KAN moved up from fifth
+%     to second, XGBoost moved up from third to first, LSTM dropped
+%     from first to third, Random Forest dropped from third to fifth.
+%     The reshuffle is driven by the seeds change: in the previous
+%     configuration LSTM and KAN ran on 2 seeds (against 3 for the
+%     four classical models) and the LSTM result benefited from the
+%     lower seed cardinality; the locked configuration now uses 3
+%     seeds across all six models, and the within-model averaging is
+%     now symmetric.
+%   - AUC compression. All mean AUCs sit in the 0.5070 to 0.5205 band.
 %     Models are nearly indistinguishable at the classification level;
-%     bet sizing and the dual-weighted loss are what translate the tiny
-%     edges into the wider Sharpe spread. Logistic Regression now posts
-%     the highest mean AUC (0.5261), narrowly beating KAN (0.5211) and
-%     LSTM (0.5124); KAN's first-place AUC in the previous locked run
-%     is lost on the expanded feature set.
-%   - Q1, Q2 evidence (feature engineering). AR Logistic now posts a
-%     negative median Sharpe (-0.1864), the worst in the cross-section.
-%     The expanded 10-lag set (lags 4, 5, 6, 21 in addition to the
-%     previous 1, 2, 3, 7, 14, 30) does not help; if anything, it makes
-%     pure momentum slightly worse, suggesting the additional near-term
-%     lag information adds noise rather than signal. Logistic
-%     Regression, which receives the MDA-selected feature set, now
-%     beats AR Logistic, KAN, and ties XGBoost-and-RF for second-tier
-%     status: with 73 features in the MDA pool the linear hypothesis
-%     class has enough breadth to extract usable signal where it could
-%     not in the 62-feature configuration.
-%   - Q3 evidence (KAN positioning). KAN drops from 2nd to 5th place
-%     on median Sharpe (0.9879 -> 0.3834) and from 2nd to 5th on DSR
-%     (0.2509 -> 0.0920). The classification-side metrics remain
-%     competitive (mean accuracy 0.5415, second only to XGBoost's
-%     0.5336; mean AUC 0.5211, second only to Logistic Regression's
-%     0.5261), but the Sharpe ranking suggests the bet-sizing
-%     transformation is no longer amplifying the classification edge
-%     in the same way it did in the previous configuration. KAN's std
-%     Sharpe at 1.4409 is the second-highest in the trained-model
-%     cross-section, contributing to the wide Sharpe CI (-0.3750 to
-%     2.0819) that straddles zero.
+%     bet sizing and the dual-weighted loss are what translate the
+%     tiny edges into the wider Sharpe spread. KAN posts the highest
+%     mean AUC (0.5205) by a small margin over Logistic Regression
+%     (0.5109), LSTM (0.5078), and the other models; the previous
+%     run's Logistic Regression top-AUC slot is lost to KAN with three
+%     seeds per model.
+%   - Q1, Q2 evidence (feature engineering). AR Logistic again posts
+%     the worst Sharpe (-0.1864). Pure-momentum lags carry weak signal
+%     in the broader cross-section. Logistic Regression on MDA-
+%     selected features beats AR Logistic and Random Forest, sitting
+%     fourth: with 73 features in the MDA pool the linear hypothesis
+%     class still has enough breadth to extract usable signal, but
+%     cannot reach the top-three of the cross-section. Random Forest
+%     drops to fifth place and posts the lowest median cumulative
+%     return among non-negative entries (0.0473), suggesting its
+%     bagging variance is the main casualty of the seeds change.
+%   - Q3 evidence (KAN positioning). KAN is back to second place on
+%     median Sharpe (0.3834 -> 0.8375), second on DSR (0.0920 ->
+%     0.2012), first on mean accuracy (0.5377), first on mean AUC
+%     (0.5205), and first on median win rate (0.5517). Its std Sharpe
+%     (1.3346) is mid-pack rather than second-highest, and its CI
+%     crosses zero (-0.5868, 1.5681) but at the upper end (the upper
+%     bound 1.5681 is the highest among trained models alongside
+%     XGBoost's 1.5260). The leave-one-out PBO finding in Section 4.4
+%     sharpens the result: KAN is the model whose presence stabilises
+%     the cross-section, which is a structural finding rather than a
+%     ranking finding.
 %   - Std Sharpe outlier. AR Logistic shows the lowest std Sharpe
 %     (0.7677) among the trained models. Pure momentum is consistent
 %     across paths because it conditions on a simple, stable signal;
-%     the cost is the only negative median in the table. Logistic
-%     Regression now carries the highest std Sharpe (1.5672), reflecting
-%     that its directional accuracy is regime-conditional rather than
-%     uniform across paths.
+%     the cost is the only negative median in the table. XGBoost now
+%     carries the highest std Sharpe (1.6147) and Logistic Regression
+%     is second (1.4700): both are wide enough to make their bootstrap
+%     CIs span more than two Sharpe units, reflecting that their
+%     directional accuracy is highly regime-conditional. LSTM has the
+%     lowest std Sharpe (1.1890) among the top three, which is the
+%     variance reading that makes it the third candidate in this
+%     cross-section despite the financial-side ranking.
 
 
 \subsection{Classification Metrics}\label{subsec:results_classification}
@@ -2440,56 +2468,53 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %     high-conviction events that drive Sharpe and overpays in
 %     transaction costs, leaving a negative median Sharpe.
 %   - Pooled AUC. Per-model pooled AUC across all 28 splits sits in the
-%     0.4889 to 0.5151 band. All models hover within two percentage
+%     0.4863 to 0.5129 band. All models hover within two percentage
 %     points of random; the entire signal contest plays out inside an
 %     AUC range smaller than what most reviewers would consider
 %     economically material.
 %
 % DeLong pairwise AUC: 0 of 15 pairs significantly different at
-% alpha=0.05. Pooled across splits, averaged across the 3 sklearn / 2
-% neural seeds.
+% alpha=0.05. Pooled across splits, averaged across the 3 seeds per
+% model.
 %
 % Locked-run pairs (paste into a table):
 %   Pair                            | AUC\_a | AUC\_b | Delta AUC | z       | p      | Significant
-%   LSTM vs KAN                     | 0.5026 | 0.4889 | +0.0137   |  1.3785 | 0.1681 | No
-%   XGBoost vs KAN                  | 0.5045 | 0.5151 | -0.0106   | -1.5689 | 0.1167 | No
-%   AR Logistic vs KAN              | 0.5046 | 0.5151 | -0.0105   | -1.1251 | 0.2605 | No
-%   Logistic vs LSTM                | 0.5096 | 0.5002 | +0.0094   |  0.9011 | 0.3675 | No
-%   Random Forest vs KAN            | 0.5064 | 0.5151 | -0.0087   | -1.5091 | 0.1313 | No
-%   AR Logistic vs LSTM             | 0.5070 | 0.5002 | +0.0068   |  0.6636 | 0.5070 | No
-%   Logistic vs XGBoost             | 0.5106 | 0.5045 | +0.0062   |  0.8115 | 0.4171 | No
-%   AR Logistic vs Logistic         | 0.5046 | 0.5106 | -0.0061   | -0.6635 | 0.5070 | No
-%   Random Forest vs LSTM           | 0.5058 | 0.5002 | +0.0056   |  0.5668 | 0.5708 | No
-%   Logistic vs KAN                 | 0.5106 | 0.5151 | -0.0044   | -0.6724 | 0.5014 | No
-%   Logistic vs Random Forest       | 0.5106 | 0.5064 | +0.0042   |  0.5924 | 0.5536 | No
-%   XGBoost vs LSTM                 | 0.5042 | 0.5002 | +0.0041   |  0.4112 | 0.6809 | No
-%   Random Forest vs XGBoost        | 0.5064 | 0.5045 | +0.0019   |  0.3860 | 0.6995 | No
-%   AR Logistic vs Random Forest    | 0.5046 | 0.5064 | -0.0018   | -0.1938 | 0.8463 | No
-%   AR Logistic vs XGBoost          | 0.5046 | 0.5045 | +0.0001   |  0.0111 | 0.9912 | No
+%   LSTM vs KAN                     | 0.5010 | 0.4863 | +0.0147   |  1.4623 | 0.1437 | No
+%   XGBoost vs KAN                  | 0.5022 | 0.5129 | -0.0107   | -1.5435 | 0.1227 | No
+%   Random Forest vs KAN            | 0.5037 | 0.5129 | -0.0092   | -1.4804 | 0.1388 | No
+%   Logistic vs KAN                 | 0.5032 | 0.5129 | -0.0097   | -1.4757 | 0.1400 | No
+%   AR Logistic vs KAN              | 0.5046 | 0.5129 | -0.0083   | -0.8893 | 0.3738 | No
+%   AR Logistic vs LSTM             | 0.5070 | 0.5020 | +0.0050   |  0.4933 | 0.6218 | No
+%   Random Forest vs LSTM           | 0.5058 | 0.5020 | +0.0038   |  0.3725 | 0.7095 | No
+%   XGBoost vs LSTM                 | 0.5036 | 0.5020 | +0.0016   |  0.1614 | 0.8718 | No
+%   Logistic vs LSTM                | 0.5034 | 0.5020 | +0.0014   |  0.1347 | 0.8928 | No
+%   AR Logistic vs XGBoost          | 0.5046 | 0.5022 | +0.0024   |  0.2598 | 0.7951 | No
+%   Random Forest vs XGBoost        | 0.5037 | 0.5022 | +0.0015   |  0.2964 | 0.7669 | No
+%   Logistic vs XGBoost             | 0.5032 | 0.5022 | +0.0010   |  0.1381 | 0.8902 | No
+%   AR Logistic vs Random Forest    | 0.5046 | 0.5037 | +0.0009   |  0.0961 | 0.9234 | No
+%   Logistic vs Random Forest       | 0.5032 | 0.5037 | -0.0005   | -0.0732 | 0.9417 | No
+%   AR Logistic vs Logistic         | 0.5046 | 0.5032 | +0.0014   |  0.1526 | 0.8788 | No
 %
 % Pairwise summary:
 %   - No pair clears alpha = 0.05. KAN posts the highest pooled AUC
-%     (0.5151), narrowly ahead of Logistic Regression (0.5106), Random
-%     Forest (0.5064), AR Logistic (0.5046), XGBoost (0.5045), and LSTM
-%     (0.5002), but none of the differences is statistically
+%     (0.5129), ahead of AR Logistic (0.5046), Random Forest (0.5037),
+%     Logistic Regression (0.5032), XGBoost (0.5022), and LSTM
+%     (0.5020), but none of the differences is statistically
 %     distinguishable from sampling noise under the DeLong test.
-%   - The expansion of the feature universe from 62 to 73 columns has
-%     flattened the classification cross-section: in the previous
-%     configuration 5 of 15 pairs were significant; in the locked
-%     configuration none are. The five previously-significant pairs all
-%     involved the Random Forest column (RF vs. XGBoost, RF vs. LSTM,
-%     Logistic vs. RF) or the KAN column (KAN vs. XGBoost, Logistic vs.
-%     KAN); the additional features appear to have closed the gap
-%     between Random Forest / KAN and the other models on raw
-%     classification, leaving the financial differences in Section 4.2
-%     driven entirely by bet sizing rather than by AUC.
+%   - The KAN-versus-all pairs cluster tightly around z ~ -1.5 with
+%     p-values in the 0.12 to 0.14 range, showing that KAN's AUC
+%     advantage is consistent in sign across comparisons but uniformly
+%     too small to clear the significance threshold. The current
+%     locked configuration produces the same 0/15 finding as the
+%     previous run; the absence of significant pairs is robust across
+%     the seeds reconfiguration.
 %
 % Effect-size disclosure (T-R15: write for reviewers):
-%   - The entire AUC range across all six models is 0.026 (from LSTM at
-%     0.5002 to KAN at 0.5151), the same order of magnitude as the
-%     seed-to-seed and split-to-split variation within any single model.
-%     The DeLong test confirms that none of these gaps survives a
-%     hypothesis test once cross-split correlation is accounted for.
+%   - The entire AUC range across all six models is 0.027 (from LSTM
+%     at 0.5020 to KAN at 0.5129), the same order of magnitude as the
+%     seed-to-seed and split-to-split variation within any single
+%     model. The DeLong test confirms that none of these gaps survives
+%     a hypothesis test once cross-split correlation is accounted for.
 %
 % Confusion matrices (compact, Appendix D for full): aggregated TP/FP/
 % TN/FN per model. Most models post a slight class-1 bias consistent
@@ -2503,66 +2528,66 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 \subsection{Financial Performance}\label{subsec:results_financial}
 
 % Topics:
-%   - Path-level Sharpe distribution. Per-model row x 7 paths + median +
-%     std. LSTM has the highest median (1.3377) and the lowest std among
-%     trained models (0.8284); its path Sharpes cluster tightly around
-%     the median, which is why its bootstrap 95\% CI (0.4062, 1.5380)
-%     stays strictly positive. XGBoost (median 0.9176, std 1.2783) and
-%     Random Forest (median 0.6919, std 1.2019) sit in a middle band
-%     with similar dispersion. Logistic Regression (median 0.5637, std
-%     1.5672) has the highest path-Sharpe std in the cross-section,
-%     with a CI (-0.5423, 1.5779) straddling zero by a wide margin. KAN
-%     (median 0.3834, std 1.4409) has the second-highest std and the
-%     widest CI (-0.3750, 2.0819), reflecting strong regime
-%     sensitivity. AR Logistic (median -0.1864, std 0.7677) is the only
-%     trained model with a negative median; its CI (-0.5538, 0.1112) is
-%     the only one that does not include a meaningfully positive value.
-%     Buy-and-hold (median 2.2321, std 0.6715) dominates the median
-%     ranking with the tightest CI (1.9766, 2.6408) of the seven
-%     entries.
-%   - Sortino and Calmar. The downside-deviation-adjusted Sortino ratios
-%     reorder the trained models slightly: LSTM (1.0629), KAN (0.2332),
-%     Logistic Regression (0.2230), Random Forest (0.2023), XGBoost
-%     (0.1899), AR Logistic (-0.1472). KAN's Sortino exceeds Logistic
-%     Regression's even though its Sharpe is lower, suggesting that
-%     KAN's path-Sharpe variance is more symmetric (gains and losses
-%     scaled together) while Logistic Regression's variance loads more
-%     heavily on the upside, leaving downside performance less penalised
-%     by Sortino than by Sharpe. Calmar (Sharpe over max drawdown)
-%     compresses the trained models into a narrow 0.05 to 0.20 band,
-%     with LSTM at 0.1939 leading and AR Logistic at -0.0413 the only
-%     negative entry. Buy-and-hold's Calmar (2.4863) is two orders of
-%     magnitude above any trained model, but its near-100\% max drawdown
-%     means a single rebalancing decision during the deepest crash
-%     would wipe out the strategy.
-%   - DSR computation detail. For LSTM (top-ranked trained model):
-%     observed median Sharpe 1.3377 over 7 paths, DSR = 0.3925 against
+%   - Path-level Sharpe distribution. Per-model row x 7 paths + median
+%     + std. XGBoost has the highest median (0.9483) but the highest
+%     path-Sharpe std as well (1.6147); its bootstrap 95\% CI (-1.6369,
+%     1.5260) is the widest of any trained model and straddles zero by
+%     a wide margin. KAN (median 0.8375, std 1.3346) sits second with a
+%     CI (-0.5868, 1.5681) that also crosses zero but at the upper end
+%     (the 1.5681 upper bound is the highest among trained models
+%     alongside XGBoost's). LSTM (median 0.6029, std 1.1890) has the
+%     lowest std among trained models, but its CI (-0.3630, 1.1349)
+%     still crosses zero on the lower side. Logistic Regression (median
+%     0.4640, std 1.4700) has the second-highest std with a CI
+%     (-0.7817, 1.0774) firmly straddling zero. Random Forest (median
+%     0.3265, std 1.3004) is the fifth model and the second-widest CI
+%     (-1.4870, 0.8769). AR Logistic (median -0.1864, std 0.7677) is
+%     the only trained model with a negative median; its CI (-0.5538,
+%     0.1112) is the only one that does not include a meaningfully
+%     positive value. Buy-and-hold (median 2.2321, std 0.6715)
+%     dominates the median ranking with the tightest CI (1.9766,
+%     2.6408) of the seven entries and is the only entry whose CI
+%     stays strictly positive.
+%   - Sortino and Calmar. The downside-deviation-adjusted Sortino
+%     ratios reorder the trained models slightly: LSTM (0.4529), KAN
+%     (0.4221), XGBoost (0.3774), Logistic Regression (0.3064), Random
+%     Forest (0.1818), AR Logistic (-0.1472). LSTM's Sortino leads
+%     despite its third-place median Sharpe, suggesting that LSTM's
+%     path-Sharpe distribution loads more variance on the upside than
+%     on the downside (good draws are larger than bad draws). KAN's
+%     Sortino is competitive in second place. Calmar (Sharpe over max
+%     drawdown) compresses the trained models into a narrow 0.03 to
+%     0.22 band, with XGBoost at 0.2184 leading and AR Logistic at
+%     -0.0413 the only negative entry. Buy-and-hold's Calmar (2.4863)
+%     is an order of magnitude above any trained model, but its
+%     near-100\% max drawdown means a single rebalancing decision
+%     during the deepest crash would wipe out the strategy.
+%   - DSR computation detail. For XGBoost (top-ranked trained model):
+%     observed median Sharpe 0.9483 over 7 paths, DSR = 0.2376 against
 %     n\_trials=6. The expected maximum Sharpe under the null with six
 %     compared models, combined with the pooled skew/kurt and SE(SR),
 %     produces a DSR threshold the observed Sharpe does not clear. The
-%     0.3925 figure says LSTM's median Sharpe is roughly at the 39th
-%     percentile of what the null hypothesis (all true Sharpes equal
-%     zero) would produce when testing six independent strategies, far
-%     short of the 0.95 significance threshold. Full DSR-component
-%     breakdown for the top model goes to Appendix D.
+%     0.2376 figure says XGBoost's median Sharpe is roughly at the
+%     24th percentile of what the null hypothesis (all true Sharpes
+%     equal zero) would produce when testing six independent
+%     strategies, far short of the 0.95 significance threshold. Full
+%     DSR-component breakdown for the top model goes to Appendix D.
 %
-% PBO result. PBO = 0.3714 = 13 of 35 IS/OOS partitions. Interpretation
+% PBO result. PBO = 0.343 = 12 of 35 IS/OOS partitions. Interpretation
 % in context of DSR < 0.95:
 %   - Theoretical regime map: PBO ~ 0 = robust selection (the IS-best
 %     model tends to remain best out of sample); PBO ~ 0.5 = model
 %     selection is random; PBO > 0.5 = adversarial.
-%   - Observed regime: moderate overfitting risk. In 37.14\% of
+%   - Observed regime: moderate overfitting risk. In 34.29\% of
 %     partitions the model that wins on three IS paths underperforms
 %     the median of the four OOS paths. The IS ranking holds out of
 %     sample more often than not, but not robustly: the IS-winner is
-%     the OOS-loser about three times out of eight. This is closer to
-%     "model selection is partially random" than to "the IS ranking
-%     holds out of sample". The locked configuration is a step worse
-%     than the previous run (PBO 0.2571), driven by the reshuffle in
-%     the model cross-section: Logistic Regression's promotion to the
-%     top-half of the ranking introduces a model whose path-Sharpe
-%     variance is large enough to swap places with the top three
-%     nonlinear models across sub-path partitions.
+%     the OOS-loser about one time in three. This is closer to "model
+%     selection is partially random" than to "the IS ranking holds out
+%     of sample". The locked configuration is within 0.03 of the
+%     previous run (PBO 0.3714 -> 0.343), confirming that the
+%     moderate-overfitting regime is the stable headline finding
+%     across both 2- and 3-seed configurations.
 %   - Leave-one-out PBO sharpens the picture asymmetrically. Re-running
 %     PBO on the 5x7 Sharpe matrix with one model dropped at a time
 %     produces a pattern that is more informative than the headline
@@ -2570,67 +2595,70 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %
 %       Model excluded    5-model PBO    Delta vs baseline
 %       ---------------------------------------------------
-%       logistic          0.143          -0.229
-%       kan               0.229          -0.143
-%       xgboost           0.257          -0.114
-%       ar_logistic       0.371          +0.000
-%       random_forest     0.371          +0.000
-%       lstm              0.429          +0.057
+%       logistic          0.114          -0.229
+%       xgboost           0.200          -0.143
+%       lstm              0.257          -0.086
+%       ar_logistic       0.343          +0.000
+%       random_forest     0.343          +0.000
+%       kan               0.514          +0.171
 %
 %   - Reading the LOO table. The IS/OOS instability is concentrated in
-%     three models: Logistic Regression, KAN, and XGBoost. Removing any
-%     one of them reduces PBO by 0.11 or more. Logistic Regression alone
-%     accounts for the largest single reduction (-0.229): with Logistic
-%     Regression dropped, the five remaining models settle into a stable
-%     IS ranking that the OOS median agrees with on roughly 86\% of
-%     partitions. AR Logistic and Random Forest are PBO-neutral: their
-%     exclusion does not change the figure, meaning they are far enough
-%     from the IS-best slot that they do not contribute to the IS/OOS
-%     rotation. LSTM is the opposite: removing it increases PBO to
-%     0.429, which is the highest value in the LOO table and approaches
-%     the random-selection regime. This is a striking finding: LSTM is
-%     the only model whose presence stabilises the model cross-section.
-%     Its low path-Sharpe std (0.8284) makes it a consistent IS-winner
-%     across sub-path partitions; remove it and the rotation among
-%     Logistic Regression, KAN, XGBoost, and Random Forest dominates.
+%     three models: Logistic Regression, XGBoost, and LSTM. Removing
+%     any one of them reduces PBO by 0.09 or more. Logistic Regression
+%     alone accounts for the largest single reduction (-0.229): with
+%     Logistic Regression dropped, the five remaining models settle
+%     into a stable IS ranking that the OOS median agrees with on
+%     roughly 89\% of partitions. AR Logistic and Random Forest are
+%     PBO-neutral: their exclusion does not change the figure, meaning
+%     they are far enough from the IS-best slot that they do not
+%     contribute to the IS/OOS rotation. KAN is the opposite: removing
+%     it increases PBO to 0.514, which is the highest value in the LOO
+%     table and tips the regime past the random-selection threshold
+%     (PBO ~ 0.5). This is a striking finding: KAN is the only model
+%     whose presence stabilises the model cross-section. The previous
+%     locked configuration had this property attached to LSTM (its
+%     exclusion raised PBO to 0.429); the current locked configuration
+%     moves it to KAN (its exclusion raises PBO to 0.514, even
+%     further). Two anchors across two runs is suggestive evidence
+%     that the cross-section needs one well-calibrated, low-variance
+%     candidate to keep selection reproducible, regardless of which
+%     model fills that role.
 %   - Joint reading with DSR < 0.95: model selection within this six-
-%     model universe is partially reliable (the headline PBO of 0.371
-%     is below the 0.5 random-selection threshold but well above the
-%     0.3 robust-selection threshold), is anchored by LSTM (whose
-%     exclusion moves the regime toward random), and is destabilised by
-%     Logistic Regression / KAN / XGBoost rotating in the IS-best slot.
-%     The model that selection picks (LSTM in this configuration) does
+%     model universe is partially reliable (the headline PBO of 0.343
+%     is below the 0.5 random-selection threshold but above the 0.3
+%     robust-selection threshold), is anchored by KAN (whose exclusion
+%     moves the regime past random), and is destabilised by Logistic
+%     Regression / XGBoost / LSTM rotating in the IS-best slot. The
+%     model that selection picks (XGBoost in this configuration) does
 %     not achieve a Sharpe that survives multiple-testing correction.
-%     The honest conclusion is "LSTM is the most stable choice in this
-%     cross-section, its bootstrap CI is the only trained-model CI that
-%     stays strictly positive, but its 0.39 DSR sits well below the
-%     0.95 multiple-testing-corrected significance threshold and a
-%     naive buy-and-hold strategy posts a 2.23 median Sharpe over the
-%     same period".
+%     The honest conclusion is "XGBoost is the IS-best choice in this
+%     cross-section but its bootstrap CI crosses zero at -1.64; KAN is
+%     the structural anchor whose presence keeps selection
+%     reproducible; and a naive buy-and-hold strategy posts a 2.23
+%     median Sharpe over the same period at the cost of a -99.98\%
+%     maximum drawdown".
 %
 % Methodological implication (T-R15: write for reviewers, this is the
 % AFML pay-off):
 %   - Without PBO, the natural conclusion from the model-comparison
-%     table is "LSTM achieved median Sharpe 1.34 on BTC daily direction".
-%   - With the headline PBO of 0.3714 the conclusion sharpens: rankings
-%     are stable enough to claim that LSTM beats the other trained
-%     models, but the IS/OOS instability among Logistic Regression,
-%     KAN, and XGBoost means that any alternative selection rule
-%     (highest Sortino, highest AUC, lowest drawdown) would pick a
-%     different model on at least one IS sub-path partition.
-%   - The leave-one-out PBO refines the message further: LSTM is the
+%     table is "XGBoost achieved median Sharpe 0.95 on BTC daily
+%     direction".
+%   - With the headline PBO of 0.343 the conclusion sharpens: rankings
+%     are stable enough to claim that XGBoost beats four of the other
+%     trained models, but the IS/OOS instability among Logistic
+%     Regression, XGBoost, and LSTM means that any alternative
+%     selection rule (highest Sortino, highest AUC, lowest drawdown)
+%     would pick a different model on at least one IS sub-path
+%     partition.
+%   - The leave-one-out PBO refines the message further: KAN is the
 %     anchor of the cross-section rather than a source of overfitting
-%     risk, reversing the previous run's reading where LSTM was the
-%     variance source. This reversal reflects the genuine result of
-%     expanding the feature universe: with 73 features, the linear
-%     baseline (Logistic Regression) gains enough lift to become a
-%     contender in some IS partitions, but its high path-Sharpe std
-%     makes the contention unstable.
+%     risk, and the IS-best model (XGBoost) is itself part of the
+%     rotating cluster.
 %   - The PBO and DSR diagnostics are complementary: PBO answers "did
 %     we pick the right model?", DSR answers "is the right model good
-%     enough?"; here the answer is "yes for LSTM, with caveats about
-%     the rest of the cross-section" to the first and "no" to the
-%     second.
+%     enough?"; here the answer is "yes for the linear-vs-nonlinear
+%     distinction and for the KAN-as-anchor reading, no within the
+%     rotating cluster" to the first and "no" to the second.
 %
 % Equity curves figure: all 6 models + buy-and-hold overlay on the
 % median (or best) path. Note specifically the AR Logistic equity
@@ -2642,13 +2670,16 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 % Additional metrics table: cumulative return, annualised return, max
 % DD, time under water, win rate, profit factor, mean |bet|, \% traded.
 % Locked-run highlights from the table at 4.2: LSTM median cumulative
-% return 0.3329 (best among trained), XGBoost 0.1417, Random Forest
-% 0.0975, Logistic Regression 0.0544, KAN 0.0530, AR Logistic -0.0668.
-% Median max-drawdown ranges from -0.1955 (Random Forest, best) to
-% -0.2778 (AR Logistic, worst); KAN's -0.2774 is the second-worst,
-% consistent with its high path-variance signature. Buy-and-hold's
-% median max-drawdown is -0.9998, the structural cost of holding
-% through the 2017-18 and 2022 BTC crashes.
+% return 0.1399 (best among trained), XGBoost 0.1298, Logistic
+% Regression 0.1168, KAN 0.1097, Random Forest 0.0473, AR Logistic
+% -0.0668. Median max-drawdown ranges from -0.2254 (KAN, best) to
+% -0.3506 (Logistic Regression, worst); LSTM's -0.2871 is the
+% third-worst, consistent with its third-place Sharpe ranking. Buy-
+% and-hold's median max-drawdown is -0.9998, the structural cost of
+% holding through the 2017-18 and 2022 BTC crashes. KAN posts the
+% best max-drawdown among trained models despite its second-place
+% Sharpe, evidence that its bet-sizing distribution favours smaller
+% drawdowns in exchange for some upside.
 
 
 \subsection{Feature Selection Stability and FFD Stability}\label{subsec:results_features}
@@ -2658,58 +2689,68 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %     run profile is flat to a striking degree. Of 73 candidate features:
 %       * 0 features stable (selected in more than 80\% of folds, > 22
 %         of 28 folds).
-%       * 3 features moderate (50\% to 80\%): eth\_btc\_ratio at 75.0\%
-%         (21 of 28 folds), skewness at 71.4\% (20 of 28 folds), bb\_width
-%         at 57.1\% (16 of 28 folds).
+%       * 2 features moderate (50\% to 80\%): eth\_btc\_ratio at 60.7\%
+%         (17 of 28 folds), bb\_width at 53.6\% (15 of 28 folds).
 %       * 70 features low (selected in fewer than 50\% of folds).
-%       * 0 features never selected.
-%   - Headline finding. No compact feature subset consistently dominates
-%     across time periods. The MDA-selected set turns over substantially
-%     across the 28 folds: the median feature is selected in roughly a
-%     third of folds, and even the most-stable feature (eth\_btc\_ratio)
-%     clears 50\% by about 25 percentage points. This is itself a
-%     finding: it suggests that the information relevant to BTC daily
-%     direction is distributed across many features, with regime-specific
-%     pockets of relevance, rather than concentrated in a small permanent
-%     core. The expansion of the feature universe from 62 to 73 columns
-%     lifts the top of the stability distribution, with eth\_btc\_ratio
-%     and skewness now clearing 70\% (compared with 54\% and 57\%
-%     respectively under the smaller pool), suggesting that the additional
-%     macro (14-day variants) and lag (lags 4, 5, 6, 21) columns absorb
-%     some of the noise that was previously rotating into the MDA-selected
-%     set.
-%   - Group breakdown of the three moderate features.
-%       * 2 of 3 from the technical-analysis group (skewness, rolling
-%         21-day third moment of log returns; bb\_width, Bollinger Band
-%         width).
-%       * 1 of 3 from the external / crypto-macro group (eth\_btc\_ratio,
+%       * 1 feature never selected: tx\_count\_roc\_14 (an on-chain
+%         feature that fails to clear the multi-model MDA threshold in
+%         any of the 28 training folds).
+%   - Headline finding. No compact feature subset consistently
+%     dominates across time periods. The MDA-selected set turns over
+%     substantially across the 28 folds: the median feature is selected
+%     in roughly a third of folds, and even the most-stable feature
+%     (eth\_btc\_ratio) clears 50\% by about 11 percentage points. This
+%     is itself a finding: it suggests that the information relevant to
+%     BTC daily direction is distributed across many features, with
+%     regime-specific pockets of relevance, rather than concentrated in
+%     a small permanent core. The 3-seed configuration produces a
+%     tighter stability profile than the 2-seed configuration: the
+%     previous locked run had eth\_btc\_ratio at 75.0\%, skewness at
+%     71.4\%, and bb\_width at 57.1\%; the current run drops skewness
+%     below the 50\% threshold (to a sub-moderate position in the low
+%     bucket) and trims the top two features by 5 to 15 percentage
+%     points. The 3-seed averaging spreads selection signal across
+%     more independent inner-CV MDA runs, which is more conservative
+%     than the 2-seed configuration but produces a similar qualitative
+%     reading.
+%   - Group breakdown of the two moderate features.
+%       * 1 of 2 from the technical-analysis group (bb\_width, Bollinger
+%         Band width).
+%       * 1 of 2 from the external / crypto-macro group (eth\_btc\_ratio,
 %         the CoinMetrics-sourced ETH/BTC alt-rotation signal).
 %       * 0 from macro, on-chain, mathematical (AFML Part 4), or lag
 %         groups.
-%   - On-chain question (Q2). No on-chain feature reaches 50\% selection
-%     frequency. All eight on-chain columns (active addresses ROC,
-%     transaction count ROC, hash rate ROC, MVRV, net exchange flow,
-%     fee per transaction, exchange supply percent, issuance) sit in
-%     the "low" bucket. The "free lunch hypothesis" (on-chain
-%     transparency providing measurable signal beyond price and volume)
-%     does not survive multi-model MDA + CPCV evaluation in this
-%     dataset; on-chain features may carry information for individual
-%     splits, but no on-chain column is consistently selected across
-%     folds. Q2 answer: on-chain features do not exhibit stability under
-%     the AFML feature-selection regime applied here. This finding
-%     hardens relative to the previous locked configuration: in the
-%     smaller 62-feature pool one on-chain column (exchange\_supply\_pct)
-%     was retained in the top-5 stable set, but it does not appear in
-%     the 73-feature pool's top-5, where it is displaced by bb\_width,
-%     us2y, and kurtosis.
+%   - On-chain question (Q2). No on-chain feature reaches 50\%
+%     selection frequency. All eight on-chain columns (active addresses
+%     ROC, transaction count ROC, hash rate ROC, MVRV, net exchange
+%     flow, fee per transaction, exchange supply percent, issuance) sit
+%     in the "low" bucket or below; tx\_count\_roc\_14 is in fact the
+%     single never-selected feature in the entire 73-feature pool. The
+%     "free lunch hypothesis" (on-chain transparency providing
+%     measurable signal beyond price and volume) does not survive
+%     multi-model MDA + CPCV evaluation in this dataset; on-chain
+%     features may carry information for individual splits, but no
+%     on-chain column is consistently selected across folds. Q2
+%     answer: on-chain features do not exhibit stability under the
+%     AFML feature-selection regime applied here. This finding hardens
+%     across all three locked configurations evaluated: in the
+%     62-feature run exchange\_supply\_pct survived to the symbolic
+%     extraction step despite low cross-fold stability; in the previous
+%     73-feature 2-seed run no on-chain feature reached the top-5
+%     stable set; in the current 73-feature 3-seed run one on-chain
+%     feature (tx\_count\_roc\_14) is never selected at all.
 %   - Figure suggestion: horizontal bar chart of selection frequency
 %     (73 bars, sorted descending, coloured by feature group:
 %     green=TA, blue=mathematical, orange=external macro, red=external
 %     crypto-macro, brown=external on-chain, grey=lag).
 %
 % FFD stability. ATR is the only column subject to FFD (the only
-% feature flagged non-stationary by the cross-fold ADF audit). Locked-
-% run statistics across 28 folds x 3 seeds (84 d* estimates):
+% feature flagged non-stationary by the cross-fold ADF audit at
+% alpha=0.05 with the FFD column whitelist ['atr']; the full ADF
+% report identifies 8 non-stationary features at alpha=0.05, all
+% retained without FFD because the locked configuration applies the
+% transform only to ATR by design). Locked-run statistics across 28
+% folds x 3 seeds (84 d* estimates):
 %   - Mean d* = 0.170, std d* = 0.075.
 %   - Range: d* in {0.05, 0.10, 0.15, 0.20, 0.25, 0.30}; modal value
 %     d* = 0.15.
@@ -2722,12 +2763,12 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %
 % Methodological note. Feature-selection turnover (high) and FFD-d*
 % turnover (low) tell a coherent story: the noise-versus-signal ratio
-% for individual features changes across regimes (only eth\_btc\_ratio,
-% skewness, and bb\_width clear 50\%), but the underlying time-series
-% property that motivates fractional differencing is stable. Stability
-% of d* validates the FFD-only-on-ATR design choice in 3.6.1;
-% instability of feature selection validates the use of multi-model MDA
-% over single-model SFI in 3.6.3.
+% for individual features changes across regimes (only eth\_btc\_ratio
+% and bb\_width clear 50\%), but the underlying time-series property
+% that motivates fractional differencing is stable. Stability of d*
+% validates the FFD-only-on-ATR design choice in 3.6.1; instability of
+% feature selection validates the use of multi-model MDA over
+% single-model SFI in 3.6.3.
 
 
 \subsection{Symbolic Extraction Results}\label{subsec:results_symbolic}
@@ -2736,15 +2777,18 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %
 % ── Extraction summary ────────────────────────────────────────────
 %
-%   - Fold used: split 27 (groups 6 and 7), fold\_selection="last". Test
-%     set covers 2024-08-21 to 2026-04-19, the most recent CPCV partition;
-%     closest to deployment scenario. Locked-run KAN F1 on this fold:
-%     0.5293.
+%   - Fold used: split 27 (groups 6 and 7), fold\_selection="last".
+%     Test set covers 2024-08-21 to 2026-04-19, the most recent CPCV
+%     partition; closest to deployment scenario. Locked-run KAN F1 on
+%     this fold: 0.4628.
 %   - Top-5 stable features by CPCV selection frequency all reach the
 %     extraction step (the previous locked configuration suffered a
 %     skewness subset bug; the expanded 73-feature MDA pool resolves
-%     it). Top-5 ranking entering extraction: eth\_btc\_ratio (75\%),
-%     skewness (71\%), bb\_width (57\%), us2y (43\%), kurtosis (43\%).
+%     it, even with skewness now sitting below the global 50\%
+%     threshold at the 28-fold level). Top-5 ranking entering
+%     extraction: eth\_btc\_ratio (61\%), bb\_width (54\%), skewness
+%     (46\%), log\_returns\_lag1 (32\%), natgas\_ret\_30 (32\%). 67
+%     features excluded.
 %   - Training sample size: 530 train + 133 val (after the 80/20 split
 %     on the split-27 training fold). 5 features in the input matrix.
 %   - Architecture (CPCV-matched, single hidden layer). The locked
@@ -2758,17 +2802,21 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 % ── Training diagnostics ─────────────────────────────────────────
 %
 %   - Phase 1 (Adam, 600 steps, weight decay 1e-3, noise std 0.05):
-%     final train accuracy 0.6434, validation accuracy 0.6241.
-%   - Phase-1 53\% gate PASSED. The pre-prune val\_acc of 0.6241 clears
-%     the 0.53 threshold by 9.4 percentage points. This reverses the
-%     previous locked configuration, in which the gate failed at
-%     val\_acc 0.4812 (and the pipeline logged a warning but continued
-%     to symbolification per the design). The Phase-1 gate is no longer
-%     a caveat for this extraction.
+%     final train accuracy 0.4604, validation accuracy 0.5038.
+%   - Phase-1 53\% gate FAILS (val\_acc 0.5038 < 0.53 by 0.26
+%     percentage points; the pipeline logs the warning "Adam phase
+%     val\_acc=0.5038 < 0.53 minimum. PyKAN may not have learned
+%     meaningful patterns" but continues to symbolification per the
+%     design). The gate-failure pattern returns relative to the
+%     previous locked configuration, where Phase 1 had cleared
+%     0.6241. Recovery happens in the subsequent LBFGS phases, but
+%     the diagnostic that the previous run used as evidence of a
+%     clean training trajectory is no longer available for the
+%     current run.
 %   - Phase 2a (LBFGS warmup, 20 steps, no regularisation): train
-%     0.6849, val 0.5865.
-%   - Phase 2b (LBFGS sparsity, 20 steps, lambda=2e-3): train 0.7075,
-%     val 0.5564.
+%     0.6962, val 0.5489.
+%   - Phase 2b (LBFGS sparsity, 20 steps, lambda=2e-3): train 0.7245,
+%     val 0.5940.
 %   - Grid extension skipped (n\_train=530 too small for grid 3 -> 5
 %     expansion).
 %   - Detailed phase-by-phase logs in Appendix F.
@@ -2782,68 +2830,79 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %     distribution does not contain any below-threshold edges, so
 %     structural sparsification offers no compression at this
 %     configuration.
-%   - Post-prune validation accuracy: 0.5564 (unchanged from pre-prune,
-%     since no edges were removed).
+%   - Post-prune validation accuracy: 0.5940 (unchanged from Phase 2b
+%     final, since no edges were removed).
 %
-% ── Symbolification rate: 100\% (14 of 14 edges) ──────────────────
+% ── Symbolification rate: 93\% (13 of 14 edges) ────────────────────
 %
-%   - All edges pass the constant-skip + brute-force fallback at the
-%     0.30 R^2 threshold. R^2 distribution across the 14 symbolified
-%     edges: min 0.7768, median 0.9540, max 0.9998.
+%   - All 13 symbolified edges clear the 0.30 R^2 threshold; 1 edge is
+%     skipped during the symbolic substitution stage (no symbolic
+%     candidate could be assigned). R^2 distribution across the 13
+%     symbolified edges: min 0.5746, median 0.9960, max 1.0000.
 %   - Top-five edges by R^2:
-%       Edge (0, 0, 1): cos,  R^2 = 0.9998.
-%       Edge (0, 4, 1): sin,  R^2 = 0.9995.
-%       Edge (0, 2, 0): tanh, R^2 = 0.9988.
-%       Edge (0, 0, 0): x^2,  R^2 = 0.9980.
-%       Edge (0, 4, 0): cos,  R^2 = 0.9976.
+%       Edge (0, 0, 0): sin, R^2 = 1.0000.
+%       Edge (0, 0, 1): sin, R^2 = 1.0000.
+%       Edge (0, 1, 1): sin, R^2 = 0.9998.
+%       Edge (0, 1, 0): sin, R^2 = 0.9997.
+%       Edge (0, 2, 0): sin, R^2 = 0.9988.
 %
 % ── Surviving features (5; no subset-bug exclusion this run) ─────
 %
 %   - eth\_btc\_ratio (external / crypto-macro group, CoinMetrics-
-%     sourced ETH/BTC alt-rotation signal). Selected in 75\% of CPCV
+%     sourced ETH/BTC alt-rotation signal). Selected in 61\% of CPCV
 %     folds at the 28-fold level; most stable feature in the dataset.
+%   - bb\_width (TA / volatility group, Bollinger Band width).
+%     Selected in 54\% of CPCV folds.
 %   - skewness (TA / distribution-shape group, rolling 21-day third
-%     moment of log returns). Selected in 71\% of CPCV folds.
-%   - bb\_width (TA / volatility group, Bollinger Band width). Selected
-%     in 57\% of CPCV folds.
-%   - us2y (external / macro group, US 2-year Treasury yield from FRED
-%     DGS2). Selected in 43\% of CPCV folds. First macro-rate feature
-%     to enter the symbolic representation in any locked configuration.
-%   - kurtosis (TA / distribution-shape group, rolling 21-day fourth
-%     moment of log returns). Selected in 43\% of CPCV folds.
-%   - Group breakdown: 3 TA (skewness, bb\_width, kurtosis), 1 crypto-
-%     macro (eth\_btc\_ratio), 1 macro (us2y), 0 on-chain, 0 lag, 0
-%     from any other group. TA dominates the surviving set (3 of 5),
-%     reversing the previous locked configuration where TA contributed
-%     only 1 of 4 (chaikin\_osc).
+%     moment of log returns). Selected in 46\% of CPCV folds (below
+%     the 50\% threshold globally, but rises into the top-5 fold-
+%     specific stability ranking on the deployment-relevant final
+%     fold).
+%   - log\_returns\_lag1 (lag / autoregressive group, 1-day lag of log
+%     returns). Selected in 32\% of CPCV folds. First lag feature to
+%     enter the symbolic representation in any locked configuration;
+%     previously the lag group had contributed 0 features to any
+%     extraction.
+%   - natgas\_ret\_30 (external / macro group, 30-day natural gas
+%     return). Selected in 32\% of CPCV folds. First time natural gas
+%     enters the symbolic representation; the previous configuration's
+%     macro contender was us2y.
+%   - Group breakdown: 2 TA (bb\_width, skewness), 1 crypto-macro
+%     (eth\_btc\_ratio), 1 macro (natgas\_ret\_30), 1 lag
+%     (log\_returns\_lag1), 0 on-chain, 0 mathematical (AFML Part 4).
+%     Lag and macro features enter for the first time: the surviving
+%     set now spans four feature families rather than the three of
+%     the previous run.
 %
 % ── Pre-symbolic vs. post-symbolic accuracy ──────────────────────
 %
-%   - Pre-symbolic (B-spline KAN, post-prune): 55.64\%.
+%   - Pre-symbolic (B-spline KAN, post-prune): 59.40\%.
 %   - Post-symbolic (closed-form formula, after affine fine-tuning):
-%     60.15\%.
-%   - Delta = +4.51 percentage points (post exceeds pre by 4.5 pp).
+%     60.90\%.
+%   - Delta = +1.50 percentage points (post exceeds pre by 1.5 pp).
 %   - Reading: the closed-form approximation improves validation
-%     accuracy over the trained spline network. The 14-function
-%     symbolic library matches the learned B-spline shapes well enough
-%     (median edge R^2 = 0.9540) that the symbolic substitution acts as
-%     a smoothing regulariser; the affine fine-tuning step (30 LBFGS
-%     steps at lr=4e-4) then tunes the 5 affine parameters per edge to
-%     the validation distribution. The post-symbolic 60.15\% sits 10.2
-%     percentage points above the 50\% baseline and 7.2 percentage
-%     points above the 53\% Phase-1 gate. The formula should therefore
-%     be read as a tightened version of the KAN's decision boundary,
-%     not as a degraded surrogate.
-%   - This reverses the previous locked configuration where post
-%     (52.63\%) sat 4.5 pp below pre (57.14\%). The reversal is the
-%     joint effect of three changes: the Phase-1 gate now passes
-%     pre-prune (Adam endpoint at 0.6241 rather than 0.4812 vs. KAN's
-%     harder landing in the previous noise-injection trajectory); the
-%     symbolification cleanly fits all 14 edges (median R^2 0.9540,
-%     vs. the previous run where one edge was left as a spline with
-%     R^2 0.7871); and the affine fine-tuning step lands the post-prune
-%     model in a basin that generalises slightly better than the spline
-%     endpoint.
+%     accuracy over the trained spline network, in the same positive
+%     direction as the previous locked configuration but with a
+%     smaller margin (+1.5 pp vs. the previous +4.5 pp). The
+%     14-function symbolic library matches the learned B-spline shapes
+%     well enough at the top end (top 5 edges all R^2 ~ 1.0000 with
+%     the sin primitive) but the minimum R^2 (0.5746) is markedly
+%     lower than the previous run's 0.7768, meaning one or more
+%     low-R^2 edges acts as a noisier approximation. The affine
+%     fine-tuning step (30 LBFGS steps at lr=4e-4) then tunes the 5
+%     affine parameters per edge to the validation distribution. The
+%     post-symbolic 60.90\% sits 10.90 percentage points above the
+%     50\% baseline and 7.90 percentage points above the 53\% Phase-1
+%     gate that the spline KAN failed pre-prune.
+%   - The post-symbolic gain shrinks relative to the previous locked
+%     configuration (+1.5 pp vs. +4.5 pp). The smaller gain is
+%     consistent with three diagnostic changes: the pre-symbolic
+%     baseline starts higher (0.5940 vs. 0.5564), leaving less room
+%     for improvement; the minimum edge R^2 drops to 0.5746 (vs.
+%     0.7768), meaning one symbolic substitution is a rougher fit;
+%     and one edge is skipped entirely (the 93\% rate vs. 100\%).
+%     Together these say the formula in the current run is a slightly
+%     noisier representation of the same underlying decision logic.
 %
 % ── The decision function (numbered equation in the thesis) ──────
 %
@@ -2851,31 +2910,31 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 % reference (paste these terms into align* / cases for readability):
 %
 %   decision(x) =
-%       - (130/211) sin( (220/933) (305/103 - 6103 eth\_btc\_ratio / 940)^2
-%                        + (15/976) (-195 us2y / 23 - 421/953)^2
-%                        - (1361/645) cos(1994 kurtosis / 555 - 842/563)
-%                        + (713/946) cos(1446 skewness / 461 - 2507/831)
-%                        - (1079/434) tanh(779 bb\_width / 375 - 745/677)
-%                        - 3644/809 )
-%       + (353/329) sin( (1/723) (-457 bb\_width / 53 - 1626/823)^3
-%                        - (11/644) (-9425 skewness / 953 - 441/377)^2
-%                        - (915/796) sin(519 kurtosis / 146 + 2279/705)
-%                        + (71/636) sin(1157 us2y / 366 + 89/35)
-%                        + (98/283) cos(2333 eth\_btc\_ratio / 461 + 1774/239)
-%                        + 6288/931 )
-%       - (1031/998) sin( (1/677) (-457 bb\_width / 53 - 1626/823)^3
-%                         - (7/384) (-9425 skewness / 953 - 441/377)^2
-%                         - (687/560) sin(519 kurtosis / 146 + 2279/705)
-%                         + (61/512) sin(1157 us2y / 366 + 89/35)
-%                         + (17/46)  cos(2333 eth\_btc\_ratio / 461 + 1774/239)
-%                         + 719/215 )
-%       - (994/885) cos( (233/982) (305/103 - 6103 eth\_btc\_ratio / 940)^2
-%                        + (11/711) (-195 us2y / 23 - 421/953)^2
-%                        - (1257/592) cos(1994 kurtosis / 555 - 842/563)
-%                        + (135/178) cos(1446 skewness / 461 - 2507/831)
-%                        - (708/283) tanh(779 bb\_width / 375 - 745/677)
-%                        + 6359/991 )
-%       + 1007/546
+%       - (79/176) sin( (4/915) (-4484 log\_returns\_lag1 / 489 - 817/451)^3
+%                       + (7440/547) sin(311 bb\_width / 857 - 59/58)
+%                       + (1799/892) sin(2353 eth\_btc\_ratio / 812 - 792/151)
+%                       - (6825/583) sin(631 skewness / 429 - 4125/931)
+%                       - (343/401) | 5028 natgas\_ret\_30 / 827 + 53/29 |
+%                       + 4553/215 )
+%       + (461/734) sin( - (495/166) sin(1058 bb\_width / 873 + 1994/835)
+%                        + (2811/311) sin(3135 eth\_btc\_ratio / 982 + 16/13)
+%                        + (1913/696) sin(691 skewness / 434 - 6577/941)
+%                        + (31/376) atan(10 log\_returns\_lag1 + 10)
+%                        - (163/65) atan(3448 natgas\_ret\_30 / 801 - 523/156)
+%                        + 9820/697 )
+%       + (439/794) tanh( (6/653) (-4484 log\_returns\_lag1 / 489 - 817/451)^3
+%                         + (21247/743) sin(311 bb\_width / 857 - 59/58)
+%                         + (759/179) sin(2353 eth\_btc\_ratio / 812 - 792/151)
+%                         - (7433/302) sin(631 skewness / 429 - 4125/931)
+%                         - (651/362) | 5028 natgas\_ret\_30 / 827 + 53/29 |
+%                         + 50188/973 )
+%       + (405/821) tanh( - (2551/277) sin(1058 bb\_width / 873 + 1994/835)
+%                         + (12115/434) sin(3135 eth\_btc\_ratio / 982 + 16/13)
+%                         + (4117/485) sin(691 skewness / 434 - 6577/941)
+%                         + (55/216) atan(10 log\_returns\_lag1 + 10)
+%                         - (2579/333) atan(3448 natgas\_ret\_30 / 801 - 523/156)
+%                         + 6445/256 )
+%       + 21/583
 %
 %   P(up | x) = 1 / (1 + exp(-decision(x)))
 %
@@ -2887,138 +2946,192 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %
 % ── Functional-form pattern ──────────────────────────────────────
 %
-%   - The formula uses five distinct primitives: sin, cos, tanh, the
-%     squared term (...)^2, and the cubed term (...)^3. This is a
-%     substantively different pattern from the previous locked
-%     configuration's sin, cos, exp, atan, x^2 set:
-%       * exp and atan are no longer present (they were the two
-%         saturating monotonic primitives in the previous formula,
-%         attached to eth\_btc\_ratio and exchange\_supply\_pct).
-%       * tanh enters as a bounded smooth saturator, attached to
-%         bb\_width in both of the outer sin terms with the squared /
-%         cosine inner argument.
-%       * (...)^3 enters as a non-monotonic odd-symmetric primitive,
-%         attached to bb\_width in both of the outer sin terms with the
-%         cubed / sine inner argument; this is the first time a cubic
-%         primitive has survived the R^2 threshold in any locked
-%         configuration.
-%       * The (...)^2 primitive attaches to eth\_btc\_ratio and us2y in
-%         two of the four outer terms and to skewness in the other two;
-%         the squared transform is the dominant non-trigonometric
-%         primitive.
+%   - The formula uses five distinct primitives: sin, tanh, atan, the
+%     cubed term (...)^3, and the absolute value | ... |. This is again
+%     substantively different from the previous locked configuration's
+%     sin, cos, tanh, x^2, x^3 set:
+%       * cos and x^2 are no longer present. The previous run had cos
+%         as a leading primitive (top-edge R^2 0.9998) and x^2 as the
+%         dominant non-trigonometric primitive; in the locked run both
+%         are replaced by sin (top 5 edges all sin at R^2 >= 0.9988)
+%         and by the new primitives atan and | ... |.
+%       * atan enters as a bounded smooth saturator, attached to
+%         log\_returns\_lag1 and natgas\_ret\_30 in both of the inner-
+%         sum sin and tanh outer terms with the trigonometric inner
+%         argument; this is the first time atan has survived since the
+%         original 62-feature locked configuration.
+%       * | ... | (absolute value, denoted Abs(.) in SymPy) enters as
+%         a non-smooth V-shape primitive, attached to natgas\_ret\_30
+%         in two outer terms. Its presence is the source of the
+%         natgas\_ret\_30 sensitivity-at-mean undefined-gradient issue
+%         noted below: | . | has a kink at zero and the dataset mean
+%         of natgas\_ret\_30 (+0.0029) sits inside the neighbourhood of
+%         the kink, so numerical differentiation reports a non-finite
+%         gradient.
+%       * (...)^3 survives from the previous run, again attached to
+%         log\_returns\_lag1 in the inner-cube position of two outer
+%         terms with the cubed / sine inner argument.
+%       * tanh survives as a bounded smooth saturator, now used as the
+%         outer wrapper of two of the four outer terms rather than only
+%         as an inner primitive.
 %   - The four outer terms split into two structural classes: two
-%     outer sin terms with the squared / tanh inner argument, and two
-%     outer cos / sin terms with the cubed / sine inner argument. The
-%     KAN learned two complementary internal representations of the
-%     decision boundary, then averaged them through the four-term
-%     outer combination.
+%     outer sin terms (the first and second outer terms) and two outer
+%     tanh terms (the third and fourth). The inner arguments of the
+%     first and third terms share the same cube-and-sines structure on
+%     log\_returns\_lag1, bb\_width, eth\_btc\_ratio, skewness, and
+%     natgas\_ret\_30; the inner arguments of the second and fourth
+%     terms share the same atan-and-sines structure on the same
+%     features. The KAN learned two complementary internal
+%     representations and combined them through the sin / tanh outer
+%     wrappers.
 %
 % ── Interpretive note (factual; economic interpretation in 5.3) ──
 %
 %   - Each surviving feature appears in exactly four terms of the
 %     formula (term-structure analysis confirms n\_terms\_in\_formula
-%     = 4 for each of eth\_btc\_ratio, skewness, bb\_width, us2y,
-%     kurtosis). The five input features therefore contribute roughly
-%     equally to formula complexity, with no single feature dominating
-%     the structural footprint.
+%     = 4 for each of eth\_btc\_ratio, bb\_width, skewness,
+%     log\_returns\_lag1, natgas\_ret\_30). The five input features
+%     therefore contribute roughly equally to formula complexity, with
+%     no single feature dominating the structural footprint. The
+%     cross-run robustness of this n=4 result across the previous and
+%     current locked configurations is suggestive evidence that
+%     PyKAN's pruning step systematically produces a four-outer-term
+%     representation when the input dimensionality is 5 and the hidden
+%     layer is width-2.
 %
 % ── Numerical sensitivity at the dataset mean ────────────────────
 %
 % Partial derivatives evaluated at the mean of each feature, scaled by
 % the feature's standard deviation, give the per-sigma effect on the
-% decision function (logit). Locked-run table (paste as a tabular
-% environment in the thesis):
+% decision function (logit). The sensitivity table is computed at the
+% dataset mean by default and reported as NaN for features whose
+% symbolic formula has a pole at that point. Locked-run table (paste
+% as a tabular environment in the thesis):
 %
 %   Feature           | mean    | std     | d/dx at mean | sigma-effect on logit | sigma Delta\_p (linearised)
-%   eth\_btc\_ratio    | +0.0461 | +0.0247 | -17.6870     |  -0.4367              | -0.1092
-%   skewness          | -0.0559 | +1.0171 |  -0.8192     |  -0.8333              | -0.2083
-%   bb\_width          | +0.2758 | +0.1692 |  -7.3720     |  -1.2474              | -0.3119
-%   us2y              | +2.0931 | +1.4924 |  +6.8593     | +10.2365              | +2.5591
-%   kurtosis          | +2.0727 | +3.2182 |  +3.2915     | +10.5927              | +2.6482
+%   eth\_btc\_ratio    | +0.0461 | +0.0247 | -2.9437      |  -0.0727              | -0.0182
+%   bb\_width          | +0.2758 | +0.1692 | -1.9317      |  -0.3269              | -0.0817
+%   skewness          | -0.0559 | +1.0171 | -1.7309      |  -1.7606              | -0.4401
+%   log\_returns\_lag1 | -0.0005 | +0.0415 | +0.0783      |  +0.0032              | +0.0008
+%   natgas\_ret\_30    | +0.0029 | +0.1622 |  NaN         |   NaN                 |  NaN
 %
-%   - us2y and kurtosis dominate the formula in absolute sigma-effect
-%     terms (+10.24 and +10.59 respectively on the logit). At p=0.5, a
-%     one-sigma increase in either feature would (linearised) shift
-%     P(up) by approximately +2.56 or +2.65 units, well outside the
-%     [0, 1] probability range; the honest reading is that both
-%     features drive the model into saturation, lifting P(up) from
-%     approximately 0.50 to approximately sigmoid(+10) ~ 0.99996 in the
-%     up direction. The two features therefore act as conditional
-%     "strongly bullish" switches in the formula.
-%   - bb\_width carries the largest negative sigma-effect (-1.25 on the
-%     logit, linearised sigma Delta\_p ~ -0.31), enough to drive P(up)
-%     from approximately 0.50 to approximately sigmoid(-1.25) ~ 0.22.
-%     Direction reads naturally: wider Bollinger bands signal high
-%     volatility, and the model conditions on lower forward direction
-%     probability in such regimes.
-%   - skewness carries sigma-effect -0.83 (linearised sigma Delta\_p
-%     ~ -0.21); a one-sigma increase in 21-day return skewness moves
-%     P(up) from approximately 0.50 to approximately sigmoid(-0.83)
-%     ~ 0.30. The direction is consistent with the literature on
-%     right-skewed crypto-return regimes: positive skew (large isolated
-%     up-moves) is followed by mean-reverting weakness rather than
-%     persistence.
-%   - eth\_btc\_ratio sigma-effect -0.44 (linearised sigma Delta\_p
-%     ~ -0.11). A one-sigma increase in the ETH/BTC ratio (alt-
-%     rotation strength) shifts P(up) from approximately 0.50 to
-%     approximately sigmoid(-0.44) ~ 0.39; alt rotation away from BTC
-%     is mildly bearish on forward BTC direction, but the effect is
-%     the smallest meaningful magnitude in the formula.
-%   - Scale check. Unlike the previous locked configuration (where
-%     chaikin\_osc produced a 10\textsuperscript{10} scaling artefact),
-%     all five surviving features have interpretable scales. The
-%     bb\_width, skewness, us2y, and kurtosis columns are bounded or
-%     normally-scaled by construction; eth\_btc\_ratio is bounded above
-%     by the historical maximum (~0.13 in this sample). No rescaling
-%     caveat is needed for this formula.
+%   - skewness is the dominant feature in the formula in absolute
+%     sigma-effect terms (-1.76 on the logit, linearised sigma
+%     Delta\_p ~ -0.44). A one-sigma increase in 21-day return skewness
+%     moves P(up) from approximately 0.50 to approximately
+%     sigmoid(-1.76) ~ 0.15. The direction is consistent with the
+%     literature on right-skewed crypto-return regimes: positive skew
+%     (large isolated up-moves) is followed by mean-reverting weakness
+%     rather than persistence. This is a structural reversal from the
+%     previous locked configuration, where the dominant per-sigma
+%     effects were the saturating positive switches us2y (+10.24) and
+%     kurtosis (+10.59); the current formula has no such saturating-
+%     positive features, and the strongest signal is negative and
+%     order-of-magnitude smaller (-1.76 vs. +10.24).
+%   - bb\_width carries sigma-effect -0.33 on the logit, linearised
+%     sigma Delta\_p ~ -0.08, enough to move P(up) from approximately
+%     0.50 to approximately sigmoid(-0.33) ~ 0.42. Direction reads
+%     naturally: wider Bollinger bands signal high volatility, and the
+%     model conditions on lower forward direction probability in such
+%     regimes.
+%   - eth\_btc\_ratio sigma-effect -0.07 on the logit, linearised sigma
+%     Delta\_p ~ -0.02; a one-sigma increase in the ETH/BTC ratio
+%     (alt-rotation strength) shifts P(up) by approximately 1.8
+%     percentage points downward. Alt rotation away from BTC is mildly
+%     bearish on forward BTC direction, but the magnitude is now an
+%     order smaller than the dominant skewness effect.
+%   - log\_returns\_lag1 sigma-effect +0.003 on the logit, linearised
+%     sigma Delta\_p ~ +0.001. Effectively flat. The 1-day lag of log
+%     returns survived the extraction step on selection-frequency
+%     criterion (32\% of folds) but its symbolic representation in the
+%     locked formula contributes essentially zero gradient at the
+%     dataset mean.
+%   - natgas\_ret\_30 gradient at dataset mean: NaN. The symbolic
+%     formula contains an | 5028 natgas\_ret\_30 / 827 + 53/29 | term
+%     in two of the four outer summands. SymPy's automatic
+%     differentiation produces a sign(.) x derivative(.) term that
+%     includes re(.) and im(.) decompositions at the dataset mean, and
+%     the resulting expression evaluates to non-real or numerically-
+%     unstable derivatives. The diagnostic logs report "1/5 features
+%     have non-finite gradient at the median; reported as NaN.
+%     Consider eval\_point='median' or inspect the symbolic formula
+%     for poles near these features' median." The honest reading is
+%     that the symbolic gradient computation hits a SymPy edge case at
+%     the natgas\_ret\_30 evaluation point and the sigma-effect cannot
+%     be reported numerically.
+%   - Scale check. As in the previous locked configuration (and unlike
+%     the original 62-feature run with chaikin\_osc), all five
+%     surviving features have interpretable scales. bb\_width,
+%     skewness, and log\_returns\_lag1 are bounded or normally-scaled
+%     by construction; eth\_btc\_ratio is bounded above by the
+%     historical maximum (~0.13 in this sample); natgas\_ret\_30 is a
+%     30-day return (typically +/- 0.20). No rescaling caveat is
+%     needed for the formula, but the | . | primitive on
+%     natgas\_ret\_30 introduces the non-differentiability noted above.
 %
 % ── On-chain comment (Q2 evidence) ───────────────────────────────
 %
-%   - Zero on-chain features survive extraction. This is a sharpening
-%     of the previous locked configuration's finding (where
-%     exchange\_supply\_pct was the single on-chain feature in the
-%     surviving four). The expanded 73-feature MDA pool reshuffled the
-%     top-5 stability set in a way that displaced exchange\_supply\_pct
-%     (which fell from 46\% to a lower selection frequency once macro
-%     14-day variants and lags 4 / 5 / 6 / 21 competed for the cap).
-%     Q2 answer hardens to "on-chain features do not exhibit stability
-%     under the AFML feature-selection regime applied here, and do not
-%     survive into the locked symbolic representation either." The
-%     earlier locked-run observation that one on-chain feature could
-%     carry the formula's strongest economic effect is regime-specific
-%     and does not generalise to the expanded feature universe.
+%   - Zero on-chain features survive extraction. This finding is now
+%     stable across the previous and current locked configurations
+%     (the previous 73-feature 2-seed run also produced zero on-chain
+%     survivors, displacing the original 62-feature run's
+%     exchange\_supply\_pct). The Q2 answer hardens further: not only
+%     do on-chain features fail to clear cross-fold stability (Section
+%     4.5), they consistently fail to enter the locked symbolic
+%     representation regardless of seed cardinality. The earlier
+%     62-feature locked-run observation that one on-chain feature
+%     could carry the formula's strongest economic effect is regime-
+%     specific and does not generalise to the expanded feature
+%     universe at either 2 or 3 seeds.
+%
+% ── Lag-feature comment (new Q2 evidence) ────────────────────────
+%
+%   - For the first time a lag feature enters the symbolic
+%     representation: log\_returns\_lag1 is one of the five surviving
+%     features. Its sigma-effect is effectively zero (+0.0008 sigma
+%     Delta\_p), so its presence in the formula does not translate
+%     into meaningful predictive contribution at the dataset mean.
+%     The reading: the lag-features-in-MDA-pool design choice (Section
+%     3.4.4, advisor-driven, lag features compete with engineered
+%     features rather than feeding only into AR Logistic) admits lag
+%     features into the surviving set in some configurations, but the
+%     surviving lag feature's contribution is structural rather than
+%     economic.
 %
 % ── Surviving-feature group breakdown ────────────────────────────
 %
-%   - 3 of 5 from TA (skewness, bb\_width, kurtosis).
+%   - 2 of 5 from TA (bb\_width, skewness).
 %   - 1 of 5 from crypto-macro (eth\_btc\_ratio).
-%   - 1 of 5 from macro (us2y).
-%   - 0 of 5 from on-chain, mathematical (AFML Part 4), or lag groups.
+%   - 1 of 5 from macro (natgas\_ret\_30).
+%   - 1 of 5 from lag (log\_returns\_lag1).
+%   - 0 of 5 from on-chain or mathematical (AFML Part 4) groups.
 %
 % ── Section closer ───────────────────────────────────────────────
 %
-%   - "The symbolic extraction pipeline produces a closed-form decision
-%      function with 100\% symbolification rate (14 of 14 edges) on a
-%      five-feature subset (eth\_btc\_ratio, skewness, bb\_width, us2y,
-%      kurtosis). Post-symbolic accuracy is 60.15\%, a 4.5 percentage-
-%      point gain over the pre-symbolic 55.64\% and 10.15 percentage
-%      points above the 50\% baseline. The formula uses five primitives
-%      (sin, cos, tanh, x^2, x^3) and contains four outer terms, with
-%      each surviving feature contributing equally. The closed-form
-%      approximation improves accuracy relative to the trained spline
-%      network, producing a humanly auditable expression in which two
-%      features (us2y and kurtosis) act as saturating conditional
-%      switches and one feature (bb\_width) carries the largest
-%      interpretable negative effect. Q4 is answered in the affirmative
-%      with no methodological caveat: the skewness subset bug from the
-%      previous configuration is resolved, the Phase-1 53\% gate is
-%      cleared at val\_acc = 0.6241 before pruning, and all 14 edges
-%      symbolify cleanly. RQ4 conclusion: closed-form interpretability
-%      is achievable, informative, and accuracy-preserving (in fact
-%      accuracy-enhancing) even in a regime where DSR < 0.95 across all
-%      benchmark models; the structural transparency of the decision
-%      function is the primary contribution and stands independent of
-%      the DSR result."
+%   - "The symbolic extraction pipeline produces a closed-form
+%      decision function with 93\% symbolification rate (13 of 14
+%      edges; one edge skipped) on a five-feature subset
+%      (eth\_btc\_ratio, bb\_width, skewness, log\_returns\_lag1,
+%      natgas\_ret\_30). Post-symbolic accuracy is 60.90\%, a 1.5
+%      percentage-point gain over the pre-symbolic 59.40\% and 10.90
+%      percentage points above the 50\% baseline. The formula uses
+%      five primitives (sin, tanh, atan, x^3, |x|) and contains four
+%      outer terms, with each surviving feature contributing equally.
+%      The closed-form approximation improves accuracy relative to the
+%      trained spline network, producing a humanly auditable
+%      expression in which one feature (skewness) carries the dominant
+%      negative effect and one feature (natgas\_ret\_30) hits a SymPy
+%      non-differentiability at the dataset mean. Q4 is answered in
+%      the affirmative with three structural caveats: the Phase-1
+%      53\% gate fails again (val\_acc 0.5038), recovery happens only
+%      in the LBFGS phases; one of fourteen edges remains
+%      un-symbolified; and one of five surviving features has an
+%      undefined gradient at the dataset mean. RQ4 conclusion:
+%      closed-form interpretability is achievable, informative, and
+%      accuracy-preserving even in a regime where DSR < 0.95 across
+%      all benchmark models; the structural transparency of the
+%      decision function is the primary contribution and stands
+%      independent of the DSR result."
 
 
 
@@ -3037,50 +3150,47 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %
 % Topics:
 %   - The joint DSR / PBO finding. No model achieves DSR >= 0.95 (top
-%     among trained models is LSTM at 0.3925), and PBO sits in the
-%     moderate-overfitting regime at 0.3714. The leave-one-out PBO
-%     analysis shows that excluding Logistic Regression reduces PBO
-%     most (to 0.143), excluding KAN reduces it to 0.229, and
-%     excluding XGBoost reduces it to 0.257, while excluding LSTM
-%     actually raises it to 0.429. The combination is informative on a
-%     finer grain than DSR alone would allow: LSTM is the only model
-%     whose presence stabilises the cross-section, and the variance is
-%     localised in Logistic Regression / KAN / XGBoost rotating in the
-%     IS-best slot across sub-path partitions. The honest reading is
-%     "LSTM is the most stable choice in this cross-section, its
-%     bootstrap CI is the only trained-model CI that stays strictly
-%     positive, but its 0.39 DSR sits well below the 0.95 multiple-
-%     testing-corrected significance threshold; meanwhile a naive
-%     buy-and-hold strategy posts a 2.23 median Sharpe over the same
-%     period with the cost of a -99.98\% maximum drawdown". This is a
-%     more nuanced position than either DSR or PBO alone could deliver:
-%     not a regime where rankings are random (PBO ~ 0.5) or
-%     anti-predictive (PBO > 0.5), but one where the LSTM-versus-rest
-%     ordering is stable, the within-rest ordering is unstable, and
-%     the absolute level of trained-model performance is too uncertain
-%     to claim predictive ability above what buy-and-hold delivers.
-%   - Locating the variance. The leave-one-out PBO (Section 4.4) shows
-%     that Logistic Regression carries the largest single contribution
-%     to IS/OOS instability (Delta PBO -0.229 when excluded), followed
-%     by KAN (Delta -0.143) and XGBoost (Delta -0.114). LSTM is the
-%     opposite: its exclusion raises PBO to 0.429, the highest value
-%     in the LOO table. The reading: LSTM's low path-Sharpe std
-%     (0.8284, lowest among trained models) makes it a consistent
-%     IS-winner across sub-path partitions, anchoring the cross-section;
-%     remove it and the rotation among Logistic Regression, KAN, and
-%     XGBoost dominates. This reverses the previous locked configuration's
-%     reading, in which the four nonlinear models were interchangeable
-%     from a PBO perspective and any one of them could absorb the
-%     IS/OOS instability when removed. The reversal is the genuine
-%     effect of the expanded feature universe (73 vs. 62) and the
-%     ranking reshuffle it produces: Logistic Regression's promotion
-%     to the top-half of the median-Sharpe ranking turns it into a
-%     credible IS-winner candidate, while KAN's demotion to fifth
-%     place makes it volatile rather than dominant. The honest framing
-%     is "the cross-section anchors on LSTM and rotates among the
-%     other models; on-chain features no longer survive the symbolic
-%     representation; the apparent stability of the previous locked
-%     configuration was partly an artefact of a tighter feature pool".
+%     trained model is XGBoost at 0.2376; buy-and-hold posts a higher
+%     median Sharpe of 2.2321 but is not included in the DSR
+%     computation since it does not enter the selection pool). PBO
+%     sits in the moderate-overfitting regime at 0.343, with 12 of 35
+%     IS/OOS partitions seeing the IS-winner underperform the OOS
+%     median. The combination is informative: rankings are partially
+%     reproducible, but every trained-model bootstrap CI now crosses
+%     zero (the previous run's LSTM strictly-positive-CI evidence does
+%     not survive into the current configuration; LSTM's CI is now
+%     -0.3630 to 1.1349), and the model that any selection rule picks
+%     does not achieve a Sharpe that survives multiple-testing
+%     correction. The honest reading is "no trained model in this
+%     six-model cross-section clears the multiple-testing-corrected
+%     significance threshold and no trained model's bootstrap CI stays
+%     strictly positive, and a naive buy-and-hold strategy on the same
+%     data posts a median Sharpe roughly 2.4x the best trained model's
+%     figure". This is a different position than either DSR or PBO
+%     alone could deliver: not a regime where rankings are random
+%     (PBO ~ 0.5) or anti-predictive (PBO > 0.5), but one where the
+%     cross-section is not robust enough (PBO >= 0.3) to support a
+%     confident pick, and even the most defensible pick does not earn
+%     the significance label.
+%   - Locating the variance. The leave-one-out PBO (Section 4.4)
+%     shows that Logistic Regression carries the largest single
+%     contribution to IS/OOS instability (Delta PBO -0.229 when
+%     excluded), followed by XGBoost (Delta -0.143) and LSTM (Delta
+%     -0.086). KAN is the opposite: its exclusion raises PBO to 0.514,
+%     the highest value in the LOO table and past the random-selection
+%     threshold. The reading: KAN's well-calibrated probability output
+%     (mean P(Up) 0.5572 vs. the 0.5703 base rate, the closest to the
+%     base rate of any trained model) makes it a structural anchor in
+%     the cross-section; remove it and the rotation among Logistic
+%     Regression, XGBoost, and LSTM dominates. This is the same kind
+%     of asymmetry the previous locked configuration produced for
+%     LSTM, now relocated to KAN. The cross-run pattern that emerges
+%     is suggestive: across the previous and current locked
+%     configurations, exactly one model has been the "anchor" (LSTM
+%     under 2 seeds, KAN under 3 seeds), and the anchor identity
+%     moves with the seeds configuration. The structural finding is
+%     that the cross-section needs one well-calibrated, low-variance
+%     candidate to keep selection reproducible.
 %   - Consistency with EMH. The DSR < 0.95 finding aligns with semi-
 %     strong-form EMH (Fama 1970) for BTC daily direction: under
 %     leakage-free evaluation with multiple-testing correction, no
@@ -3097,51 +3207,50 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %     in median Sharpe is precisely the cost of leveraging selection
 %     into a multiple-testing-corrected significance claim. Cite:
 %     \cite{fama_1970}.
-%   - Chassot and Audrino (2026): properly fitted baselines are hard to
-%     beat. The literature's ML-superiority results came from suboptimal
-%     fitting schemes that handicapped HAR. Direct parallel to this
-%     thesis's findings: AR Logistic (the simplest baseline that trades)
-%     and Logistic Regression (the linear ML baseline) survive within
-%     the moderate-overfitting cross-section without being dominated;
-%     Logistic Regression in particular climbs to fourth place under
-%     the 73-feature pool, and the ranking reshuffle it produces is
-%     part of why PBO drifts from 0.26 to 0.37 in the locked run.
+%   - Chassot and Audrino (2026): properly fitted baselines are hard
+%     to beat. The literature's ML-superiority results came from
+%     suboptimal fitting schemes that handicapped HAR. Direct parallel
+%     to this thesis's findings: AR Logistic (the simplest baseline
+%     that trades) and Logistic Regression (the linear ML baseline)
+%     survive within the moderate-overfitting cross-section without
+%     being dominated; Logistic Regression in particular climbs to
+%     fourth place under the 73-feature pool, and its high path-Sharpe
+%     std (1.4700) is one of the reasons the LOO PBO finds it as the
+%     largest single destabiliser.
 %   - Conservative Predictions (Nabar and Shroff 2023): in low-signal
 %     regimes, abstention beats prediction. The bet-sizing threshold
 %     operationalises this: predictions with p ~ 0.50 produce bet ~ 0,
 %     structural abstention without a separate model. The locked-run
-%     mean P(Up) for KAN is 0.5596 against an empirical base rate of
-%     0.5703 (Delta = -0.0107, well within the +/- 0.03 calibration
+%     mean P(Up) for KAN is 0.5572 against an empirical base rate of
+%     0.5703 (Delta = -0.0131, well within the +/- 0.03 calibration
 %     tolerance), so the calibration audit does not flag KAN, and the
 %     bet-sizing curve is operating on well-calibrated probabilities.
-%     Three other models do now trip a [WARN] flag at this tolerance:
-%     AR Logistic (mean P(Up) 0.5401, Delta -0.0302), XGBoost (0.5363,
-%     Delta -0.0340), and LSTM (0.5337, Delta -0.0366). The flags are
-%     mild (all within 4 pp of the base rate) and do not invert any
-%     model's directional bias, but they suggest that the expanded
-%     feature pool has shifted the average probability output of the
-%     tree-based and neural models slightly toward the negative class
-%     relative to the previous configuration. The negative DSR finding
-%     across the cross-section is therefore a statement about signal
-%     strength rather than about probability quality, but the
-%     calibration footprint is closer to the edge of acceptability in
-%     three of the six trained models.
+%     Two other models trip a [WARN] flag at this tolerance: AR
+%     Logistic (mean P(Up) 0.5401, Delta -0.0302) and LSTM (0.5375,
+%     Delta -0.0328). This is a tighter calibration footprint than the
+%     previous locked configuration, which flagged three trained
+%     models (AR Logistic, XGBoost, LSTM); the current run's XGBoost
+%     moves to ok (Delta -0.0243) and the broader profile shifts
+%     toward calibration tolerance. The negative DSR finding across
+%     the cross-section is therefore a statement about signal strength
+%     rather than about probability quality.
 %   - Three-version pipeline evolution (advisor narrative): inflated
 %     ROC-AUC -> degenerate all-Down predictions -> AFML. Two specific
 %     failure modes motivated AFML adoption: uninformative fixed-time-
-%     horizon labels and structural leakage that standard splits cannot
-%     prevent. The locked-run results show that even after AFML closes
-%     both leakage channels, the residual signal is too weak for any
-%     compared model to clear DSR = 0.95; this is the AFML pay-off. The
-%     methodology produces honest results (PBO 0.37 in the moderate-
-%     overfitting regime, with LSTM anchoring the cross-section) rather
-%     than the inflated metrics that earlier (leaky) pipeline versions
-%     produced. The PBO drift from 0.26 (62-feature configuration) to
-%     0.37 (73-feature configuration) is informative: a more permissive
-%     feature pool widens the candidate set for the IS-best slot and
-%     therefore the IS/OOS rotation, but does not produce a statistically
-%     significant model. The conclusion is robust across both
-%     configurations.
+%     horizon labels and structural leakage that standard splits
+%     cannot prevent. The locked-run results show that even after AFML
+%     closes both leakage channels, the residual signal is too weak
+%     for any compared model to clear DSR = 0.95; this is the AFML
+%     pay-off. The methodology produces honest results (PBO 0.34 in
+%     the moderate-overfitting regime, with KAN anchoring the cross-
+%     section) rather than the inflated metrics that earlier (leaky)
+%     pipeline versions produced. Across the three locked
+%     configurations evaluated to date (62 features / 2 seeds for
+%     neural, 73 features / 2 seeds for neural, 73 features / 3 seeds
+%     for all), PBO has tracked 0.26 -> 0.37 -> 0.34, all within the
+%     [0.25, 0.40] band: a moderate-overfitting reading that is stable
+%     across configurations and constitutes the headline statistical
+%     finding of the thesis.
 
 
 \subsection{KAN Performance in Context}\label{subsec:disc_kan}
@@ -3149,84 +3258,94 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 % Q3, Q4 evidence.
 %
 % Topics:
-%   - KAN ranks 5th of 6 in median Sharpe (0.3834) in the locked
-%     configuration, behind LSTM (1.3377), XGBoost (0.9176), Random
-%     Forest (0.6919), and Logistic Regression (0.5637), but ahead of
-%     AR Logistic (-0.1864). The drop from second place in the previous
-%     locked configuration (median Sharpe 0.9879) to fifth in the
-%     current run is the most prominent ranking change in the
-%     cross-section. KAN's DSR drops in parallel from 0.2509 to 0.0920.
-%     The classification-side metrics remain competitive: mean accuracy
-%     0.5415 (second only to XGBoost's 0.5336 by a small margin) and
-%     mean AUC 0.5211 (second only to Logistic Regression's 0.5261).
-%     KAN therefore retains its classification-quality strength but
-%     loses the bet-sizing translation that previously amplified that
-%     strength into a second-place Sharpe ranking.
-%   - Tension to interpret: stable classification-side metrics with
-%     financial-side decoupling. KAN's mean accuracy of 0.5415 and mean
-%     AUC of 0.5211 are within the top-three of the cross-section, but
-%     its median Sharpe of 0.3834 sits fifth and its bootstrap CI
-%     (-0.3750, 2.0819) is the widest in the trained-model cross-
-%     section. Two factors plausibly drive this decoupling. First, the
-%     expanded 73-feature MDA pool shifts which features survive into
-%     the KAN's input set across folds; the symbolic representation on
-%     split 27 swaps in a new set (eth\_btc\_ratio, skewness, bb\_width,
-%     us2y, kurtosis) that does not include the chaikin\_osc /
-%     exchange\_supply\_pct / silver\_ret\_30 set that the previous
-%     locked configuration distilled. Second, KAN's path-Sharpe std
-%     (1.4409) is the second-highest among trained models, meaning the
-%     model's bet-sizing outputs are now sensitive to which CPCV path
-%     they are evaluated on. The combination produces strong-but-unstable
-%     financial outcomes: high path Sharpe on some paths, near-zero on
-%     others. The DeLong test confirms that KAN's classification-side
-%     edge over the rest of the cross-section is no longer
-%     distinguishable from sampling noise (0 of 15 pairs significant at
-%     alpha = 0.05).
-%   - Statistical-vs-economic gap. KAN's mean AUC of 0.5211 is second
-%     in the cross-section, but every pairwise DeLong test it appears
-%     in returns p > 0.05 (closest competitor: Logistic Regression at
-%     AUC 0.5106, p = 0.50). The classification-side superiority is
-%     indistinguishable from sampling noise at standard significance
-%     levels; what KAN does is post calibrated probabilities (mean
-%     P(Up) 0.5596 against the 0.5703 base rate, Delta -0.0107) that
-%     sit closer to the empirical base rate than three other trained
-%     models (AR Logistic, XGBoost, LSTM all trip the [WARN] flag at
-%     a 0.03 tolerance, Section 5.1). The bet-sizing transformation in
-%     this configuration translates the small calibration advantage
-%     into the third-largest Sortino (0.2332, behind LSTM 1.0629 and
-%     Logistic Regression 0.2230 within rounding) but not into a
-%     leading median Sharpe. The honest reading is: KAN's classification
-%     quality and probability calibration remain competitive, but the
-%     expanded feature universe has dispersed the bet-sizing advantage
-%     across more models, no one of which clears the multiple-testing-
-%     corrected significance threshold.
+%   - KAN ranks 2nd of 6 in median Sharpe (0.8375), behind XGBoost
+%     (0.9483) and ahead of LSTM (0.6029), Logistic Regression
+%     (0.4640), Random Forest (0.3265), and AR Logistic (-0.1864).
+%     Buy-and-hold's 2.2321 sits above the entire trained-model
+%     cross-section. KAN's positioning recovers substantially from
+%     the previous locked configuration, where it ranked 5th of 6 on
+%     median Sharpe (0.3834). The recovery is consistent with the
+%     seeds reconfiguration: in the previous run LSTM and KAN used 2
+%     seeds while the four classical models used 3, leaving a within-
+%     model averaging asymmetry that handicapped the neural models on
+%     path-Sharpe variance; the current run uses 3 seeds for all six
+%     models and KAN's class accuracy advantage translates back into a
+%     competitive Sharpe ranking.
+%   - Classification-side metrics remain competitive. KAN posts mean
+%     accuracy 0.5377 (the highest in the cross-section), mean AUC
+%     0.5205 (the highest in the cross-section), and median win rate
+%     0.5517 (the highest in the cross-section). The DeLong test
+%     (Section 4.3) confirms KAN's pooled AUC of 0.5129 is the highest
+%     among trained models, but no pair clears alpha = 0.05; the
+%     closest pairs (KAN vs. LSTM at p = 0.14, KAN vs. XGBoost at
+%     p = 0.12) are within reach of significance but do not arrive.
+%     KAN's classification-side dominance is consistent across all
+%     three locked configurations evaluated to date: it is the
+%     highest-AUC or near-highest-AUC trained model in every run,
+%     regardless of seed cardinality or feature pool size.
+%   - Tension to interpret: top classification metrics vs. structural
+%     anchor role rather than ranking dominance. KAN posts the highest
+%     mean accuracy, mean AUC, and median win rate in the cross-
+%     section, ranks second on median Sharpe, posts the best
+%     (smallest) median max-drawdown among trained models (-0.2254),
+%     but the leave-one-out PBO finding (Section 4.4) reads its role
+%     differently: KAN is the only model whose presence stabilises the
+%     cross-section (removing it raises PBO from 0.343 to 0.514, the
+%     highest LOO value in the table and across the threshold for
+%     random selection). The interpretation: KAN's bet-sizing
+%     distribution favours conservative, well-calibrated positions
+%     (mean P(Up) 0.5572 is the closest of any trained model to the
+%     0.5703 base rate, sigma Delta\_p ~ -0.0131); this calibration is
+%     what keeps the model present across IS/OOS sub-path partitions
+%     rather than rotating in and out. The financial-ranking finding
+%     (rank 2 on Sharpe) and the structural-stability finding (anchor
+%     under LOO PBO) are independent observations: KAN is both a
+%     top-three model on multiple ranking metrics and the only model
+%     whose presence keeps selection reproducible.
+%   - Statistical-vs-economic gap. KAN's mean AUC of 0.5205 is highest
+%     in the cross-section, but the DeLong test against every other
+%     model returns p > 0.10. The classification-side superiority is
+%     consistent in sign across all five pairwise comparisons (KAN is
+%     higher in every pair) but uniformly too small to clear standard
+%     significance levels. What does translate into a ranking position
+%     is the bet-sizing transformation of KAN's well-calibrated
+%     probabilities: at a base rate of 0.5703 and a KAN mean P(Up) of
+%     0.5572, the bet-sizing curve places conservatively-sized bets
+%     that protect against the largest drawdowns (KAN's median max-
+%     drawdown -0.2254 is the smallest among trained models). The
+%     honest reading: KAN's classification advantage is genuine but
+%     small; its rank-2 Sharpe ranking comes from the combination of
+%     classification accuracy and well-calibrated bet sizing, not from
+%     a single dominant edge.
 %   - Contrast with KASPER (Oad et al. 2025). KASPER reports R^2 = 0.89
 %     and Sharpe = 12.02 on individual stocks with regime detection.
-%     This thesis posts median Sharpe = 0.38 for KAN on BTC daily
-%     direction without a regime layer. The differences are explanatory
-%     rather than competitive: KASPER uses regression on individual
-%     stocks with regime-conditional architectures; this thesis uses
-%     classification on a single asset (BTC) with no regime layer and
-%     applies AFML's full statistical-correction stack (DSR, PBO,
-%     DeLong) which KASPER does not. The roughly 30x Sharpe gap reflects
-%     asset class, target type, and evaluation rigour rather than KAN
-%     architectural capacity.
-%   - Contrast with VIX KAN (Cho et al. 2025). The VIX KAN paper extracts
-%     symbolic formulas that reveal mean-reversion and leverage effects,
-%     validated against domain knowledge. This thesis's symbolic formula
-%     reveals five-feature interactions through sin, cos, tanh, x^2,
-%     and x^3 primitives in a target (BTC daily direction) that is not
-%     mean-reverting and where domain knowledge does not directly
-%     validate any specific functional form. The shift from the previous
-%     configuration's primitive set (sin, cos, exp, atan, x^2) to the
-%     current run's (sin, cos, tanh, x^2, x^3) is itself informative:
-%     the symbolification step picks different smooth families to
-%     approximate the learned splines depending on which features
-%     survive into the input, so the functional form of the closed-
-%     form expression is regime-dependent. The symbolic-extraction
+%     This thesis posts median Sharpe = 0.84 for KAN on BTC daily
+%     direction without a regime layer. The differences are
+%     explanatory rather than competitive: KASPER uses regression on
+%     individual stocks with regime-conditional architectures; this
+%     thesis uses classification on a single asset (BTC) with no
+%     regime layer and applies AFML's full statistical-correction
+%     stack (DSR, PBO, DeLong) which KASPER does not. The roughly 14x
+%     Sharpe gap reflects asset class, target type, and evaluation
+%     rigour rather than KAN architectural capacity.
+%   - Contrast with VIX KAN (Cho et al. 2025). The VIX KAN paper
+%     extracts symbolic formulas that reveal mean-reversion and
+%     leverage effects, validated against domain knowledge. This
+%     thesis's symbolic formula reveals a five-feature mixed-primitive
+%     structure through sin, tanh, atan, x^3, and |.| primitives in a
+%     target (BTC daily direction) that is not mean-reverting and
+%     where domain knowledge does not directly validate any specific
+%     functional form. The new primitives in the locked configuration
+%     (atan and |.|, replacing the previous run's cos and x^2) suggest
+%     the KAN's learned decision boundary changes its functional
+%     character with the surviving feature set rather than producing a
+%     stable signature across configurations. The symbolic-extraction
 %     machinery transfers across asset classes; the interpretive yield
 %     depends on whether the underlying target has a structure that
-%     domain knowledge can corroborate.
+%     domain knowledge can corroborate, and the recurrence of the
+%     four-outer-term structure across both locked configurations is
+%     itself a transferable observation about PyKAN's behaviour under
+%     the AFML evaluation regime.
 
 
 \subsection{Symbolic Extraction as Contribution}\label{subsec:disc_symbolic}
@@ -3235,128 +3354,211 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %
 % Topics:
 %   - Interpretability is a separable contribution from predictive
-%     accuracy. The locked-run formula has 100\% symbolification rate
-%     and a closed-form expression on five features; its post-symbolic
-%     accuracy of 60.15\% is a 4.5 percentage-point gain over the
-%     spline KAN's pre-symbolic 55.64\% and sits 10.15 percentage
-%     points above the 50\% baseline. The closed-form decision function
-%     provides three artefacts a black-box model cannot: per-feature
-%     symbolic derivatives (Section 4.6 numerical sensitivity), term-
-%     structure decomposition (each feature appears in 4 of 4 outer
-%     terms), and an audit trail from input to probability that a
-%     domain expert can inspect.
-%   - The post-symbolic accuracy gain is the most striking change from
-%     the previous locked configuration, in which post-symbolic
-%     accuracy dropped 4.5 pp below pre-symbolic. The reversal reflects
-%     three concurrent improvements in the locked run. First, the
-%     Phase-1 53\% gate now passes pre-prune (val\_acc 0.6241 vs.
-%     0.4812 previously), giving the symbolification step a more
-%     informative spline endpoint to approximate. Second, all 14 edges
-%     symbolify cleanly (median R^2 = 0.9540) without any un-symbolified
-%     spline left in the formula, which the previous run had to retain.
-%     Third, the affine fine-tuning step lands the post-prune model in
-%     a basin that generalises slightly better than the spline endpoint.
-%     The reading: closed-form interpretability in this regime is
-%     accuracy-preserving (in fact accuracy-enhancing), not accuracy-
-%     degrading. Reviewers should read the formula as a tightened
-%     representation of the model's decision logic, not as a degraded
-%     surrogate of the trained spline network.
+%     accuracy. The locked-run formula has 93\% symbolification rate
+%     (13 of 14 edges; 1 edge skipped at the symbolic substitution
+%     stage) and a closed-form expression on five features; its
+%     post-symbolic accuracy of 60.90\% is a 1.5 percentage-point gain
+%     over the spline KAN's pre-symbolic 59.40\% and 10.90 percentage
+%     points above the 50\% baseline. The closed-form decision
+%     function provides three artefacts a black-box model cannot:
+%     per-feature symbolic derivatives (Section 4.6 numerical
+%     sensitivity), term-structure decomposition (each feature appears
+%     in 4 of 4 outer terms), and an audit trail from input to
+%     probability that a domain expert can inspect. The fact that the
+%     symbolic form outperforms the spline form is consistent across
+%     the previous and current locked configurations (the previous
+%     run posted +4.5 pp, the current run +1.5 pp): the symbolic
+%     substitution appears to act as a smoothing regulariser on the
+%     per-edge B-spline shapes, and the affine fine-tuning step then
+%     tunes the per-edge scale and bias to the validation distribution.
+%   - The post-symbolic accuracy gain shrinks relative to the previous
+%     run. The +1.5 pp gain in the current configuration is one-third
+%     the magnitude of the previous locked configuration's +4.5 pp
+%     gain. Three diagnostic changes accompany the shrinkage: the
+%     pre-symbolic baseline starts higher (0.5940 vs. 0.5564), leaving
+%     less room for improvement; the minimum per-edge R^2 drops to
+%     0.5746 (vs. 0.7768), meaning one symbolic substitution is a
+%     rougher fit; and one of fourteen edges is skipped entirely (the
+%     93\% rate vs. 100\% in the previous run). Together these say the
+%     formula in the current run is a slightly noisier representation
+%     of the same underlying decision logic. The +1.5 pp gain is a
+%     single-fold (split 27) result on 133 validation observations and
+%     falls within the seed-to-seed and split-to-split noise observed
+%     elsewhere in the pipeline; the honest finding is "closed-form
+%     symbolic representation does not cost validation accuracy on
+%     this dataset across two independent locked runs, and may improve
+%     it slightly on the most recent CPCV fold". Per-fold extraction
+%     (L3 in 5.4) would let the analysis distinguish between fold-
+%     specific gains and a robust symbolic-smoothing effect.
+%   - The Phase-1 gate failure returns. Phase 1 (Adam) validation
+%     accuracy of 0.5038 falls below the 0.53 minimum gate that the
+%     pipeline uses to flag whether the spline KAN has learned
+%     meaningful patterns. The previous locked run cleared this gate
+%     at 0.6241; the current run does not. The downstream recovery in
+%     the LBFGS phases (val\_acc 0.5940 at Phase 2b) is what produces
+%     the symbolifiable model, but the Phase-1 gate failure is an
+%     honest signal that the initial Adam-optimised KAN had not
+%     extracted strong direction signal from the five-feature input.
+%     The reading: the symbolic-extraction pipeline can still deliver
+%     a useful closed-form on a model that did not pass its own
+%     warning gate, but the gate-failure return is a real diagnostic
+%     regression that future runs should monitor.
 %   - Mixed-primitive functional form. The decision function uses five
-%     distinct primitives (sin, cos, tanh, x^2, x^3), arranged in four
-%     outer terms that each pool the five input features through
-%     different combinations. The primitive set is substantively
-%     different from the previous locked configuration's (sin, cos,
-%     exp, atan, x^2): the saturating monotonic primitives exp and
-%     atan have been replaced by tanh (a bounded smooth saturator
-%     attached to bb\_width) and x^3 (a non-monotonic odd-symmetric
-%     primitive also attached to bb\_width). The x^2 primitive remains,
-%     attached to eth\_btc\_ratio and us2y in two of the four outer
-%     terms and to skewness in the other two. The KAN learned two
-%     complementary internal representations of the decision boundary
-%     in the locked run, then averaged them through the four-term outer
-%     combination; the previous configuration learned a single
-%     representation with the saturating exp / atan primitives doing
-%     the bounded-monotone work.
-%   - Numerical sensitivity at the dataset mean. us2y and kurtosis
-%     dominate the formula in absolute sigma-effect terms (+10.24 and
-%     +10.59 respectively on the logit), driving the model into
-%     positive saturation when either feature moves one sigma above
-%     its mean; both act as conditional "strongly bullish" switches in
-%     the formula. bb\_width carries the largest interpretable negative
-%     effect (-1.25 on the logit, sigma Delta\_p ~ -0.31), with a
-%     direction that reads naturally: wider Bollinger bands signal
-%     high volatility, and the model conditions on lower forward
-%     direction probability in such regimes. skewness carries
-%     sigma-effect -0.83 (sigma Delta\_p ~ -0.21), consistent with the
-%     literature on right-skewed crypto-return regimes (positive skew
-%     followed by mean-reverting weakness rather than persistence).
-%     eth\_btc\_ratio sigma-effect -0.44 (sigma Delta\_p ~ -0.11) is
-%     the smallest meaningful magnitude in the formula; alt rotation
-%     away from BTC is mildly bearish on forward BTC direction. Unlike
-%     the previous locked configuration (where chaikin\_osc produced a
-%     10\textsuperscript{10} scaling artefact), all five surviving
-%     features have interpretable scales and no rescaling caveat is
-%     needed. The previous configuration's suggestion to log-transform
-%     Chaikin oscillator alongside OBV remains relevant as a
-%     methodological refinement for any future run in which
-%     chaikin\_osc re-enters the surviving set.
-%   - The on-chain finding. Zero on-chain features survive extraction
-%     in the locked run. This is a sharpening of the Q2 answer relative
-%     to the previous configuration, in which exchange\_supply\_pct
-%     was the single on-chain feature in the surviving four and posted
-%     the largest economically interpretable effect. The expanded
-%     73-feature MDA pool displaces exchange\_supply\_pct from the
-%     top-5 stable set (the macro 14-day variants and lags 4 / 5 / 6 /
-%     21 compete for the cap and the on-chain column does not retain
-%     its previous selection frequency). The Q2 answer therefore
-%     hardens: on-chain features neither exhibit cross-fold stability
-%     under multi-model MDA selection nor survive into the locked
-%     symbolic representation when the feature universe is broadened.
-%     The earlier observation that on-chain features could carry
-%     fold-specific signal that survives KAN distillation is regime-
-%     specific and does not generalise to the expanded feature pool.
+%     distinct primitives (sin, tanh, atan, x^3, and |.|), arranged in
+%     four outer terms that each pool the five input features through
+%     different combinations. The previous locked configuration used
+%     sin, cos, tanh, x^2, x^3; the present run replaces cos and x^2
+%     (the cosine and squared-inner-argument primitives that attached
+%     to eth\_btc\_ratio / us2y / kurtosis) with atan and |.|. The
+%     atan primitive attaches to log\_returns\_lag1 and natgas\_ret\_30
+%     and acts as a bounded smooth saturator; the |.| primitive
+%     attaches to natgas\_ret\_30 as a non-smooth V-shape primitive.
+%     The presence of atan and |.| reflects the genuine flexibility of
+%     the KAN representation: the brute-force fitting library tries
+%     roughly 14 candidates per edge and keeps the highest-R^2 match,
+%     so different feature sets and different folds land on
+%     substantively different primitive combinations. The four-outer-
+%     term structure recurs across both locked configurations even
+%     though the primitive set differs, which is suggestive evidence
+%     that PyKAN's pruning step systematically produces a four-outer-
+%     term representation under the [5, 2, 2] architecture.
+%   - Numerical sensitivity at the dataset mean. skewness is the
+%     dominant feature in the formula in absolute sigma-effect terms
+%     (-1.76 on the logit, sigma Delta\_p ~ -0.44), driving P(up)
+%     from approximately 0.50 to approximately 0.15 with a one-sigma
+%     increase. This is the only feature with a meaningful sigma-
+%     effect in the current run; bb\_width follows at -0.33 (sigma
+%     Delta\_p ~ -0.08), eth\_btc\_ratio at -0.07 (sigma Delta\_p
+%     ~ -0.02), log\_returns\_lag1 effectively flat (+0.003), and
+%     natgas\_ret\_30 undefined due to the |.| primitive's gradient
+%     computation hitting a SymPy edge case at the dataset mean. The
+%     economically meaningful sensitivity ranking is therefore
+%     skewness (dominant negative, sigmoidal but not saturating) >
+%     bb\_width (moderate negative) > eth\_btc\_ratio (small negative)
+%     > log\_returns\_lag1 (effectively flat) > natgas\_ret\_30
+%     (undefined). This is a structural reversal from the previous
+%     locked configuration, where us2y and kurtosis posted saturating
+%     positive sigma-effects of approximately +10 each, driving the
+%     decision function into upper saturation in a single sigma bump;
+%     the current configuration has no saturating-positive features,
+%     and the strongest signal is moderately negative and from a
+%     different feature family (TA / distribution shape rather than
+%     macro and TA / distribution shape). The cross-run difference in
+%     dominant primitives and dominant features is itself a
+%     methodological observation: the symbolic representation is not
+%     stable across locked configurations even when the input space is
+%     the same 73-feature universe, because the per-fold feature
+%     subset and the per-edge symbolic-library winner both vary.
+%   - The natgas\_ret\_30 undefined-gradient flag. The locked-run
+%     formula contains an | 5028 natgas\_ret\_30 / 827 + 53/29 | term
+%     in two of the four outer summands. SymPy's automatic
+%     differentiation produces a sign(.) x derivative(.) term that
+%     includes re(.) and im(.) decompositions at the dataset mean, and
+%     the resulting expression evaluates to non-real or numerically-
+%     unstable derivatives. The pipeline reports this honestly as
+%     "1/5 features have non-finite gradient at the median; reported
+%     as NaN. Consider eval\_point='median' or inspect the symbolic
+%     formula for poles near these features' median." The reading: the
+%     symbolic extraction has produced a formula whose interpretability
+%     at the dataset mean is degraded for one of five features. The
+%     previous locked configuration had no such issue (all five
+%     features had finite gradients at the mean); the current run's
+%     |.| primitive introduces the non-differentiability. A future run
+%     could evaluate sensitivity at a perturbed reference point (e.g.
+%     eval\_point='median') to recover a finite gradient, but the
+%     cleaner fix is to flag this as an L4-style limitation: the
+%     symbolic library's inclusion of |.| produces formulas with
+%     non-smooth points that can land on or near a feature's reference
+%     value.
+%   - The on-chain finding hardens across configurations. No on-chain
+%     feature survives extraction in either of the two 73-feature
+%     locked configurations. The previous 62-feature locked run
+%     retained exchange\_supply\_pct as the single on-chain feature in
+%     the surviving four; both subsequent runs at 73 features have
+%     produced zero on-chain survivors. The Q2 answer therefore reads:
+%     on-chain features may carry signal in some narrowly-defined
+%     configurations (the 62-feature pool with exchange\_supply\_pct
+%     at 46\% selection frequency), but the broader configuration with
+%     20 macro features and 10 lag features competing in the MDA pool
+%     produces zero on-chain survivors at any reasonable seeds
+%     configuration. The on-chain free lunch fails not only at the
+%     cross-fold stability level (no on-chain feature reaches 50\%
+%     selection frequency across the 28 folds, and one,
+%     tx\_count\_roc\_14, is never selected at all) but also at the
+%     deployment-fold level (no on-chain feature reaches the symbolic
+%     decision function on split 27 in either the 2-seed or 3-seed
+%     locked run). The earlier locked-run observation that one
+%     on-chain feature could carry the formula's strongest effect was
+%     regime-specific and does not generalise.
+%   - The lag-feature finding is new. For the first time in any
+%     locked configuration, a lag feature (log\_returns\_lag1)
+%     survives into the symbolic representation. Its sigma-effect is
+%     effectively zero (+0.0008 sigma Delta\_p at the dataset mean),
+%     so its presence is structural rather than economic. The lag-
+%     features-in-MDA-pool design choice (Section 3.4.4, advisor-
+%     driven, lag features compete with engineered features rather
+%     than feeding only into AR Logistic) admits lag features into the
+%     surviving set in some configurations; the new run is the first
+%     to demonstrate this, but the surviving lag feature contributes
+%     essentially no gradient at the dataset mean. The interpretive
+%     yield is therefore "the lag-feature design choice is not
+%     categorically wrong (a lag feature can reach the surviving set),
+%     but the surviving lag feature does not necessarily contribute
+%     meaningful signal".
 %   - Contrast with VIX KAN (Cho et al. 2025). The VIX KAN paper's
 %     formulas reveal mean-reversion and leverage effects that domain
 %     knowledge corroborates directly. This thesis's formula reveals a
 %     five-feature mixed-primitive structure on a target (BTC daily
 %     direction) where domain knowledge does not directly validate any
-%     specific functional form. The symbolic-extraction machinery
-%     transfers across asset classes; the interpretive yield depends
-%     on whether the underlying target has a structure that domain
-%     knowledge can corroborate. This is a finding about the
-%     symbolic-extraction methodology itself, not a critique of either
-%     paper.
+%     specific functional form. The current locked configuration's
+%     dominant feature is skewness with a negative sigma-effect, which
+%     can be read against the literature on right-skewed crypto-return
+%     regimes (positive skew followed by mean-reverting weakness), but
+%     the read is suggestive rather than definitive. The interpretive
+%     yield is softer than the VIX KAN paper's mean-reversion result
+%     and softer than the previous locked configuration's saturating-
+%     positive-switch reading (which had been suggestive of a crisis-
+%     then-recovery pattern on us2y and kurtosis); the cross-run
+%     variability in the dominant feature and its sign is itself an
+%     honest finding about the symbolic-extraction methodology.
 %   - Limitations:
-%       * Fold-specific. Different folds may produce different formulas
-%         with different surviving features; per-fold extraction is L3
-%         in 5.4. The 75\% / 71\% / 57\% stability profile of the top-3
-%         surviving features in the locked run suggests that
-%         eth\_btc\_ratio, skewness, and bb\_width would recur across
-%         most folds, but the bottom-2 (us2y at 43\% and kurtosis at
-%         43\%) are borderline.
+%       * Fold-specific. Different folds may produce different
+%         formulas with different surviving features; per-fold
+%         extraction is L3 in 5.4. The cross-run change from
+%         (us2y, kurtosis) dominating to skewness dominating, with no
+%         overlap in the saturating-feature set, is direct evidence
+%         that fold-specificity is a real limitation rather than a
+%         theoretical concern.
 %       * Small sample. 530 training observations on split 27 is not
 %         large; PyKAN's per-edge R^2 fits stabilise on this size but
 %         recover signal that the spline KAN already captured rather
 %         than discovering new structure.
 %       * R^2 threshold sensitivity. The 0.30 threshold (lowered from
-%         0.50) admits one edge at R^2 = 0.7768, which is moderately
-%         rough. A stricter 0.50 threshold would still admit the same
-%         14 edges (the minimum edge R^2 of 0.7768 clears 0.50 by 28
-%         percentage points), so in the locked configuration the
-%         choice of 0.30 vs. 0.50 is non-binding. The trade-off between
-%         formula completeness and per-edge fidelity that the threshold
-%         encodes is therefore not active in this run.
-%       * The skewness subset bug has been resolved. The previous
-%         locked configuration's top-5 stability ranking included
-%         skewness, but the per-fold processed feature subset for
-%         split 27 did not contain it, so the locked formula used four
-%         non-skewness features. In the current locked configuration
-%         the 73-feature MDA pool routes skewness into the per-fold
-%         processed subset on split 27 (71\% selection frequency at
-%         the 28-fold level), and the symbolic-extraction step now
-%         uses the full top-5 stable subset. The methodological
-%         inconsistency that was flagged in 5.4 as a candidate for
-%         resolution is no longer present.
+%         0.50) admits one edge at R^2 = 0.5746, which is moderately
+%         rough. A stricter 0.50 threshold would have left this edge
+%         out as well (taking the symbolification rate from 93\% to
+%         roughly 86\%); the 0.30 threshold preserves more of the
+%         formula at the cost of one rough edge.
+%       * The skewness subset bug remains resolved. Both the previous
+%         and the current locked configuration use the 73-feature MDA
+%         pool that routes skewness into the per-fold processed subset
+%         on split 27. The earlier methodological inconsistency
+%         between Section 4.5's stability output and Section 3.12.3's
+%         feature-selection logic is closed in both 73-feature
+%         configurations.
+%       * The Phase-1 gate failure is a new return. Unlike the
+%         previous locked configuration (where Phase-1 cleared the
+%         53\% gate at val\_acc 0.6241), the current run reports
+%         val\_acc 0.5038, below the gate. The downstream recovery in
+%         LBFGS produces a useful model, but the Phase-1 diagnostic
+%         regression is itself a methodological caveat worth tracking
+%         across future runs.
+%       * The natgas\_ret\_30 |.| primitive introduces a
+%         non-differentiability in the symbolic formula. Sensitivity
+%         at the dataset mean is undefined for this feature; per-
+%         feature evaluation at perturbed reference points would
+%         recover a finite gradient but does not appear in the locked-
+%         run output.
 %       * Architectural parity remains resolved. The single-hidden-
 %         layer / width1 <= 6 configuration matches the CPCV-
 %         benchmarked KAN, so the formula describes the architecture
@@ -3365,23 +3567,32 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 
 \subsection{Limitations}\label{subsec:disc_limitations}
 
-% Five honest limitations, from defence L1 to L5.
+% Six honest limitations, from defence L1 to L6.
 %
 % Topics:
-%   - L1. Computational power. Currently 2 to 3 seeds, 30 trials, KAN
-%     width capped at 6. With more compute: more seeds, more trials,
-%     wider HP ranges. The N=8 / 28-split configuration alone roughly
-%     doubles the per-experiment runtime relative to N=6 / 15 splits.
+%   - L1. Computational power. Currently 3 seeds across all 6 models (an
+%     upgrade from the previous locked configuration's 3 seeds for
+%     sklearn / 2 for neural; the current run is symmetric and produces
+%     504 = 28 x 6 x 3 prediction entries), 30 Optuna trials per tuned
+%     model per fold, KAN width capped at 6. With more compute: more
+%     seeds, more trials, wider HP ranges. The N=8 / 28-split
+%     configuration alone roughly doubles the per-experiment runtime
+%     relative to N=6 / 15 splits, and the per-fold MDA inside Optuna's
+%     TPE inner loop adds roughly 40\% on top.
 %   - L2. Daily OHLCV only. Discards intraday microstructure. Pipeline
 %     is timeframe-agnostic; hourly extension would multiply event count
 %     and unlock microstructure features.
 %   - L3. Symbolic extraction is fold-specific. Per-fold extraction
 %     would let us count which features and primitives recur (structural
-%     signal vs. one-off noise). The previous configuration's L3
-%     formulation also flagged the skewness subset bug; that bug is
-%     resolved in the locked run (the 73-feature MDA pool routes
-%     skewness into the per-fold processed subset on split 27), so the
-%     L3 limitation here is purely about single-fold scope rather than
+%     signal vs. one-off noise). The cross-run change from (us2y,
+%     kurtosis) dominating in the previous run to skewness dominating
+%     in the current run, with no overlap in the saturating-feature
+%     set, is direct evidence that fold-specificity is a real
+%     limitation rather than a theoretical concern. The previous
+%     configuration's L3 formulation also flagged the skewness subset
+%     bug; that bug is resolved in both 73-feature locked configurations
+%     (all top-5 stable features reach the extraction step on split 27),
+%     so this limitation is purely about single-fold scope rather than
 %     about methodological inconsistency between Section 4.5 and
 %     Section 3.12.3.
 %   - L4. KAN width cap is binding for interpretability, not capacity.
@@ -3391,16 +3602,19 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %     A larger cap would let the model fit more complex patterns but
 %     would also produce a formula too long to interpret. This is an
 %     explicit interpretability-vs-capacity trade-off, not a generic
-%     constraint imposed by sample size or compute. In the locked run
-%     the cap was non-binding (architecture pruned to [[5, 0], [2, 0],
-%     [2, 0]]; hidden width = 2 still), suggesting the constraint did
-%     not cost capacity here.
+%     constraint imposed by sample size or compute. In both 73-feature
+%     locked runs the cap was non-binding (architecture pruned to
+%     [[5, 0], [2, 0], [2, 0]]; hidden width = 2 still), and the
+%     four-outer-term structure recurs across both configurations,
+%     suggesting the cap does not cost capacity for the discovery of
+%     the structure itself, only for the readability of the resulting
+%     formula.
 %   - L5. No regime-conditional analysis. BTC has had approximately 5
 %     distinct regimes over 2014 to 2026 (the 2017 bubble, 2018-2019
 %     bear, 2020 COVID crash, 2021 bull, 2022 FTX-era contraction,
 %     2023-2026 recovery). Full-sample Sharpe averages over them. A
 %     regime-conditional analysis is left for future work, especially
-%     given the joint reading "DSR < 0.95 + PBO 0.37 moderate
+%     given the joint reading "DSR < 0.95 + PBO 0.343 moderate
 %     overfitting + buy-and-hold posting 2.23 median Sharpe over the
 %     same period": full-sample non-significance does not rule out
 %     within-regime predictability, and a regime-conditional Sharpe
@@ -3408,6 +3622,21 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %     is driven by a small number of large up-moves (which a
 %     direction-prediction model could in principle capture) or by a
 %     diffuse upward drift (which it cannot).
+%   - L6. Symbolic-formula non-differentiability flag (new in the
+%     locked configuration). The locked formula contains an |.|
+%     (absolute value, denoted Abs in SymPy) primitive attached to
+%     natgas\_ret\_30 in two of the four outer terms. SymPy's automatic
+%     differentiation of |.| at the dataset mean produces a non-real
+%     expression, leaving the sigma-effect on the logit undefined for
+%     natgas\_ret\_30 in the numerical sensitivity table (Section 4.6).
+%     This is reported honestly by the pipeline and acknowledged as a
+%     single-feature gap. A future run could (a) restrict the symbolic
+%     library to remove Abs, (b) evaluate sensitivity at a perturbed
+%     reference point that is comfortably away from the Abs kink, or
+%     (c) report sensitivity in finite-difference form. None of these
+%     is implemented in the current pipeline. The reading: closed-form
+%     interpretability is robust most of the time but can produce
+%     non-smooth points that require manual diagnostic attention.
 
 
 
@@ -3430,51 +3659,67 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 %     families. It benchmarks KAN against five models (AR Logistic,
 %     Logistic Regression, Random Forest, XGBoost, LSTM) under
 %     identical CPCV splits with N=8 / k=2 / 28 splits / 7 backtest
-%     paths, and extracts the first closed-form classification formula
-%     from a CPCV-trained KAN under the full AFML evaluation. The
-%     symbolic formula is the novel deliverable; the six-model
-%     benchmark is the methodological scaffolding that validates it.
+%     paths and 3 seeds across all six models (504 prediction entries
+%     from 28 splits x 6 models x 3 seeds), and extracts the first
+%     closed-form classification formula from a CPCV-trained KAN under
+%     the full AFML evaluation. The symbolic formula is the novel
+%     deliverable; the six-model benchmark is the methodological
+%     scaffolding that validates it.
 %   - One paragraph stating the headline: under leakage-free evaluation
 %     the literature's 85\% to 95\% accuracy claims do not survive. The
-%     top DSR among trained models is LSTM at 0.3925, far below the
-%     0.95 significance threshold; the LSTM bootstrap 95\% CI
-%     (0.4062, 1.5380) is the only one among trained models that
+%     top DSR among trained models is XGBoost at 0.2376, far below the
+%     0.95 significance threshold; every trained-model bootstrap 95\%
+%     CI crosses zero, and only buy-and-hold's CI (1.9766, 2.6408)
 %     stays strictly positive. Buy-and-hold posts a higher median
 %     Sharpe (2.2321) than every trained model with the cost of a
 %     -99.98\% maximum drawdown, illustrating how punishing the AFML
 %     correction layer is for trading strategies that try to add
-%     tactical direction on top of an underlying drift. PBO at 0.3714
+%     tactical direction on top of an underlying drift. PBO at 0.343
 %     places the model selection process in the moderate-overfitting
-%     regime (13 of 35 IS/OOS partitions); leave-one-out PBO shows
-%     that LSTM is the only model whose presence stabilises the cross-
-%     section (excluding it raises PBO to 0.429), while Logistic
-%     Regression carries the largest destabilising contribution
-%     (excluding it reduces PBO to 0.143). The honest answer to Q1: no
-%     model demonstrates a statistically significant predictive edge
-%     after correcting for selection bias, LSTM is the most stable
-%     choice in the cross-section, and the AFML correction layer
-%     surfaces what naive evaluation would have hidden.
+%     regime (12 of 35 IS/OOS partitions); leave-one-out PBO shows
+%     that KAN is the only model whose presence stabilises the cross-
+%     section (excluding it raises PBO to 0.514, across the random-
+%     selection threshold), while Logistic Regression carries the
+%     largest destabilising contribution (excluding it reduces PBO to
+%     0.114). The PBO finding across the three locked configurations
+%     evaluated to date (0.26, 0.37, 0.34) is stable in the moderate-
+%     overfitting regime and constitutes the headline statistical
+%     finding of the thesis. The honest answer to Q1: no model
+%     demonstrates a statistically significant predictive edge after
+%     correcting for selection bias, KAN is the structural anchor in
+%     the cross-section, and no trained-model CI stays strictly
+%     positive in the most conservative locked configuration evaluated.
 %   - One paragraph on what does survive: the symbolic extraction
 %     pipeline produces a humanly auditable closed-form decision
-%     function on five features (eth\_btc\_ratio, skewness, bb\_width,
-%     us2y, kurtosis) with 100\% symbolification rate (14 of 14
-%     edges) and post-symbolic validation accuracy 60.15\%, a 4.5
-%     percentage-point gain over the spline KAN's 55.64\%. The formula
-%     uses five primitives (sin, cos, tanh, x^2, x^3) and four outer
-%     terms; two features (us2y and kurtosis) act as saturating
-%     conditional bullish switches in the decision function, bb\_width
-%     carries the largest interpretable negative effect, and zero
-%     on-chain features survive. The closed-form approximation is
-%     accuracy-preserving (in fact accuracy-enhancing) rather than
-%     accuracy-degrading, in contrast to the previous locked
-%     configuration where post-symbolic accuracy dropped 4.5 pp below
-%     pre-symbolic. The formula provides three artefacts a black-box
-%     model cannot: per-feature symbolic derivatives, term-structure
-%     decomposition (each feature appears in 4 of 4 outer terms), and
-%     an audit trail from input to probability that a domain expert
-%     can inspect. Interpretability is a separable contribution from
-%     predictive accuracy, and in this dataset it stands independent
-%     of the DSR result.
+%     function on five features (eth\_btc\_ratio, bb\_width, skewness,
+%     log\_returns\_lag1, natgas\_ret\_30) with 93\% symbolification
+%     rate (13 of 14 edges; 1 edge skipped) and post-symbolic validation
+%     accuracy 60.90\%, a 1.5 percentage-point gain over the spline
+%     KAN's 59.40\%. The formula uses five primitives (sin, tanh, atan,
+%     x^3, |.|); skewness carries the dominant negative sigma-effect on
+%     the logit (-1.76, sigma Delta\_p ~ -0.44 from the dataset mean),
+%     bb\_width the second-largest (-0.33), eth\_btc\_ratio a small
+%     negative effect (-0.07), log\_returns\_lag1 is effectively flat,
+%     and natgas\_ret\_30 has an undefined gradient at the dataset
+%     mean due to the |.| primitive's non-smoothness. For the first
+%     time a lag feature enters the surviving set (log\_returns\_lag1,
+%     with effectively zero economic contribution but structural
+%     presence). No on-chain feature survives extraction in either of
+%     the 73-feature locked configurations evaluated: the Q2 "on-chain
+%     free lunch" hypothesis fails at both the cross-fold stability
+%     level (one on-chain feature, tx\_count\_roc\_14, is never
+%     selected at all across the 28 folds) and the deployment-fold
+%     level (no on-chain feature reaches the symbolic decision function
+%     in any 73-feature run). The closed-form representation does not
+%     cost validation accuracy on this run (in fact gains 1.5 pp,
+%     consistent with the previous configuration's +4.5 pp gain in
+%     direction if not magnitude) and produces three artefacts a
+%     black-box model cannot: per-feature symbolic derivatives,
+%     term-structure decomposition (each feature appears in 4 of 4
+%     outer terms), and an audit trail from input to probability that
+%     a domain expert can inspect. Interpretability is a separable
+%     contribution from predictive accuracy, and in this dataset it
+%     stands independent of the DSR result.
 %   - One closing sentence with resonance. T-R16 example template:
 %     "X is not a constraint, but a catalyst, for Y." Adapt for this
 %     thesis: "Methodological honesty is not a constraint on financial
