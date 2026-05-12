@@ -38,7 +38,11 @@ def pool_predictions(model_name, results, n_seeds=None, n_splits=None):
     if n_seeds is None:
         n_seeds = int(results.get("n_seeds", 1))
     if n_splits is None:
-        n_splits = int(results.get("n_splits", 15))
+        # No hardcoded fallback (D3 fix): the previous default of 15 corresponded to
+        # an old N=6, k=2 configuration. results["n_splits"] is always populated by
+        # the current pipeline, so a missing key signals a genuinely broken results
+        # dict that should fail loudly rather than silently sample a stale subset.
+        n_splits = int(results["n_splits"])
 
     proba_pool, y_pool = [], []
     # Walk every (split, seed) and accumulate P(y=1) and y_true.
@@ -70,8 +74,10 @@ def calibration_audit(model_name, results, n_seeds=None, n_splits=None, n_bins=1
           f"empirical = {y_pool.mean():.4f}")
 
     # Bin predictions into n_bins fixed-width slices on [0, 1] and report empirical mean per bin.
+    # np.clip handles the edge case of proba == 1.0 exactly: np.digitize returns n_bins+1 for
+    # values at or above the rightmost edge, which would otherwise be silently dropped.
     bin_edges = np.linspace(0, 1, n_bins + 1)
-    bin_idx = np.digitize(proba_pool, bin_edges) - 1
+    bin_idx = np.clip(np.digitize(proba_pool, bin_edges) - 1, 0, n_bins - 1)
 
     for b in range(n_bins):
         mask = bin_idx == b
@@ -87,6 +93,14 @@ def compute_top_k_concentration(strategy_returns: pd.Series, k: int = 5) -> dict
 
     A high share (e.g., > 50%) indicates the path's apparent profitability is concentrated in
     a handful of extreme returns from a specific market regime, rather than accumulated edge.
+
+    DEFINITION: ``top_k_share = (R - R_ex) / (1 + R)`` where ``R`` is the path's cumulative
+    return and ``R_ex`` is the cumulative return after dropping the top-K largest-magnitude
+    returns. This is the share-of-final-equity formulation: bounded in [0, 1] when both
+    cumulatives are non-negative, and numerically stable when ``R`` is near zero. The more
+    common share-of-return formulation ``(R - R_ex) / R`` is interpretable as "fraction of
+    cumulative return attributable to top-K" but becomes unbounded and unstable as ``R → 0``;
+    we use the share-of-final-equity form for thesis-figure stability.
     """
     if len(strategy_returns) == 0:
         return {
@@ -240,8 +254,10 @@ def compute_reliability_curve(
         ])
 
     # Fixed-width binning on [0, 1]; np.digitize returns 1-indexed bins, hence the −1.
+    # Clip so proba == 1.0 exactly (which np.digitize maps above the rightmost edge)
+    # lands in the topmost bin rather than being silently dropped.
     bin_edges = np.linspace(0, 1, n_bins + 1)
-    bin_idx = np.digitize(proba_pool, bin_edges) - 1
+    bin_idx = np.clip(np.digitize(proba_pool, bin_edges) - 1, 0, n_bins - 1)
 
     rows = []
     for b in range(n_bins):
@@ -524,12 +540,20 @@ def print_feature_stability_table(
     feat_stab: dict,
     all_features: list,
     threshold_pct: float = 50.0,
+    threshold_stable: float = 80.0,
+    threshold_moderate: float = 50.0,
 ) -> pd.DataFrame:
     """Print the per-feature stability table + the four-tier summary; return the full ranking DataFrame.
 
     Only features above ``threshold_pct`` are printed in the main table. The summary tracks
-    stable (>80%), moderate (50-80%), low (0-50%), and never-selected (0%) features; the
-    never-selected list is grouped by category so structural patterns are visible at a glance.
+    stable (above ``threshold_stable``%), moderate (above ``threshold_moderate``% and at or
+    below ``threshold_stable``%), low (above 0% and at or below ``threshold_moderate``%),
+    and never-selected (0%) features; the never-selected list is grouped by category so
+    structural patterns are visible at a glance.
+
+    D2 FIX: the stable / moderate cutoffs are now parameters rather than hardcoded 80 / 50.
+    Pass the same values used in ``render_feature_stability`` to keep the bar-chart colour
+    bands and the printed status column consistent.
     """
     freq = feat_stab["feature_frequency"]
     # Reindex onto the full MDA pool so never-selected features (absent from freq) get 0.
@@ -541,8 +565,8 @@ def print_feature_stability_table(
     })
     ranking["category"] = ranking["feature"].apply(_categorize_feature)
     ranking["status"] = ranking["selection_pct"].apply(
-        lambda p: "stable (>80%)" if p > 80
-        else "moderate (>50%)" if p > 50
+        lambda p: f"stable (>{int(threshold_stable)}%)" if p > threshold_stable
+        else f"moderate (>{int(threshold_moderate)}%)" if p > threshold_moderate
         else "low"
     )
 
@@ -567,21 +591,26 @@ def print_feature_stability_table(
             prev_status = row["status"]
     print("=" * 70)
 
-    # Tier counts.
+    # Tier counts using the parameterised thresholds.
     n_total = len(ranking)
-    n_stable = int((ranking["selection_pct"] > 80).sum())
+    n_stable = int((ranking["selection_pct"] > threshold_stable).sum())
     n_moderate = int(
-        ((ranking["selection_pct"] > 50) & (ranking["selection_pct"] <= 80)).sum()
+        ((ranking["selection_pct"] > threshold_moderate)
+         & (ranking["selection_pct"] <= threshold_stable)).sum()
     )
     n_low = int(
-        ((ranking["selection_pct"] > 0) & (ranking["selection_pct"] <= 50)).sum()
+        ((ranking["selection_pct"] > 0)
+         & (ranking["selection_pct"] <= threshold_moderate)).sum()
     )
     n_never = int((ranking["selection_pct"] == 0).sum())
 
     print(f"\nTotal: {n_total} features in the MDA pool.")
-    print(f"  Stable (>80%):       {n_stable} feature{'s' if n_stable != 1 else ''}")
-    print(f"  Moderate (50-80%):   {n_moderate} feature{'s' if n_moderate != 1 else ''}")
-    print(f"  Low (0-50%):         {n_low} feature{'s' if n_low != 1 else ''}")
+    print(f"  Stable (>{int(threshold_stable)}%):       "
+          f"{n_stable} feature{'s' if n_stable != 1 else ''}")
+    print(f"  Moderate ({int(threshold_moderate)}-{int(threshold_stable)}%):   "
+          f"{n_moderate} feature{'s' if n_moderate != 1 else ''}")
+    print(f"  Low (0-{int(threshold_moderate)}%):         "
+          f"{n_low} feature{'s' if n_low != 1 else ''}")
     print(f"  Never selected (0%): {n_never} feature{'s' if n_never != 1 else ''}")
 
     # Never-selected breakdown grouped by category — surfaces "whole category unused" patterns.
@@ -623,8 +652,10 @@ def render_sharpe_distribution(
     ax.boxplot(sharpe_data, labels=models, patch_artist=True)
     ax.axhline(0, color="red", linestyle="--", alpha=0.5, label="Sharpe = 0")
     ax.set_ylabel("Annualized Sharpe Ratio")
+    # D1 FIX: derive n_paths from the data rather than hardcoding "5".
+    n_paths = analysis["path_sharpes"].shape[1]
     ax.set_title(
-        "Sharpe Ratio Distribution Across 5 CPCV Paths",
+        f"Sharpe Ratio Distribution Across {n_paths} CPCV Paths",
         fontsize=13, fontweight="bold",
     )
     ax.legend()

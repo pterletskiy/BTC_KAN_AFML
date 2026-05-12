@@ -42,9 +42,11 @@ def collect_path_equities(model_path_data: dict, n_paths: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     # Standard concat; if any path has duplicate timestamps, retry after collapsing them.
+    # Catching the specific pandas errors here so we don't accidentally mask unrelated
+    # NumPy / pandas internals errors that would benefit from surfacing.
     try:
         df = pd.concat(equities, axis=1)
-    except Exception:
+    except (pd.errors.InvalidIndexError, ValueError):
         equities = [e.groupby(e.index).last() for e in equities]
         df = pd.concat(equities, axis=1)
 
@@ -64,11 +66,14 @@ def plot_paths_for_model(
     since: str | None = None,
     figsize: tuple = (14, 5.5),
 ):
-    """Plot all path equity curves for one model with the median overlaid.
+    """Plot all path equity curves for one model with the median overlaid; return the Figure.
 
     ``since`` accepts a year string (e.g. ``"2023"``) to slice and re-normalise to 1.0 at
     the start of the window. ``log_scale=True`` is recommended for full-history plots where
     compounding makes early values invisible on linear axes.
+
+    Returns the matplotlib ``Figure`` so the caller can ``savefig`` or further customise.
+    Returns ``None`` when there is no data to plot.
     """
     df = collect_path_equities(
         analysis["path_results"][model_name],
@@ -76,17 +81,17 @@ def plot_paths_for_model(
     )
     if df.empty:
         print(f"No path data for {model_name}.")
-        return
+        return None
 
     # Optional time slice + renormalisation to 1.0 at the start of the window.
     if since is not None:
         try:
             df = df.loc[since:]
-        except Exception:
-            pass
+        except (KeyError, ValueError, TypeError) as e:
+            print(f"Invalid 'since' value {since!r} ({type(e).__name__}); ignoring slice.")
         if df.empty:
             print(f"No data for {model_name} since {since}.")
-            return
+            return None
         # Defensive: bfill+replace(0, ε) prevents division-by-zero on paths that start with NaN or 0.
         first_valid = df.bfill().iloc[0].replace(0, 1e-10)
         df = df / first_valid
@@ -109,7 +114,8 @@ def plot_paths_for_model(
     if log_scale:
         try:
             ax.set_yscale("log")
-        except Exception:
+        except ValueError:
+            # ax.set_yscale("log") rejects non-positive data; fall back to linear.
             pass
 
     ax.axhline(1.0, color="grey", linestyle="--", alpha=0.4)
@@ -123,7 +129,7 @@ def plot_paths_for_model(
     ax.legend(loc="upper left", framealpha=0.9, fontsize=9)
     ax.grid(True, which="both", alpha=0.2)
     plt.tight_layout()
-    plt.show()
+    return fig
 
 
 # --- 3. View 2: STATIC GRID — all models side by side ---------------------
@@ -135,11 +141,15 @@ def plot_paths_grid(
     since: str | None = None,
     n_cols: int = 2,
 ):
-    """Grid of subplots (one per model) each showing all path equity curves with the median overlaid."""
+    """Grid of subplots (one per model) each showing all path equity curves with the median overlaid.
+
+    Returns the matplotlib ``Figure`` so the caller can ``savefig`` or further customise.
+    Returns ``None`` when no models are present in ``results``.
+    """
     models = results.get("models", [])
     if not models:
         print("No models found in results.")
-        return
+        return None
     n_models = len(models)
     n_rows = max(1, (n_models + n_cols - 1) // n_cols)
 
@@ -162,7 +172,8 @@ def plot_paths_grid(
         if since is not None:
             try:
                 df = df.loc[since:]
-            except Exception:
+            except (KeyError, ValueError, TypeError):
+                # Slice rejected; leave df unchanged and let the empty check handle it.
                 pass
             if df.empty:
                 ax.set_title(f"{model_name} (no data since {since})")
@@ -181,7 +192,7 @@ def plot_paths_grid(
         if log_scale:
             try:
                 ax.set_yscale("log")
-            except Exception:
+            except ValueError:
                 pass
         ax.axhline(1.0, color="grey", linestyle="--", alpha=0.4)
         ax.set_title(model_name, fontsize=11, fontweight="bold")
@@ -198,7 +209,7 @@ def plot_paths_grid(
         y=1.02,
     )
     plt.tight_layout()
-    plt.show()
+    return fig
 
 
 # --- 4. View 3: INTERACTIVE SELECTOR — ipywidgets dropdown ----------------
@@ -212,6 +223,23 @@ def interactive_path_explorer(results: dict, analysis: dict):
         print("ipywidgets is not installed. Run: pip install ipywidgets")
         return
 
+    # P2 FIX: derive the "since" year options dynamically from the data instead of
+    # hardcoding 2020/2022/2023/2024. The most recent five years that the data covers
+    # become the options, so 2025+ appears automatically when the data extends there.
+    years_in_data: set[int] = set()
+    for paths in analysis.get("path_results", {}).values():
+        for path_data in paths.values():
+            sr = path_data.get("returns")
+            if sr is not None and len(sr) > 0:
+                idx = sr.index
+                years_in_data.add(idx[0].year)
+                years_in_data.add(idx[-1].year)
+    recent_years = sorted(y for y in years_in_data if y >= 2020)[-5:]
+    since_options = (
+        [("Full history", None)]
+        + [(f"Since {y}", str(y)) for y in recent_years]
+    )
+
     out = widgets.Output()
     model_dd = widgets.Dropdown(
         options=results["models"],
@@ -220,22 +248,24 @@ def interactive_path_explorer(results: dict, analysis: dict):
     )
     log_toggle = widgets.Checkbox(value=True, description="Log scale")
     since_dd = widgets.Dropdown(
-        options=[("Full history", None), ("Since 2020", "2020"),
-                 ("Since 2022", "2022"), ("Since 2023", "2023"),
-                 ("Since 2024", "2024")],
+        options=since_options,
         value=None,
         description="Period:",
     )
 
     # Re-render handler: clears the output area and replots View 1 with current widget values.
+    # plot_paths_for_model now returns the Figure and does not call plt.show() itself, so we
+    # call plt.show() here to display inside the Output context.
     def render(*_):
         with out:
             clear_output(wait=True)
-            plot_paths_for_model(
+            fig = plot_paths_for_model(
                 model_dd.value, results, analysis,
                 log_scale=log_toggle.value,
                 since=since_dd.value,
             )
+            if fig is not None:
+                plt.show()
 
     # Wire change events on every control to the same render handler.
     model_dd.observe(render, names="value")

@@ -56,9 +56,11 @@ PYKAN_LAMB_ENTROPY = 2.0
 PYKAN_PATIENCE = 10
 PYKAN_VAL_INTERVAL = 5
 PYKAN_GRID_INIT = 3
-PYKAN_GRID_EXTEND = False         # Disabled: with ~358 samples, grid extension adds
-                                  # parameters and causes memorisation. Only enable for
-                                  # datasets > 1000 samples.
+PYKAN_GRID_EXTEND = True          # Default-intent: enable grid extension. The runtime gate
+                                  # `n_train > 1000` in train_pykan handles small-data safety,
+                                  # so this constant being True is safe for the project's
+                                  # current ~358-sample data (the gate skips automatically).
+                                  # Flip to False to disable unconditionally.
 
 # Data-aware architecture sizing.
 PYKAN_MIN_SAMPLES_PER_PARAM = 5   # target at least 5 training samples per parameter
@@ -349,7 +351,18 @@ def prepare_extraction_data(
     input preprocessing. ``feature_subset`` overrides the per-fold MDA selection (used for the
     cross-fold stability strategy); if omitted, the per-fold MDA selection is used.
     """
-    splits = generate_cpcv_splits(X, t1)
+    # S2: read split parameters from cpcv_results['split_info'] rather than relying on
+    # the module-level defaults of generate_cpcv_splits. The defaults match today's locked
+    # N=8, k=2, embargo=0.01 config so this is currently a no-op, but the previous code was
+    # fragile: any change to cv.py's N_GROUPS/K_TEST_GROUPS constants would silently put the
+    # extraction on a different split list than CPCV evaluated, making fold-selection meaningless.
+    split_info = cpcv_results.get("split_info", {})
+    splits = generate_cpcv_splits(
+        X, t1,
+        n_groups=split_info.get("n_groups", 8),
+        k=split_info.get("k", 2),
+        embargo_pct=split_info.get("embargo_pct", 0.01),
+    )
     train_idx, _ = splits[best_split_idx]
 
     # Coerce ``y`` to a Series aligned to X.index regardless of input type (np.ndarray, Series, etc.).
@@ -428,7 +441,11 @@ def prepare_extraction_data(
     else:
         X_train = X_train[selected_features]
 
-    # 80/20 train/val split, same convention as the pipeline.
+    # S4: 80/20 train/val split. The CPCV pipeline (post-T5) uses 80/10/10 because its
+    # KAN predictions get fed through a calibration step, but pykan's symbolic extraction
+    # consumes none of those probabilistic outputs downstream — the val set's only role here
+    # is best-state tracking inside train_pykan. So 80/20 (no calibration partition) is the
+    # right local choice, not a stale leftover from a previous pipeline convention.
     cal_boundary = int(len(X_train) * 0.8)
     X_model = X_train.iloc[:cal_boundary]
     X_val = X_train.iloc[cal_boundary:]
@@ -444,11 +461,55 @@ def prepare_extraction_data(
     X_model_t = torch.tanh((X_model_t - input_mean) / input_std)
     X_val_t = torch.tanh((X_val_t - input_mean) / input_std)
 
+    # S1: build the raw → tanh transform parameters per feature so downstream sensitivity
+    # helpers can substitute correctly. The full chain is:
+    #   x_raw -> scaler(RobustScaler) -> (x_raw - median) / iqr  =: x_scaled
+    #   x_scaled -> tanh-normalise   -> tanh((x_scaled - input_mean) / input_std) =: z
+    # Combined: z = tanh((x_raw - a) / b) where
+    #   a = median + input_mean * iqr   (raw value mapping to z = 0)
+    #   b = iqr * input_std             (raw scale factor)
+    # If no scaler was used, a = input_mean and b = input_std directly.
+    feature_a: dict[str, float] = {}
+    feature_b: dict[str, float] = {}
+    input_mean_np = input_mean.cpu().numpy()
+    input_std_np = input_std.cpu().numpy()
+
+    if scaler is not None:
+        # scaler.center_ / scaler.scale_ are sized to whatever X had at scaler-fit time
+        # (all 73 features in this project's pipeline). We need each selected feature's
+        # index in that original column ordering to pull the right entry.
+        scaler_cols = list(X.columns)
+        for i, feat in enumerate(selected_features):
+            try:
+                col_idx = scaler_cols.index(feat)
+                center_i = float(scaler.center_[col_idx])
+                scale_i = float(scaler.scale_[col_idx]) if scaler.scale_[col_idx] != 0 else 1.0
+                feature_a[feat] = center_i + float(input_mean_np[i]) * scale_i
+                feature_b[feat] = scale_i * float(input_std_np[i])
+            except (ValueError, IndexError, AttributeError):
+                # Defensive fallback: feature missing from scaler's column ordering, or
+                # scaler doesn't expose center_/scale_ (non-RobustScaler in future).
+                feature_a[feat] = float(input_mean_np[i])
+                feature_b[feat] = float(input_std_np[i])
+    else:
+        for i, feat in enumerate(selected_features):
+            feature_a[feat] = float(input_mean_np[i])
+            feature_b[feat] = float(input_std_np[i])
+
     dataset = {
         "train_input": X_model_t,
         "train_label": torch.tensor(y_model.values, dtype=torch.float32),
         "test_input": X_val_t,
         "test_label": torch.tensor(y_val.values, dtype=torch.float32),
+        # S1: the transform parameters travel WITH the dataset so any downstream code that
+        # uses the formula can convert raw inputs into the tanh-normalised space the formula
+        # actually lives in. Without these, sensitivity / marginal-effect computations
+        # substitute raw values into a formula that expects normalised values and silently
+        # produce wrong numbers.
+        "input_transform": {
+            "feature_a": feature_a,
+            "feature_b": feature_b,
+        },
     }
 
     feature_names = list(selected_features)
@@ -470,20 +531,31 @@ def train_pykan(
 ):
     """Train a fresh PyKAN (or MultKAN) for symbolic extraction.
 
-    Architecture: faithful-to-tuning by default. When ``tuned_kan_params`` is provided from CPCV,
-    the symbolic model honours the tuned ``width1`` / ``width2`` / ``grid`` so the formula represents
-    the model that won the CPCV evaluation. ``width1`` is still capped at ``PYKAN_SYMBOLIC_WIDTH_CAP``
-    and clamped by a data-aware safety floor; ``width2`` and ``grid`` are honoured verbatim unless the
-    override constants are set. Without tuned params, falls back to data-aware sizing so
-    ``n_train / total_params >= PYKAN_MIN_SAMPLES_PER_PARAM``.
+    METHODOLOGY NOTE (S3): the efficient-kan that ran during CPCV is not directly portable to
+    pykan, because the two libraries use different spline parameterisations under the hood.
+    What's transferred here is the *hyperparameter set* (width1, width2, grid, k), not the
+    learned weights. The pykan is then retrained from scratch on the same training fold via
+    the staged optimiser below. The extracted symbolic formula therefore represents a pykan
+    with matching architecture and training data, whose decision boundary approximates but
+    does not equal the CPCV-evaluated efficient-kan's. Pre/post symbolic accuracy and the
+    pre-symbolic val accuracy reported during training quantify how close this approximation
+    is for any given fold; large gaps signal the symbolic formula is not faithful to the
+    CPCV-evaluated KAN and the thesis chapter should flag the fold accordingly.
 
-    ``use_multkan=True`` switches to MultKAN (KAN 2.0) with multiplication nodes, which can discover
-    multiplicative interactions (e.g., ``rsi * stoch_k``) that standard additive KAN cannot represent
-    without fragile log/exp decomposition. The same symbolic-extraction pipeline works for both.
+    Architecture: when ``tuned_kan_params`` is provided from CPCV, the symbolic model honours
+    the tuned ``width1`` / ``width2`` / ``grid``. ``width1`` is still capped at
+    ``PYKAN_SYMBOLIC_WIDTH_CAP`` and clamped by a data-aware safety floor; ``width2`` and
+    ``grid`` are honoured verbatim unless the override constants are set. Without tuned params,
+    falls back to data-aware sizing so ``n_train / total_params >= PYKAN_MIN_SAMPLES_PER_PARAM``.
+
+    ``use_multkan=True`` switches to MultKAN (KAN 2.0) with multiplication nodes, which can
+    discover multiplicative interactions (e.g., ``rsi * stoch_k``) that standard additive KAN
+    cannot represent without fragile log/exp decomposition. The same symbolic-extraction
+    pipeline works for both.
 
     Phases:
       1. Adam with weight decay + input noise (the main generalisation phase).
-      2. Grid extension, conditional on dataset size (disabled by default for small data).
+      2. Grid extension, conditional on dataset size (gated to n_train > 1000 for small data).
       3. LBFGS warmup (short, no regularisation).
       4. LBFGS sparsity (short, gentle L1 + entropy).
     """
@@ -493,6 +565,20 @@ def train_pykan(
     else:
         from kan import KAN as KANClass
         model_type = "KAN"
+
+    # S11: full reproducibility seeding. The KAN constructor's seed=42 covers only the
+    # spline initialisation; the Adam optimiser, the input-noise tensor (line 631), and any
+    # pykan-internal random calls are otherwise unseeded. Seeding all RNG sources at function
+    # entry makes the extracted formula reproducible across runs on the same machine. Note
+    # that determinism across machines also requires matching CUDA/cuDNN versions; this is
+    # CPU-deterministic but not strictly cross-hardware-deterministic for GPU runs.
+    import random
+    _PYKAN_SEED = 42
+    torch.manual_seed(_PYKAN_SEED)
+    np.random.seed(_PYKAN_SEED)
+    random.seed(_PYKAN_SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(_PYKAN_SEED)
 
     X_t = dataset["train_input"]
     y_t = dataset["train_label"].long()
@@ -652,14 +738,26 @@ def train_pykan(
         "After Adam", model, X_t, y_t, X_val_t, y_val_t
     )
 
-    if val_acc < PYKAN_MIN_ACCURACY:
+    # S6: gate val_acc against the majority-class baseline, not just the absolute floor.
+    # If the post-drop_rare class balance is e.g. 55/45, a model achieving 0.53 is BELOW
+    # the trivial "always-predict-majority" baseline. The 0.53 floor is kept as a hard
+    # minimum for very-balanced classes; the +0.01 margin requires "better than majority"
+    # by a small margin to avoid declaring a trivial classifier "good".
+    y_train_np = y_t.cpu().numpy() if y_t.is_cuda else y_t.numpy()
+    majority_baseline = max(
+        float(np.mean(y_train_np == 0)),
+        float(np.mean(y_train_np == 1)),
+    )
+    effective_min_acc = max(PYKAN_MIN_ACCURACY, majority_baseline + 0.01)
+    if val_acc < effective_min_acc:
         logger.warning(
-            "Adam phase val_acc=%.4f < %.2f minimum. "
-            "PyKAN may not have learned meaningful patterns.",
-            val_acc, PYKAN_MIN_ACCURACY,
+            "Adam phase val_acc=%.4f < %.4f (majority baseline %.4f + 0.01 margin, "
+            "floored at PYKAN_MIN_ACCURACY=%.2f). PyKAN may not have learned meaningful patterns.",
+            val_acc, effective_min_acc, majority_baseline, PYKAN_MIN_ACCURACY,
         )
         print(
-            f"    ⚠ WARNING: val_acc={val_acc:.4f} barely above random. "
+            f"    ⚠ WARNING: val_acc={val_acc:.4f} below effective threshold "
+            f"{effective_min_acc:.4f} (majority baseline {majority_baseline:.4f}). "
             f"Continuing, but symbolic extraction may yield constants."
         )
 
@@ -670,9 +768,13 @@ def train_pykan(
             logger.info("Grid extended: %d → %d", extraction_grid, KAN_GRID)
             print(f"    Grid extended: {extraction_grid} → {KAN_GRID}")
             _log_diagnostic("After grid extend", model, X_t, y_t, X_val_t, y_val_t)
-        except (AttributeError, TypeError, Exception) as e:
-            logger.warning("Grid extension failed (%s).", e)
-            print(f"    Grid extension failed: {e}")
+        except Exception as e:
+            # S7: broad catch is intentional. pykan's refine API has varied across versions:
+            # different method names, different signatures, returning either a new model or
+            # mutating in place, and various internal failures on small/degenerate data.
+            # Grid extension is optional, so the safe behaviour is to skip on any failure.
+            logger.warning("Grid extension failed (%s: %s).", type(e).__name__, e)
+            print(f"    Grid extension failed: {type(e).__name__}: {e}")
     else:
         print(
             f"    Grid extension SKIPPED (n_train={n_train}, "
@@ -791,10 +893,13 @@ def train_pykan(
         "After LBFGS sparsity (final)", model, X_t, y_t, X_val_t, y_val_t
     )
 
-    # Stash the pre-symbolic accuracy on the model so extract_formulas can recover it later.
-    model._pre_symbolic_accuracy = val_acc
+    # S9: return diagnostic state explicitly via a dict instead of stashing on the model
+    # instance. The previous side-channel `model._pre_symbolic_accuracy` was fragile: re-running
+    # symbolify_network on the same model overwrote it silently with no warning. Explicit
+    # return values force the orchestrator to manage the state lifecycle.
+    train_state = {"post_train_val_acc": float(val_acc)}
     logger.info("%s trained. Val accuracy: %.4f, width: %s", model_type, val_acc, width)
-    return model
+    return model, train_state
 
 
 # --- 6. Pruning (Algorithm 1, Step 2) --------------------------------------
@@ -833,19 +938,40 @@ def prune_network(model, dataset: dict):
             )
 
     # Accuracy gate before pruning: warn if PyKAN never learned past random.
+    # S6: majority-class baseline check. The 0.53 floor was below the trivial baseline for
+    # any class balance worse than ~53/47; gate against the actual majority class.
     val_acc = _compute_accuracy(
         model, dataset["test_input"], dataset["test_label"].long()
     )
-    if val_acc < PYKAN_MIN_ACCURACY:
+    y_test = dataset["test_label"].long()
+    y_test_np = y_test.cpu().numpy() if y_test.is_cuda else y_test.numpy()
+    majority_baseline = max(
+        float(np.mean(y_test_np == 0)),
+        float(np.mean(y_test_np == 1)),
+    )
+    effective_min_acc = max(PYKAN_MIN_ACCURACY, majority_baseline + 0.01)
+    if val_acc < effective_min_acc:
         print(
-            f"    ⚠ WARNING: Pre-prune val_acc={val_acc:.4f} < {PYKAN_MIN_ACCURACY}. "
+            f"    ⚠ WARNING: Pre-prune val_acc={val_acc:.4f} < {effective_min_acc:.4f} "
+            f"(majority baseline {majority_baseline:.4f}, floor {PYKAN_MIN_ACCURACY}). "
             f"Model hasn't learned meaningful patterns."
         )
 
     try:
         model.attribute()
     except Exception as e:
-        logger.warning("model.attribute() failed: %s", e)
+        # S12: attribute() populates the importance scores that prune() uses. When it fails
+        # silently, subsequent prune may operate on stale/uninitialised attribution and yield
+        # an unreliable pruned architecture rather than an outright error. Surface this clearly.
+        logger.warning(
+            "model.attribute() failed (%s: %s). Pruning will proceed but may use "
+            "stale attribution scores; the pruned architecture is unreliable in this case.",
+            type(e).__name__, e,
+        )
+        print(
+            f"    ⚠ model.attribute() failed ({type(e).__name__}). "
+            f"Pruning may be unreliable; consider re-running or disabling prune."
+        )
 
     pre_prune_model = model
 
@@ -873,9 +999,14 @@ def prune_network(model, dataset: dict):
     if pruned:
         try:
             _ = model(dataset["train_input"])
-        except (RuntimeError, Exception) as e:
+        except Exception as e:
+            # S7: broad catch — the pruned model can fail in many ways (RuntimeError from
+            # tensor-shape mismatch, ValueError from empty layers, version-specific
+            # AttributeErrors). Any forward-pass failure means the prune produced an
+            # unusable model, so we fall back to the unpruned version uniformly.
             logger.warning(
-                "Pruned model forward pass failed (%s). Returning unpruned.", e
+                "Pruned model forward pass failed (%s: %s). Returning unpruned.",
+                type(e).__name__, e,
             )
             return pre_prune_model
 
@@ -964,7 +1095,13 @@ def symbolify_network(model, dataset: dict):
                     suggestions = model.suggest_symbolic(
                         l, i, j, topk=SYMBOLIC_TOPK, lib=SYMBOLIC_LIBRARY,
                     )
-                except (KeyError, Exception) as e:
+                except Exception as e:
+                    # S7: broad catch is intentional. KeyError is the most common failure
+                    # (pykan rejecting a name in SYMBOLIC_LIBRARY it doesn't recognise), but
+                    # this code path also has to absorb the various TypeError / AttributeError
+                    # / RuntimeError failures pykan raises across versions when symbolic
+                    # fitting hits degenerate edge data. Falling back to pykan defaults is the
+                    # right recovery in all of these cases.
                     try:
                         suggestions = model.suggest_symbolic(
                             l, i, j, topk=SYMBOLIC_TOPK,
@@ -1066,12 +1203,26 @@ def symbolify_network(model, dataset: dict):
                                 original_state = copy.deepcopy(model.state_dict())
                                 best_direct_fn = None
                                 best_direct_r2 = 0.0
+                                # S5: track regex-miss count so we can warn after the loop if
+                                # pykan changed its log format. The fallback degrades silently
+                                # otherwise, since every candidate would score r2=0 by default.
+                                n_regex_misses = 0
+                                n_candidates_tried = 0
+
+                                # S5: tolerate variants in pykan's print format. The original
+                                # regex was r"r2 is ([\d.eE+-]+)"; cover capitalisation, "=" vs "is",
+                                # and "R^2" variants that have appeared across versions.
+                                R2_PATTERNS = [
+                                    re.compile(r"r2 is ([\d.eE+-]+)", re.IGNORECASE),
+                                    re.compile(r"r\^?2\s*[:=]\s*([\d.eE+-]+)", re.IGNORECASE),
+                                ]
 
                                 for candidate in SYMBOLIC_LIBRARY:
                                     if candidate == "0":
                                         continue
+                                    n_candidates_tried += 1
                                     try:
-                                        # Capture stdout so we can extract "r2 is X.XXXX" from
+                                        # Capture stdout so we can extract R² from
                                         # PyKAN's print output (no programmatic R² return value).
                                         old_stdout = sys.stdout
                                         sys.stdout = buffer = io.StringIO()
@@ -1081,19 +1232,38 @@ def symbolify_network(model, dataset: dict):
                                         finally:
                                             sys.stdout = old_stdout
 
-                                        r2_match = re.search(r"r2 is ([\d.eE+-]+)", output)
+                                        r2_match = None
+                                        for pattern in R2_PATTERNS:
+                                            r2_match = pattern.search(output)
+                                            if r2_match:
+                                                break
                                         if r2_match:
                                             cand_r2 = float(r2_match.group(1))
                                             cand_r2 = max(0.0, min(1.0, cand_r2))
                                             if cand_r2 > best_direct_r2:
                                                 best_direct_r2 = cand_r2
                                                 best_direct_fn = candidate
+                                        else:
+                                            n_regex_misses += 1
 
                                         # Restore original state before trying the next candidate.
                                         model.load_state_dict(original_state)
                                     except Exception:
                                         model.load_state_dict(original_state)
                                         continue
+
+                                # S5: warn if every candidate missed the regex; this means
+                                # pykan changed its log format and the fallback isn't recovering
+                                # any R² values, even when candidates fit well.
+                                if n_candidates_tried > 0 and n_regex_misses == n_candidates_tried:
+                                    logger.warning(
+                                        "Edge (%d,%d,%d): R² regex matched 0/%d candidates. "
+                                        "PyKAN's fix_symbolic log format may have changed; "
+                                        "the brute-force '0' fallback is not recovering R² "
+                                        "and this edge will keep its spline. Inspect a recent "
+                                        "fix_symbolic call's stdout to update R2_PATTERNS.",
+                                        l, i, j, n_candidates_tried,
+                                    )
 
                                 if best_direct_fn is not None and best_direct_r2 >= SYMBOLIC_R2_THRESHOLD:
                                     best_fn = best_direct_fn
@@ -1255,17 +1425,29 @@ def symbolify_network(model, dataset: dict):
 
     _save_plot(model, "kan_symbolified_network.png")
 
-    # Stash these on the model for extract_formulas to read.
-    model._symbolification_rate = sym_rate
-    model._pre_symbolic_accuracy = pre_acc
-    return model
+    # S9: return state explicitly. See the comment in train_pykan for the rationale.
+    sym_state = {
+        "pre_symbolic_accuracy": float(pre_acc),
+        "symbolification_rate": float(sym_rate),
+    }
+    return model, sym_state
 
 
 # --- 8. Formula extraction --------------------------------------------------
 # Pull the closed-form sympy expressions out of the symbolified PyKAN; handles version variation in variable naming.
-def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
+def extract_formulas(
+    model,
+    dataset: dict,
+    feature_names: list[str],
+    sym_state: dict | None = None,
+) -> dict:
     """Return a dict of closed-form expressions and metadata: bearish / bullish logits, decision function,
     P(up) formula, pre / post symbolic accuracy, symbolification rate, pruned architecture, surviving features.
+
+    ``sym_state`` (S9): the dict returned by ``symbolify_network`` containing ``pre_symbolic_accuracy``
+    and ``symbolification_rate``. When provided, these values are read from the dict; when omitted,
+    we fall back to ``getattr(model, ...)`` for backward compatibility with any caller that still
+    relies on the legacy side-channel attributes.
 
     Robust to PyKAN's variable-naming convention drift (``x1``, ``x_1``, ``x_0``) by trying all three.
     """
@@ -1293,7 +1475,7 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
             used_vars = None
         except Exception as e:
             logger.error("model.symbolic_formula() failed: %s", e)
-            return _empty_result(model, feature_names)
+            return _empty_result(model, feature_names, sym_state=sym_state)
 
     # Pull the per-class expressions from PyKAN's nested return shape.
     try:
@@ -1302,10 +1484,10 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
             logit_bearish = expr_list[0]
             logit_bullish = expr_list[1] if len(expr_list) > 1 else sympy.Integer(0)
         else:
-            return _empty_result(model, feature_names)
+            return _empty_result(model, feature_names, sym_state=sym_state)
     except Exception as e:
         logger.error("Formula parsing failed: %s", e)
-        return _empty_result(model, feature_names)
+        return _empty_result(model, feature_names, sym_state=sym_state)
 
     # Substitute placeholder symbols with feature names so the formula reads in domain terms.
     if used_vars is not None:
@@ -1372,8 +1554,14 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
     except Exception:
         pass
 
-    pre_acc = getattr(model, "_pre_symbolic_accuracy", np.nan)
-    sym_rate = getattr(model, "_symbolification_rate", np.nan)
+    # S9: prefer sym_state when present; fall back to legacy side-channel for callers that
+    # haven't migrated yet.
+    if sym_state is not None:
+        pre_acc = sym_state.get("pre_symbolic_accuracy", np.nan)
+        sym_rate = sym_state.get("symbolification_rate", np.nan)
+    else:
+        pre_acc = getattr(model, "_pre_symbolic_accuracy", np.nan)
+        sym_rate = getattr(model, "_symbolification_rate", np.nan)
 
     # Post-symbolic accuracy: the model's accuracy after symbolic activations + fine-tuning.
     try:
@@ -1412,6 +1600,11 @@ def extract_formulas(model, dataset: dict, feature_names: list[str]) -> dict:
         "symbolification_rate": sym_rate,
         "pruned_architecture": pruned_arch,
         "surviving_features": surviving,
+        # S1: the raw → tanh transform parameters travel with the result so sensitivity
+        # and marginal-effect helpers can substitute correctly. The decision_function above
+        # is expressed in tanh-normalised space; consumers MUST convert raw values via
+        # z_i = tanh((x_i - feature_a[i]) / feature_b[i]) before evaluating.
+        "input_transform": dataset.get("input_transform"),
     }
 
 
@@ -1506,7 +1699,11 @@ def run_symbolic_extraction(
 
     # Step 4: train, prune, symbolify, extract.
     print(f"\n  Step 1: Training {model_label} (Adam → grid extend → LBFGS)...")
-    model = train_pykan(
+    # S9: capture the explicit state dict from train_pykan instead of relying on a
+    # side-channel attribute. The state from train_pykan (post-training val acc) is
+    # superseded by symbolify_network's pre-symbolic accuracy measurement, which is the
+    # canonical value because it's measured immediately before symbolification.
+    model, _train_state = train_pykan(
         dataset,
         n_features=len(feature_names),
         use_multkan=use_multkan,
@@ -1517,10 +1714,12 @@ def run_symbolic_extraction(
     model = prune_network(model, dataset)
 
     print("\n  Steps 3+4: Symbolification + affine fine-tuning...")
-    model = symbolify_network(model, dataset)
+    # S9: symbolify_network now returns (model, sym_state) explicitly.
+    model, sym_state = symbolify_network(model, dataset)
 
     print("\n  Extracting formulas...")
-    result = extract_formulas(model, dataset, feature_names)
+    # S9: pass sym_state directly to avoid any dependence on the legacy side-channel.
+    result = extract_formulas(model, dataset, feature_names, sym_state=sym_state)
 
     # Headline summary block.
     print(f"\n{'='*60}")
@@ -1536,8 +1735,15 @@ def run_symbolic_extraction(
     print(f"  Pre-symbolic accuracy:  {result['pre_symbolic_accuracy']:.4f}")
     print(f"  Post-symbolic accuracy: {result['post_symbolic_accuracy']:.4f}")
     print(f"  Symbolification rate:   {result['symbolification_rate']:.0%}")
-    print(f"  Surviving features:     {result['surviving_features']}")
+    print(f"  Surviving features:    {result['surviving_features']}")
     print(f"  Pruned architecture:    {result['pruned_architecture']}")
+    # S3: methodology disclaimer surfaced at the cell-output level.
+    print(
+        f"\n  Note: the formula below represents a {model_label} retrained from scratch with"
+        f"\n  matching architecture on the same training fold. Its decision boundary approximates"
+        f"\n  but does not exactly equal the CPCV-evaluated efficient-kan's. The pre/post symbolic"
+        f"\n  accuracy gap above quantifies how faithful the symbolic substitution is."
+    )
     print(f"\n  Decision function:")
     print(f"    {result['decision_function']}")
     print(f"\n  P(up) = {result['p_up_formula']}")
@@ -1579,23 +1785,43 @@ def _save_plot(model, filename: str) -> None:
         plt.close()
         logger.info("Saved %s", filename)
     except Exception as e:
-        logger.warning("Could not save %s: %s", filename, e)
+        # S13: include the exception type so the user can distinguish matplotlib backend
+        # failures from pykan API mismatches from filesystem permission errors.
+        logger.warning(
+            "Could not save %s (%s: %s).", filename, type(e).__name__, e,
+        )
 
 
 # Sentinel return value when extraction fails before reaching extract_formulas.
-def _empty_result(model, feature_names: list[str]) -> dict:
-    """Return a placeholder result dict for the failure path."""
+def _empty_result(
+    model,
+    feature_names: list[str],
+    sym_state: dict | None = None,
+) -> dict:
+    """Return a placeholder result dict for the failure path.
+
+    ``sym_state`` (S9): same dict that ``extract_formulas`` accepts; supplies accuracy and
+    symbolification-rate values when the legacy side-channel isn't present on the model.
+    """
+    if sym_state is not None:
+        pre_acc = sym_state.get("pre_symbolic_accuracy", np.nan)
+        sym_rate = sym_state.get("symbolification_rate", np.nan)
+    else:
+        pre_acc = getattr(model, "_pre_symbolic_accuracy", np.nan)
+        sym_rate = getattr(model, "_symbolification_rate", np.nan)
     return {
         "logit_bearish": "extraction_failed",
         "logit_bullish": "extraction_failed",
         "decision_function": "extraction_failed",
         "p_up_formula": "extraction_failed",
         "sympy_objects": {"bearish": None, "bullish": None, "decision": None},
-        "pre_symbolic_accuracy": getattr(model, "_pre_symbolic_accuracy", np.nan),
+        "pre_symbolic_accuracy": pre_acc,
         "post_symbolic_accuracy": np.nan,
-        "symbolification_rate": getattr(model, "_symbolification_rate", np.nan),
+        "symbolification_rate": sym_rate,
         "pruned_architecture": [],
         "surviving_features": [],
+        # S1: input transform params, populated only when the full pipeline runs.
+        "input_transform": None,
     }
 
 
@@ -1671,14 +1897,29 @@ def compute_feature_sensitivity(
     X: pd.DataFrame,
     eval_point: str = "mean",
 ) -> pd.DataFrame:
-    """Return per-feature gradient + per-σ effect on the decision logit + approximate per-σ ΔP(up).
+    """Return per-feature gradient + per-σ effect on the decision logit + per-σ ΔP(up).
 
-    Robustness to singular gradients: PyKAN's library includes ``1/x`` and ``log(x)`` primitives,
-    which can produce poles. When a pole sits near the evaluation point (common for heavily skewed
-    features whose mean lies far from the bulk), ``_safe_eval_at_point`` returns NaN and downstream
-    consumers interpret it as "gradient undefined at this point". Set ``eval_point="median"`` for
-    a more robust point on skewed distributions; the median typically avoids the singularity but
-    no longer matches the canonical-mean framing the thesis uses.
+    S1 fix: the symbolic ``decision_function`` is expressed in tanh-normalised feature space,
+    not raw feature space. The variable rename in ``extract_formulas`` is purely cosmetic;
+    substituting raw feature means into the formula evaluates it at the wrong point and yields
+    meaningless numbers. This function uses ``symbolic['input_transform']`` to convert the raw
+    centrality point into tanh-normalised space before evaluating the formula, then applies
+    the chain rule to report gradients and per-σ effects in raw-feature units.
+
+    S8 fix: the per-σ ΔP(up) column now uses the actual sigmoid slope at the centrality point,
+    ``p_at_center * (1 - p_at_center)``, instead of the previous hardcoded 1/4. The 1/4 value
+    is the maximum slope at P=0.5; for confident predictions (P close to 0 or 1) it overstates
+    the actual rate of change of P(up) substantially.
+
+    ``eval_point`` selects the centrality measure on the raw data:
+      - ``"mean"`` (default): substitution point is ``X[features].mean()``
+      - ``"median"``: substitution point is ``X[features].median()`` (more robust on skewed features)
+
+    Returns a DataFrame indexed by feature, with columns:
+      - ``mean_value``, ``std_value``: raw-space statistics from the input X
+      - ``d_decision/d_feature_at_center``: gradient in raw-feature units (df/dx_raw)
+      - ``sigma_effect_on_decision``: change in decision logit from bumping the feature by 1 raw σ
+      - ``sigma_delta_p``: corresponding change in P(up), using the slope at the centrality point
     """
     decision_expr = symbolic["sympy_objects"]["decision"]
     features = symbolic["surviving_features"]
@@ -1686,43 +1927,135 @@ def compute_feature_sensitivity(
     if decision_expr is None or decision_expr == "extraction_failed":
         return pd.DataFrame()
 
+    # S1: pull the raw → tanh transform parameters. Without these we cannot evaluate the
+    # formula at the right point. If missing (e.g., older symbolic result dict from before
+    # this fix), we fail loudly rather than producing wrong numbers silently.
+    transform = symbolic.get("input_transform")
+    if transform is None:
+        raise ValueError(
+            "compute_feature_sensitivity: symbolic result has no 'input_transform' key. "
+            "Re-run run_symbolic_extraction to obtain a result dict that includes the raw "
+            "to tanh-normalised transform parameters; without these the sensitivity values "
+            "cannot be computed in raw-feature units."
+        )
+    feature_a = transform.get("feature_a", {})
+    feature_b = transform.get("feature_b", {})
+
     sym_vars = {f: sympy.Symbol(f) for f in features}
     X_features = X[features]
-    means = X_features.mean()
-    stds = X_features.std()
+    means_raw = X_features.mean()
+    stds_raw = X_features.std()
 
-    # Build the substitution dict at the chosen evaluation point.
+    # Build the centrality point in raw space.
     if eval_point == "median":
-        center = X_features.median()
+        center_raw = X_features.median()
     elif eval_point == "mean":
-        center = means
+        center_raw = means_raw
     else:
         raise ValueError(f"eval_point must be 'mean' or 'median'; got {eval_point!r}")
 
-    point = {sym_vars[f]: center[f] for f in features}
+    # Helper: convert one raw feature value to tanh-normalised space.
+    def _to_tanh(feat: str, raw_val: float) -> float:
+        a = feature_a.get(feat, 0.0)
+        b = feature_b.get(feat, 1.0)
+        if b == 0:
+            b = 1.0  # defensive; shouldn't happen since input_std has +1e-8
+        return float(np.tanh((raw_val - a) / b))
+
+    # Convert the entire centrality point to tanh space; this is the substitution dict.
+    z_center = {f: _to_tanh(f, float(center_raw[f])) for f in features}
+    point_subs = {sym_vars[f]: z_center[f] for f in features}
+
+    # Lambdified decision function for fast finite-difference evaluation of σ-effects.
+    # If lambdify fails (rare, e.g. on exotic sympy expressions), fall back to per-call subs.
+    try:
+        decision_fn = sympy.lambdify(
+            [sym_vars[f] for f in features],
+            decision_expr,
+            modules="numpy",
+        )
+    except Exception:
+        decision_fn = None
+
+    # Decision value and sigmoid slope at the centrality point (S8).
+    if decision_fn is not None:
+        try:
+            decision_at_center = float(decision_fn(*[z_center[f] for f in features]))
+        except (ZeroDivisionError, TypeError, ValueError, OverflowError):
+            decision_at_center = float("nan")
+    else:
+        try:
+            decision_at_center = float(decision_expr.subs(point_subs))
+        except (ZeroDivisionError, TypeError, ValueError, OverflowError):
+            decision_at_center = float("nan")
+
+    if np.isfinite(decision_at_center):
+        # S8: actual sigmoid slope at the centrality point, not the hardcoded 1/4.
+        p_at_center = 1.0 / (1.0 + np.exp(-decision_at_center))
+        p_slope = p_at_center * (1.0 - p_at_center)
+    else:
+        p_at_center = float("nan")
+        p_slope = float("nan")
 
     rows = []
     n_singular = 0
-    # One symbolic derivative per feature; evaluate it at the centrality point and derive per-σ effects.
     for feat in features:
-        deriv = sympy.diff(decision_expr, sym_vars[feat])
-        deriv_at_point = _safe_eval_at_point(deriv, point)
+        a = feature_a.get(feat, 0.0)
+        b = feature_b.get(feat, 1.0) or 1.0
+        z_at_feat = z_center[feat]
 
-        if np.isnan(deriv_at_point):
+        # Symbolic gradient in TANH space, evaluated at the centrality point in tanh space.
+        deriv_z = sympy.diff(decision_expr, sym_vars[feat])
+        deriv_at_z = _safe_eval_at_point(deriv_z, point_subs)
+
+        if np.isnan(deriv_at_z):
             n_singular += 1
+            deriv_raw = float("nan")
             sigma_effect = float("nan")
-            approx_delta_p = float("nan")
+            sigma_delta_p = float("nan")
         else:
-            sigma_effect = deriv_at_point * stds[feat]
-            approx_delta_p = sigma_effect / 4.0  # sigmoid slope at p=0.5 is 1/4
+            # Chain rule: df/dx_raw = (df/dz) * (dz/dx_raw) where dz/dx_raw = (1 - z²) / b.
+            chain_factor = (1.0 - z_at_feat ** 2) / b
+            deriv_raw = deriv_at_z * chain_factor
+
+            # Per-σ effect via finite difference on the lambdified formula. Evaluating the
+            # FORMULA at (raw_center + raw_σ) → convert to tanh → substitute → subtract gives
+            # the exact change in the decision logit for a one-σ bump in raw space. This is
+            # more accurate than (gradient * raw_σ) when the formula is nonlinear over the σ.
+            sigma_raw = float(stds_raw[feat])
+            z_plus = z_center.copy()
+            z_plus[feat] = _to_tanh(feat, float(center_raw[feat]) + sigma_raw)
+            if decision_fn is not None:
+                try:
+                    decision_at_plus = float(
+                        decision_fn(*[z_plus[f] for f in features])
+                    )
+                except (ZeroDivisionError, TypeError, ValueError, OverflowError):
+                    decision_at_plus = float("nan")
+            else:
+                plus_subs = {sym_vars[f]: z_plus[f] for f in features}
+                try:
+                    decision_at_plus = float(decision_expr.subs(plus_subs))
+                except (ZeroDivisionError, TypeError, ValueError, OverflowError):
+                    decision_at_plus = float("nan")
+
+            if not np.isfinite(decision_at_plus) or not np.isfinite(decision_at_center):
+                sigma_effect = float("nan")
+                sigma_delta_p = float("nan")
+            else:
+                sigma_effect = decision_at_plus - decision_at_center
+                # S8: use actual slope at center, not 1/4. This is still a linearisation
+                # (it assumes P(up) changes locally at the rate it does at the center), but
+                # it tracks the true rate for confident predictions far better than 1/4.
+                sigma_delta_p = sigma_effect * p_slope if np.isfinite(p_slope) else float("nan")
 
         rows.append({
             "feature": feat,
-            "mean_value": means[feat],
-            "std_value": stds[feat],
-            "d_decision/d_feature_at_mean": deriv_at_point,
+            "mean_value": means_raw[feat],
+            "std_value": stds_raw[feat],
+            "d_decision/d_feature_at_center": deriv_raw,
             "sigma_effect_on_decision": sigma_effect,
-            "approx_sigma_delta_p": approx_delta_p,
+            "sigma_delta_p": sigma_delta_p,
         })
 
     if n_singular > 0:
@@ -1773,10 +2106,17 @@ def plot_marginal_effects(
 ):
     """Plot the marginal effect of each surviving feature on P(up).
 
-    Sweeps each feature across its empirical [q_low, q_high] range while pinning the others at
-    their dataset medians, evaluates the symbolic decision function, and plots the sigmoid-transformed
-    P(up). Median (rather than mean) is used for the pinned features because it's more robust on
-    skewed distributions.
+    S1 fix: the symbolic decision function lives in tanh-normalised feature space, so the
+    raw sweep must be converted to tanh space (per-feature, via the stored ``input_transform``
+    parameters) before being substituted into the formula. Without this conversion, the curve
+    plotted is f(raw_value) for a formula that was trained on tanh(raw_value), and the entire
+    figure is wrong even though its x-axis labels look correct.
+
+    Sweeps each feature across its empirical [q_low, q_high] range in raw space while pinning
+    the others at their raw-data medians, converts each substitution point to tanh space,
+    evaluates the symbolic decision function there, and plots the sigmoid-transformed P(up)
+    against the raw sweep values on the x-axis. Median (rather than mean) is used for the
+    pinned features because it's more robust on skewed distributions.
     """
     import matplotlib.pyplot as plt
 
@@ -1786,6 +2126,18 @@ def plot_marginal_effects(
     if decision_expr is None or decision_expr == "extraction_failed":
         raise ValueError("Symbolic extraction failed; no decision function to plot.")
 
+    # S1: pull the raw → tanh transform; fail loudly if missing rather than plotting wrong.
+    transform = symbolic.get("input_transform")
+    if transform is None:
+        raise ValueError(
+            "plot_marginal_effects: symbolic result has no 'input_transform' key. "
+            "Re-run run_symbolic_extraction to obtain a result dict that includes the raw "
+            "to tanh-normalised transform parameters; without these the marginal-effect "
+            "plot would evaluate the formula at wrong points and mislead readers."
+        )
+    feature_a = transform.get("feature_a", {})
+    feature_b = transform.get("feature_b", {})
+
     # Lambdify the symbolic decision function for fast numeric evaluation across the sweep.
     sym_vars = {f: sympy.Symbol(f) for f in features}
     decision_fn = sympy.lambdify(
@@ -1793,6 +2145,11 @@ def plot_marginal_effects(
         decision_expr,
         modules="numpy",
     )
+
+    def _to_tanh(feat: str, raw_val: float) -> float:
+        a = feature_a.get(feat, 0.0)
+        b = feature_b.get(feat, 1.0) or 1.0
+        return float(np.tanh((raw_val - a) / b))
 
     X_features = X[features]
     n_feat = len(features)
@@ -1804,26 +2161,35 @@ def plot_marginal_effects(
     if n_feat == 1:
         axes = [axes]
 
-    # One subplot per feature: sweep it from q_low to q_high, hold the others at median.
+    # Precompute the tanh-space values of pinned features (raw medians of the OTHER features).
+    fixed_raw = {f: float(X_features[f].median()) for f in features}
+    fixed_z = {f: _to_tanh(f, fixed_raw[f]) for f in features}
+
+    # One subplot per feature: sweep it from q_low to q_high in raw space, hold others at median.
     for ax, feat in zip(axes, features):
-        sweep = np.linspace(
+        sweep_raw = np.linspace(
             X_features[feat].quantile(quantile_low),
             X_features[feat].quantile(quantile_high),
             n_points,
         )
 
-        fixed = {f: X_features[f].median() for f in features}
+        # For each sweep point: bump only this feature in tanh space, leave others pinned.
         p_up = []
-        for v in sweep:
-            fixed[feat] = v
-            d = decision_fn(*[fixed[f] for f in features])
+        for v_raw in sweep_raw:
+            z_args = dict(fixed_z)
+            z_args[feat] = _to_tanh(feat, float(v_raw))
+            try:
+                d = decision_fn(*[z_args[f] for f in features])
+            except (ZeroDivisionError, TypeError, ValueError, OverflowError):
+                p_up.append(np.nan)
+                continue
             # Guard against NaN/Inf from the lambdified function at poles.
             if not np.isfinite(d):
                 p_up.append(np.nan)
             else:
                 p_up.append(1.0 / (1.0 + np.exp(-d)))
 
-        ax.plot(sweep, p_up, linewidth=2)
+        ax.plot(sweep_raw, p_up, linewidth=2)
         ax.axhline(0.5, color="grey", linestyle="--", alpha=0.5,
                    label="P=0.5 (abstention)")
         ax.axvline(X_features[feat].median(), color="red", linestyle=":",
@@ -1837,7 +2203,7 @@ def plot_marginal_effects(
     axes[0].legend(loc="best", fontsize=9)
     fig.suptitle(
         "Marginal effect of each feature on P(up)\n"
-        "(other features held at their median)",
+        "(other features held at their median, formula evaluated in tanh-normalised space)",
         fontsize=12, fontweight="bold",
     )
     plt.tight_layout()
@@ -1866,10 +2232,13 @@ def print_term_structure_summary(
 
     summary = sensitivity_df.copy()
     summary["n_terms_in_formula"] = pd.Series(term_counts)
+    # S1: column names updated (d_feature_at_mean → d_feature_at_center to match the new
+    # eval_point semantics; approx_sigma_delta_p → sigma_delta_p because the value is no
+    # longer an approximation tied to P=0.5).
     summary = summary[[
         "mean_value", "std_value", "n_terms_in_formula",
-        "d_decision/d_feature_at_mean", "sigma_effect_on_decision",
-        "approx_sigma_delta_p",
+        "d_decision/d_feature_at_center", "sigma_effect_on_decision",
+        "sigma_delta_p",
     ]]
 
     # NaN-aware formatter shared with print_feature_sensitivity.

@@ -29,6 +29,10 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+# Reuse cv.py's group-partition helper instead of maintaining a third copy.
+# cv.py is the single source of truth for the CPCV partition layout.
+from src.cpcv.cv import _compute_group_bounds
+
 logger = logging.getLogger(__name__)
 
 # --- Module-level constants -------------------------------------------------
@@ -187,7 +191,19 @@ def compute_path_performance(
     if n == 0:
         return _empty_performance()
 
-    # Sharpe ratio: annualised by sqrt of the event sampling factor.
+    # Sharpe ratio: annualised by sqrt(ANNUALIZATION_FACTOR).
+    #
+    # METHODOLOGY NOTE: The project's locked configuration uses sqrt(365), which is
+    # the calendar-day annualisation convention. The strategy actually trades on
+    # CUSUM-filtered event days that arrive at roughly 117/year (1,250 events over
+    # ~10.7 years for the project's window), not 365/year. A strict event-rate Sharpe
+    # would use sqrt(events_per_year) = sqrt(~117), which is ~1.77x smaller than the
+    # value reported here.
+    #
+    # The sqrt(365) convention is retained for comparability with the AFML/Lopez de
+    # Prado-style daily-bar literature and across the model lineup, and is applied
+    # symmetrically to the strategy, BH benchmark, and DSR de-annualisation step so
+    # that within-thesis comparisons remain internally consistent.
     mean_r = np.mean(returns)
     std_r = np.std(returns, ddof=1) if n > 1 else 1e-10
     if std_r < 1e-10:
@@ -308,16 +324,8 @@ def _empty_performance() -> dict:
 
 
 # --- 6. Path stitching (AFML §12.4) -----------------------------------------
-# Mirror of cv._compute_group_bounds; kept local so this module doesn't import a private symbol.
-def _compute_group_bounds(T: int, n_groups: int) -> list[tuple[int, int]]:
-    """Return ``[(start, end), ...]`` with exclusive end; groups 0..N-2 have size ⌊T/N⌋."""
-    base_size = T // n_groups
-    bounds = []
-    for g in range(n_groups):
-        start = g * base_size
-        end = (g + 1) * base_size if g < n_groups - 1 else T
-        bounds.append((start, end))
-    return bounds
+# _compute_group_bounds is imported from cv.py at the top of this file; this
+# section only contains stitching-specific helpers.
 
 
 # Recover the full event index from stored predictions; needed for mapping timestamps to positions.
@@ -348,7 +356,7 @@ def stitch_paths(
     *,
     event_index: pd.DatetimeIndex | None = None,
     group_bounds: list[tuple[int, int]] | None = None,
-    n_groups: int = 6,
+    n_groups: int = 8,
 ) -> dict:
     """Build ``{path_id: {returns, performance, bet_sizes, timestamps}}`` for one model.
 
@@ -514,11 +522,14 @@ def compute_deflated_sharpe(
     # so de-annualise before computing the standard error.
     non_ann_sr = observed_sharpe / np.sqrt(annualization_factor)
 
-    # Expected maximum standardised Sharpe under the null, AFML §14.4.
+    # Expected maximum standardised Sharpe under the null. Uses AFML §14.4 Eq 14.13
+    # (Bailey & Lopez de Prado 2014) exact inverse-CDF form rather than the asymptotic
+    # sqrt(2*log(N)) approximation, because at small N (the project has N_trials=6
+    # models) the asymptotic overstates E[max] by ~0.6 and makes the DSR threshold
+    # unduly conservative. The exact form converges to the asymptotic for large N.
     e_max_z = (
-        np.sqrt(2 * log_n)
-        * (1 - euler_gamma / (2 * log_n))
-        + euler_gamma / (2 * np.sqrt(2 * log_n))
+        (1.0 - euler_gamma) * stats.norm.ppf(1.0 - 1.0 / n_trials)
+        + euler_gamma * stats.norm.ppf(1.0 - 1.0 / (n_trials * np.e))
     )
 
     # Standard error of the non-annualised Sharpe accounting for non-normality (Mertens 2002 /
@@ -748,6 +759,14 @@ def compute_model_summary(
     std_sharpe = float(np.std(sharpes, ddof=1)) if len(sharpes) > 1 else 0.0
 
     # Pool skewness and kurtosis across paths so DSR sees representative non-normality.
+    #
+    # METHODOLOGY NOTE: This pools at the path level (mean of per-path moments), not at
+    # the return level (moments of the concatenated return distribution). The two estimators
+    # differ when path lengths or distributions are uneven. The path-level pooling matches
+    # the path-level Sharpe used as DSR's input and so keeps the DSR computation internally
+    # consistent (Sharpe and shape parameters both summarise "the typical path"). A
+    # return-level pooling would be defensible too and is worth reporting as a sensitivity
+    # check if a reviewer raises it.
     all_skew = [p["skewness"] for p in path_performances]
     all_kurt = [p["kurtosis"] for p in path_performances]
     pooled_skew = float(np.mean(all_skew))
@@ -841,6 +860,13 @@ def compute_buy_and_hold_summary(
     The BH benchmark is fully leveraged (size 1.0) whereas the models cap at MAX_BET_SIZE = 0.75,
     so the asymmetry is conservative for the model side: a 1.0-leveraged BH is harder to beat
     than a 0.75-leveraged one.
+
+    METHODOLOGY NOTE: This BH benchmark is event-based, not calendar-based. It captures one
+    return per CUSUM event (the label_return from event entry to barrier touch), not the raw
+    BTC return over every calendar day. Non-event-day returns are not included. This keeps the
+    comparison apples-to-apples with the strategy side (also event-based) but understates a
+    true continuous BH that holds through every calendar day. The methodology chapter should
+    cite this design choice when reporting BH performance.
     """
     path_performances = []
 
@@ -1083,7 +1109,15 @@ def analyze_results(cpcv_results: dict) -> dict:
     n_trials = len(models)
 
     # Derive the event index and group bounds once; ``stitch_paths`` reuses them per model.
-    n_groups = cpcv_results.get("n_groups", 6)
+    # E1 FIX: read n_groups from the pipeline's result. pipeline.py now stores it at the
+    # top level; older runs may have it inside split_info. We default to the project's
+    # locked N=8 only as a last resort so a missing key produces a clearly wrong-by-a-
+    # known-amount answer rather than a quietly wrong-by-stale-default-6 one.
+    n_groups = (
+        cpcv_results.get("n_groups")
+        or cpcv_results.get("split_info", {}).get("n_groups")
+        or 8
+    )
     event_index = _derive_event_index(predictions)
     group_bounds = _compute_group_bounds(len(event_index), n_groups)
 
@@ -1131,6 +1165,21 @@ def analyze_results(cpcv_results: dict) -> dict:
             model_name, path_performances, split_metrics, n_trials
         )
         all_summaries.append(summary)
+
+    # E4 FIX: include the buy-and-hold benchmark in the comparison table by default.
+    # BH is appended to all_summaries (so compare_models shows it as a row) but is
+    # intentionally NOT added to path_sharpes_matrix below, because PBO is a
+    # multiple-trials model-selection diagnostic and BH is not a selectable candidate.
+    bh_reference_model = next((m for m in models if m != "ar_logistic"), models[0])
+    try:
+        bh_summary = compute_buy_and_hold_summary(
+            predictions, path_map, n_paths, bh_reference_model, seed=0,
+        )
+        # Drop the internal-only key before appending to the comparison DataFrame.
+        bh_summary.pop("_path_performances", None)
+        all_summaries.append(bh_summary)
+    except Exception as e:
+        logger.warning("Failed to compute buy-and-hold benchmark: %s", e)
 
     # Ranked comparison table (also prints to the notebook).
     comparison_df = compare_models(all_summaries)

@@ -650,6 +650,7 @@ def run_cpcv_pipeline(
         "path_map": path_map,
         "n_paths": n_paths,
         "n_splits": len(splits),
+        "n_groups": n_groups,
         "models": models,
         "n_seeds": n_seeds,
     }
