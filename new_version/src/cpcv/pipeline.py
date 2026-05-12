@@ -314,9 +314,8 @@ def run_cpcv_pipeline(
     total_tasks = len(splits) * len(models) * n_seeds
     task_counter = 0
 
-    # Outer CPCV loop. Per-split detail is routed through Python's logging to the FileHandler;
-    # the notebook cell shows only this self-updating tqdm bar plus a final summary line, which
-    # keeps the saved notebook small enough to avoid the "array buffer allocation failed" error.
+    # Outer CPCV loop. Per-split detail goes through the FileHandler; the cell shows only
+    # the tqdm bar and a final summary, keeping the saved notebook small.
     pbar_label = (
         f"CPCV ({', '.join(models)})" if len(models) <= 3
         else f"CPCV ({len(models)} models)"
@@ -346,9 +345,8 @@ def run_cpcv_pipeline(
         t1_te = t1.iloc[test_idx]
         ret_te = bins_ret.iloc[test_idx]
 
-        # Preprocessing (FFD → MDA selection → scaling) shared across all models this fold.
-        # preprocess_fold returns a dict with re-aligned train and test labels (FFD may have
-        # dropped the lookback-head NaN rows on either side), so no manual realignment here.
+        # Preprocessing (FFD → MDA → scaling) shared across all models in this fold.
+        # The returned dict re-aligns train/test labels (FFD may drop lookback-head rows).
         needs_selection = not all(m == "ar_logistic" for m in models)
         prep_result = preprocess_fold(
             X, train_idx, test_idx,
@@ -381,14 +379,13 @@ def run_cpcv_pipeline(
         X_tr_sel = X_tr_proc[selected]
         X_te_sel = X_te_proc[selected]
 
-        # Three-way split inside the outer training fold (T5): the calibration slice is
-        # held out from early stopping so it is genuinely unseen by the model fit. Layout:
-        #   train: rows [0,           val_boundary)   80%  → consumed by model.fit
-        #   val:   rows [val_boundary, cal_boundary)  10%  → consumed by early stopping in fit
-        #   cal:   rows [cal_boundary, n_tr)          10%  → consumed only by Calibrator.fit
+        # Three-way 70/15/15 chronological split. The cal slice is held out from early
+        # stopping so it's genuinely unseen by model.fit. Widened from 80/10/10 after the
+        # calibration audit (all 6 models under-predicted P(Up) by 4-7pp); 10% (~75 events)
+        # was too small for both vector scaling and the LSTM/KAN early-stopping signal.
         n_tr = len(X_tr_sel)
-        val_boundary = int(n_tr * 0.8)
-        cal_boundary = int(n_tr * 0.9)
+        val_boundary = int(n_tr * 0.70)
+        cal_boundary = int(n_tr * 0.85)
 
         X_model = X_tr_sel.iloc[:val_boundary]
         X_val = X_tr_sel.iloc[val_boundary:cal_boundary]
@@ -422,10 +419,8 @@ def run_cpcv_pipeline(
             )
             logger.info("  AR Logistic lags: %s", AR_LAGS)
 
-        # Per-split nested tuning. Runs on the FULL training fold (X_tr_sel), not the 80%
-        # model portion, because the inner purged K-fold handles its own train/val split.
-        # t1_tr is passed through so the inner CV uses AFML §7.4.1 label-overlap purging,
-        # consistent with the outer CPCV purging in cv.py.
+        # Nested tuning on the full training fold; the inner purged K-fold handles its own
+        # train/val split. t1_tr is passed so inner CV applies AFML §7.4.1 label-overlap purging.
         if tune:
             from src.cpcv.tuning import tune_all_models
 
@@ -466,9 +461,8 @@ def run_cpcv_pipeline(
                     model_name, n_features=n_feat, seed=seed
                 )
 
-                # Route the correct X tensors to the model depending on its category.
-                # X_v feeds the model's early-stopping validation (X_val arg of model.fit);
-                # X_c feeds the calibrator after fitting (held out from early stopping).
+                # Route the correct X tensors: AR Logistic gets the full pre-MDA matrix
+                # (needs lag columns by name); others get the MDA-selected subset.
                 if model_name == "ar_logistic":
                     X_fit = X_model_full
                     X_v = X_val_full
@@ -480,10 +474,8 @@ def run_cpcv_pipeline(
                     X_c = X_cal
                     X_predict = X_te_sel
 
-                # Training: any per-task failure is logged but does not abort the run.
-                # sample_weight_val=w_val (T3) makes the early-stopping criterion symmetric
-                # with the weighted training loss; without it, val loss falls back to ones
-                # and the model layer's M3+M4 symmetric weighting is silently no-op.
+                # sample_weight_val=w_val keeps early stopping on the same weighted log-loss
+                # the training loop optimises (T3); per-task failures are logged, not raised.
                 try:
                     model.fit(
                         X_fit, y_model,
@@ -498,10 +490,8 @@ def run_cpcv_pipeline(
                     )
                     continue
 
-                # Calibration on the truly-held-out X_c (10% tail of outer train).
-                # LSTM windowing produces NaN at the warm-up rows under the M1 contract, so we
-                # slice cal_logits down to the valid sequence indices before passing to the
-                # calibrator; otherwise vector scaling's NLL goes NaN.
+                # Calibration on the truly-held-out X_c. LSTM produces NaN at warm-up rows
+                # (M1 contract), so slice cal logits to valid indices before vector scaling.
                 try:
                     calibrator = Calibrator()
                     if model_name == "lstm" and hasattr(model, "last_valid_indices"):
@@ -522,10 +512,8 @@ def run_cpcv_pipeline(
                     )
                     calibrator = None
 
-                # Prediction on the test fold. For LSTM, slice the raw logits down to valid
-                # rows BEFORE calibration so the calibrator never sees NaN warm-up logits
-                # (which would correctly trigger the T14 NaN-in-logits warning even though
-                # we'd be slicing the NaN out afterward).
+                # Test-fold prediction. LSTM logits: slice to valid_idx BEFORE calibration
+                # so the calibrator never sees NaN warm-up rows (T2/T14).
                 raw_logits = model.predict_logits(X_predict)
 
                 if model_name == "lstm" and hasattr(model, "last_valid_indices"):

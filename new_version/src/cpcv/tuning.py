@@ -322,13 +322,17 @@ def tune_xgboost(X_train, y_train, w_train=None, t1_train=None,
     all_results = []
 
     def objective(trial):
-        # 8-parameter search; ranges chosen to span the regularised end of the parameter space.
+        # 8-parameter search. min_child_weight ∈ [10, 50] (was [5, 30]) and gamma ∈
+        # log [0.01, 1.0] (was log [1e-8, 1.0]) tightened after LOO-PBO audit showed
+        # XGBoost driving the multi-model selection-bias signal; the new floors force
+        # leaves ≥1.7% of the model-training partition and require every split to clear
+        # a non-trivial gain threshold.
         max_depth = trial.suggest_int("max_depth", 1, 3)
         lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
-        min_child_weight = trial.suggest_int("min_child_weight", 5, 30)
+        min_child_weight = trial.suggest_int("min_child_weight", 10, 50)
         subsample = trial.suggest_float("subsample", 0.6, 1.0)
         colsample_bytree = trial.suggest_float("colsample_bytree", 0.6, 1.0)
-        gamma = trial.suggest_float("gamma", 1e-8, 1.0, log=True)
+        gamma = trial.suggest_float("gamma", 0.01, 1.0, log=True)
         reg_alpha = trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True)
         reg_lambda = trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True)
 
@@ -357,9 +361,8 @@ def tune_xgboost(X_train, y_train, w_train=None, t1_train=None,
                 early_stopping_rounds=20,
                 random_state=seed,
             )
-            # Weighted eval_set: early stopping decides on the same weighted log-loss objective
-            # the training side optimises; previously XGB's eval_metric was unweighted while
-            # training was weighted, producing an asymmetric stopping rule.
+            # Weighted eval_set: early stopping uses the same weighted log-loss as training,
+            # not the previously-asymmetric (weighted train / unweighted val) setup.
             fit_kwargs = dict(
                 X=X_tr, y=y_tr, sample_weight=w_tr,
                 eval_set=[(X_val, y_val)], verbose=False,
@@ -535,9 +538,8 @@ def tune_lstm(X_train, y_train, w_train=None, t1_train=None, n_features=None,
                     dropout=dropout,
                 ).to(device)
 
-                # Same loss + optimiser stack as the production training loop.
-                # Both train and val use reduction="none" so the per-sample CE is multiplied
-                # by AFML sample weights before averaging — symmetric weighting on both sides.
+                # Same loss + optimiser stack as production; reduction="none" on both train
+                # and val so AFML weights are applied symmetrically before averaging.
                 criterion = nn.CrossEntropyLoss(
                     weight=cw_t, reduction="none",
                     label_smoothing=0.1,

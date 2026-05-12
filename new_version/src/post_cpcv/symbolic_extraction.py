@@ -1891,22 +1891,50 @@ def print_partial_derivatives(symbolic: dict) -> None:
         print(f"    {sensitivity}\n")
 
 
-# Compute per-feature marginal sensitivity at the dataset mean (or median); handles non-finite gradients via _safe_eval_at_point.
+def _evaluate_decision(decision_fn, decision_expr, sym_vars, features, z_values):
+    """Evaluate the decision function at a tanh-space point; prefer the lambdified callable."""
+    if decision_fn is not None:
+        try:
+            return float(decision_fn(*[z_values[f] for f in features]))
+        except (ZeroDivisionError, TypeError, ValueError, OverflowError):
+            return float("nan")
+    try:
+        return float(decision_expr.subs({sym_vars[f]: z_values[f] for f in features}))
+    except (ZeroDivisionError, TypeError, ValueError, OverflowError):
+        return float("nan")
+
+
+# Compute per-feature marginal sensitivity at the dataset mean (or median).
+# Uses central finite differences in raw space, which avoids the analytic poles that sympy.diff
+# produces when the formula contains log/sqrt/1-over primitives evaluated near zero.
 def compute_feature_sensitivity(
     symbolic: dict,
     X: pd.DataFrame,
     eval_point: str = "mean",
+    fd_step_frac: float = 0.01,
 ) -> pd.DataFrame:
     """Return per-feature gradient + per-σ effect on the decision logit + per-σ ΔP(up).
 
-    S1 fix: the symbolic ``decision_function`` is expressed in tanh-normalised feature space,
-    not raw feature space. The variable rename in ``extract_formulas`` is purely cosmetic;
-    substituting raw feature means into the formula evaluates it at the wrong point and yields
-    meaningless numbers. This function uses ``symbolic['input_transform']`` to convert the raw
-    centrality point into tanh-normalised space before evaluating the formula, then applies
-    the chain rule to report gradients and per-σ effects in raw-feature units.
+    The symbolic ``decision_function`` is expressed in tanh-normalised feature space, not raw
+    feature space. The variable rename in ``extract_formulas`` is purely cosmetic; substituting
+    raw feature values into the formula evaluates it at the wrong point. This function uses
+    ``symbolic['input_transform']`` to map raw values into tanh space.
 
-    S8 fix: the per-σ ΔP(up) column now uses the actual sigmoid slope at the centrality point,
+    **Gradient via central finite differences.** The earlier implementation used ``sympy.diff``
+    of the decision function and substituted the centrality point into the analytic derivative.
+    For formulas containing primitives like ``log(g(z))``, ``sqrt(g(z))`` or ``1/g(z)`` whose
+    ``g`` vanishes near the scaled origin, the analytic derivative has a pole at exactly the
+    point the RobustScaler-then-tanh pipeline maps the median to (``z = 0``). The result was a
+    table of pure NaN even when the formula itself was perfectly well-defined a step away. This
+    implementation evaluates the lambdified formula at ``f(x_raw + h)`` and ``f(x_raw - h)`` in
+    raw space (converting each to tanh space with the stored transform) and takes the central
+    difference. The two evaluation points are not at the singularity, so the gradient is finite
+    whenever the formula itself is. ``fd_step_frac`` is the step size as a fraction of the raw
+    feature std; the default 0.01 is small enough to be local for typical features.
+
+    The per-σ effect uses a finite difference across a full raw σ, computed identically.
+
+    ``sigma_delta_p`` uses the actual sigmoid slope at the centrality point,
     ``p_at_center * (1 - p_at_center)``, instead of the previous hardcoded 1/4. The 1/4 value
     is the maximum slope at P=0.5; for confident predictions (P close to 0 or 1) it overstates
     the actual rate of change of P(up) substantially.
@@ -1927,9 +1955,6 @@ def compute_feature_sensitivity(
     if decision_expr is None or decision_expr == "extraction_failed":
         return pd.DataFrame()
 
-    # S1: pull the raw → tanh transform parameters. Without these we cannot evaluate the
-    # formula at the right point. If missing (e.g., older symbolic result dict from before
-    # this fix), we fail loudly rather than producing wrong numbers silently.
     transform = symbolic.get("input_transform")
     if transform is None:
         raise ValueError(
@@ -1962,12 +1987,12 @@ def compute_feature_sensitivity(
             b = 1.0  # defensive; shouldn't happen since input_std has +1e-8
         return float(np.tanh((raw_val - a) / b))
 
-    # Convert the entire centrality point to tanh space; this is the substitution dict.
+    # Tanh-space centrality point (used for the decision-at-center evaluation and as the
+    # base point for per-feature finite differences).
     z_center = {f: _to_tanh(f, float(center_raw[f])) for f in features}
-    point_subs = {sym_vars[f]: z_center[f] for f in features}
 
-    # Lambdified decision function for fast finite-difference evaluation of σ-effects.
-    # If lambdify fails (rare, e.g. on exotic sympy expressions), fall back to per-call subs.
+    # Lambdify the decision function once for fast repeated evaluation; fall back to
+    # per-call subs if lambdify chokes on exotic sympy expressions.
     try:
         decision_fn = sympy.lambdify(
             [sym_vars[f] for f in features],
@@ -1977,20 +2002,11 @@ def compute_feature_sensitivity(
     except Exception:
         decision_fn = None
 
-    # Decision value and sigmoid slope at the centrality point (S8).
-    if decision_fn is not None:
-        try:
-            decision_at_center = float(decision_fn(*[z_center[f] for f in features]))
-        except (ZeroDivisionError, TypeError, ValueError, OverflowError):
-            decision_at_center = float("nan")
-    else:
-        try:
-            decision_at_center = float(decision_expr.subs(point_subs))
-        except (ZeroDivisionError, TypeError, ValueError, OverflowError):
-            decision_at_center = float("nan")
-
+    # Decision value and sigmoid slope at the centrality point.
+    decision_at_center = _evaluate_decision(
+        decision_fn, decision_expr, sym_vars, features, z_center
+    )
     if np.isfinite(decision_at_center):
-        # S8: actual sigmoid slope at the centrality point, not the hardcoded 1/4.
         p_at_center = 1.0 / (1.0 + np.exp(-decision_at_center))
         p_slope = p_at_center * (1.0 - p_at_center)
     else:
@@ -2000,54 +2016,45 @@ def compute_feature_sensitivity(
     rows = []
     n_singular = 0
     for feat in features:
-        a = feature_a.get(feat, 0.0)
-        b = feature_b.get(feat, 1.0) or 1.0
-        z_at_feat = z_center[feat]
+        sigma_raw = float(stds_raw[feat])
+        if not np.isfinite(sigma_raw) or sigma_raw == 0:
+            sigma_raw = 1.0  # defensive
 
-        # Symbolic gradient in TANH space, evaluated at the centrality point in tanh space.
-        deriv_z = sympy.diff(decision_expr, sym_vars[feat])
-        deriv_at_z = _safe_eval_at_point(deriv_z, point_subs)
+        h_raw = fd_step_frac * sigma_raw  # small step for the gradient finite difference
 
-        if np.isnan(deriv_at_z):
-            n_singular += 1
+        # --- Gradient: central finite difference in RAW space ---
+        z_minus = z_center.copy()
+        z_minus[feat] = _to_tanh(feat, float(center_raw[feat]) - h_raw)
+        z_plus_small = z_center.copy()
+        z_plus_small[feat] = _to_tanh(feat, float(center_raw[feat]) + h_raw)
+
+        f_minus = _evaluate_decision(decision_fn, decision_expr, sym_vars, features, z_minus)
+        f_plus_small = _evaluate_decision(
+            decision_fn, decision_expr, sym_vars, features, z_plus_small
+        )
+
+        if np.isfinite(f_minus) and np.isfinite(f_plus_small):
+            deriv_raw = (f_plus_small - f_minus) / (2.0 * h_raw)
+            if not np.isfinite(deriv_raw):
+                deriv_raw = float("nan")
+        else:
             deriv_raw = float("nan")
+
+        # --- Per-σ effect: finite difference across a full raw σ ---
+        z_sigma = z_center.copy()
+        z_sigma[feat] = _to_tanh(feat, float(center_raw[feat]) + sigma_raw)
+        f_sigma = _evaluate_decision(decision_fn, decision_expr, sym_vars, features, z_sigma)
+
+        if np.isfinite(f_sigma) and np.isfinite(decision_at_center):
+            sigma_effect = f_sigma - decision_at_center
+            sigma_delta_p = sigma_effect * p_slope if np.isfinite(p_slope) else float("nan")
+        else:
             sigma_effect = float("nan")
             sigma_delta_p = float("nan")
-        else:
-            # Chain rule: df/dx_raw = (df/dz) * (dz/dx_raw) where dz/dx_raw = (1 - z²) / b.
-            chain_factor = (1.0 - z_at_feat ** 2) / b
-            deriv_raw = deriv_at_z * chain_factor
 
-            # Per-σ effect via finite difference on the lambdified formula. Evaluating the
-            # FORMULA at (raw_center + raw_σ) → convert to tanh → substitute → subtract gives
-            # the exact change in the decision logit for a one-σ bump in raw space. This is
-            # more accurate than (gradient * raw_σ) when the formula is nonlinear over the σ.
-            sigma_raw = float(stds_raw[feat])
-            z_plus = z_center.copy()
-            z_plus[feat] = _to_tanh(feat, float(center_raw[feat]) + sigma_raw)
-            if decision_fn is not None:
-                try:
-                    decision_at_plus = float(
-                        decision_fn(*[z_plus[f] for f in features])
-                    )
-                except (ZeroDivisionError, TypeError, ValueError, OverflowError):
-                    decision_at_plus = float("nan")
-            else:
-                plus_subs = {sym_vars[f]: z_plus[f] for f in features}
-                try:
-                    decision_at_plus = float(decision_expr.subs(plus_subs))
-                except (ZeroDivisionError, TypeError, ValueError, OverflowError):
-                    decision_at_plus = float("nan")
-
-            if not np.isfinite(decision_at_plus) or not np.isfinite(decision_at_center):
-                sigma_effect = float("nan")
-                sigma_delta_p = float("nan")
-            else:
-                sigma_effect = decision_at_plus - decision_at_center
-                # S8: use actual slope at center, not 1/4. This is still a linearisation
-                # (it assumes P(up) changes locally at the rate it does at the center), but
-                # it tracks the true rate for confident predictions far better than 1/4.
-                sigma_delta_p = sigma_effect * p_slope if np.isfinite(p_slope) else float("nan")
+        # Track features with no usable gradient OR no usable per-σ value.
+        if not np.isfinite(deriv_raw) and not np.isfinite(sigma_effect):
+            n_singular += 1
 
         rows.append({
             "feature": feat,
@@ -2060,13 +2067,15 @@ def compute_feature_sensitivity(
 
     if n_singular > 0:
         logger.warning(
-            "Sensitivity table: %d/%d features have non-finite gradient at "
-            "the %s; reported as NaN. Consider eval_point='median' or "
-            "inspect the symbolic formula for poles near these features' %s.",
+            "Sensitivity table: %d/%d features have non-finite gradient and per-sigma effect "
+            "at the %s; reported as NaN. The symbolic formula has poles near these features' "
+            "%s in tanh-normalised space.",
             n_singular, len(features), eval_point, eval_point,
         )
 
-    return pd.DataFrame(rows).set_index("feature")
+    df = pd.DataFrame(rows).set_index("feature")
+    df.attrs["eval_point"] = eval_point  # for the printer to label the table correctly
+    return df
 
 
 # Print the sensitivity DataFrame with NaN-aware formatting; renders singular gradients as 'N/A'.
@@ -2082,16 +2091,21 @@ def print_feature_sensitivity(sensitivity_df: pd.DataFrame) -> None:
             return "    N/A "
         return f"{x:+.4f}"
 
-    print("Feature sensitivity at the dataset mean:\n")
+    eval_point = sensitivity_df.attrs.get("eval_point", "mean")
+    label = "dataset median" if eval_point == "median" else "dataset mean"
+    print(f"Feature sensitivity at the {label}:\n")
     print(sensitivity_df.to_string(float_format=fmt))
 
     # Footer note when any row has a non-finite entry.
     n_singular = int((~np.isfinite(sensitivity_df.values)).any(axis=1).sum())
     if n_singular > 0:
+        alt = "mean" if eval_point == "median" else "median"
         print(
             f"\n  Note: {n_singular} feature(s) have a non-finite gradient at "
-            f"the dataset mean (symbolic formula has a pole near that point); "
-            f"rendered as N/A. Try eval_point='median' for a more robust point."
+            f"the {label} (symbolic formula has a pole near that point); "
+            f"rendered as N/A. Try eval_point='{alt}' for a different point, "
+            f"or inspect the closed-form decision function for log/sqrt/1-over "
+            f"primitives that vanish near the centrality point."
         )
 
 
