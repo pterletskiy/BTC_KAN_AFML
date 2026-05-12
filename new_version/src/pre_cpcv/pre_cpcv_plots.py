@@ -46,7 +46,7 @@ def _replay_cusum_state(returns: pd.Series, h: float) -> tuple[pd.Series, pd.Ser
 
 # --- 1. CUSUM filter: zoom-window diagnostic of returns + S+/S- accumulators ---
 def plot_cusum_filter(returns: pd.Series, t_events: pd.DatetimeIndex, h: float,
-                      zoom_start: str = "2026-01-01", zoom_end: str = "2026-03-27",
+                      zoom_start: str = "2026-01-01", zoom_end: str = "2026-04-01",
                       figsize: tuple[int, int] = (16, 8)) -> plt.Figure:
     """Two-panel CUSUM diagnostic: returns on top, S+/S- accumulators below.
 
