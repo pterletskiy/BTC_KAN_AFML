@@ -201,8 +201,8 @@ Orchestration function. Chains: concurrent labels → uniqueness → return attr
 |----------|-------|-----------|
 | Technical (TA) | 25 | MDA pool |
 | Mathematical (AFML Part 4) | 9 | MDA pool |
-| External (macro / crypto-macro / on-chain) | 22 | MDA pool |
-| Lag (autoregressive) | 6 | MDA pool + AR Logistic (by name, from pre-MDA matrix) |
+| External (macro / crypto-macro / on-chain) | 29 | MDA pool |
+| Lag (autoregressive) | 10 | MDA pool + AR Logistic (by name, from pre-MDA matrix) |
 | **Total** | **73** | **All 73 eligible for MDA; AR Logistic restricts itself to its 10 lag columns** |
 
 **Module-level constants (all feature parameters defined at top of each file):**
@@ -567,7 +567,7 @@ Visualisation and verification helpers for the CPCV configuration, called after 
 | `plot_btc_with_groups(X, df_raw, n_groups, use_log_scale)` | BTC close price with the N CPCV groups shaded as coloured bands; toggleable log/linear y-axis | `Figure` |
 | `plot_train_test_timelines(X, splits, n_groups, k, demo_splits)` | Three sub-panels showing train (steelblue) and test (crimson) date partitioning for representative splits, with test-group shading and group-boundary verticals | `Figure` |
 | `print_purge_embargo_detail(X, t1, splits, n_groups, k, demo_splits)` | Per-split text dump showing the last three training rows before each test group (purge zone) and the first three after (embargo zone), with `OK` / `OVERLAP` flags on each pre-test row | `None` |
-| `audit_cpcv_leakage(X, t1, splits, n_groups, k, split_info)` | Full audit across all splits checking that no training label end-time `t1` resolves inside a test group; prints a summary table and returns the audit data | `DataFrame` |
+| `audit_cpcv_leakage(X, t1, splits, n_groups, k, split_info)` | Full audit across all splits; for every training observation checks both AFML purging condition 2 (`t_test_start ≤ t1[i] ≤ t_test_end`, the training label resolves inside the test window) and condition 3 (`t_i_start ≤ t_test_start ≤ t_test_end ≤ t1[i]`, the training label spans the entire test window). Reports per-split leak counts as `DataFrame`, prints a summary table with exact purge/embargo counts read from `split_info` rather than recomputed. | `DataFrame` |
 
 `audit_cpcv_leakage` returns the audit as a DataFrame so the notebook can write it to a thesis appendix table or filter to failures only; on a clean run all 28 splits should report `status="OK"` with zero leaks.
 
@@ -582,7 +582,7 @@ The 8-color palette used by the visual functions is exposed as a module-level co
 **Module-level constants:**
 ```
 FFD: FFD_D_RANGE=(0.0, 1.0, 0.05), FFD_THRESHOLD=1e-4, FFD_ADF_SIGNIFICANCE=0.05, FFD_MAX_LOOKBACK=200
-Selection: MDA_N_ESTIMATORS=500, MDA_N_INNER_FOLDS=3, MDA_TOP_K_FRAC=0.30, MIN_FEATURES=5
+Selection: MDA_N_ESTIMATORS=500, MDA_N_INNER_FOLDS=3, MDA_TOP_K_FRAC=0.20, MIN_FEATURES=5
 ```
 
 #### Step 11.a — FFD (`ffd_transform`)
@@ -615,31 +615,36 @@ Uses `compute_multi_model_mda()` which runs permutation importance with **two cl
 
 **Rationale for multi-model over RF-only MDA:** RF-only MDA introduces tree bias (features that tree models naturally exploit get inflated importance). SFI in weak-signal regimes produces uninformative near-uniform scores (~0.45–0.55). Averaging MDA from RF and LR balances these biases and reduces selection variance.
 
+**Per-model z-scoring before averaging.** RF and Logistic Regression produce MDA scores on different absolute scales (RF's permutation drops F1 by ~0.005-0.05 per feature; Logistic's drops can be an order of magnitude smaller because the linear decision boundary is less sensitive to single-feature noise). Naive averaging of `(MDA_RF + MDA_LR) / 2` would let RF's larger magnitudes dominate, recovering an effectively RF-only ranking. The implementation z-scores each model's MDA vector across features before averaging, so both models contribute symmetrically to the final ranking regardless of their native magnitudes.
+
 For each model, `_compute_mda_single_model()` runs a **purged inner 3-fold CV** on the training set:
 1. Splits training data into 3 chronological inner folds
 2. Purges inner-train observations whose t1 overlaps inner-test (same 3-condition check as outer CPCV)
-3. Fits the classifier, computes baseline F1 on inner-test
-4. For each feature: permutes column, recomputes F1, records `MDA = baseline_F1 − permuted_F1`
-5. Averages MDA across inner folds
+3. Applies a one-sided post-test embargo (events after each inner-test boundary; no pre-test embargo because training labels resolving before inner-test contain no future information)
+4. Fits the classifier, computes weighted F1 on inner-test using the test-fold's sample weights
+5. For each feature: permutes column, recomputes weighted F1, records `MDA = baseline_F1 − permuted_F1`
+6. Averages MDA across inner folds, then z-scores across features
 
-The final averaged MDA per feature = `mean(MDA_RF, MDA_LR)`. Selection rules:
-1. Keep features with averaged MDA > 0 (permuting hurts at least one model on average)
-2. Cap at `top_k_frac` of total features (default 30%, overridable from notebook)
+The final averaged MDA per feature = `mean(z(MDA_RF), z(MDA_LR))`. Selection rules:
+1. Keep features with averaged z-MDA > 0 (permuting hurts at least one model on average, on a rank-normalised basis)
+2. Cap at `top_k_frac` of total features (locked at 0.20, overridable from notebook)
 3. Hard floor of 5 features minimum
 
-**Lag features in the MDA pool.** `select_features` runs MDA over all 73 features, including the six `log_returns_lagN` columns. An earlier version of the pipeline excluded lag features from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing; lag columns appear in `selected` for a given fold only if their averaged MDA (RF + Logistic Regression permutation importance) is positive and ranks within the top-k cap. AR Logistic continues to consume the ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, independently of MDA's choices.
+**Lag features in the MDA pool.** `select_features` runs MDA over all 73 features, including the ten `log_returns_lagN` columns. An earlier version of the pipeline excluded lag features from MDA on the rationale that they should be reserved for the AR Logistic baseline; the advisor argued this created an unfair information asymmetry, since AR Logistic received lag features the ML and neural models did not see. The current pipeline lets every feature compete on equal footing; lag columns appear in `selected` for a given fold only if their averaged z-MDA (RF + Logistic Regression permutation importance) is positive and ranks within the top-k cap. AR Logistic continues to consume the ten lag columns by name from the pre-MDA matrix via the pipeline's `X_tr_full` route, independently of MDA's choices.
 
-**Typical result:** ~20–22 features selected per fold from the 73 candidates (`TOP_K_FRAC = 0.30` × 73 ≈ 22 with the MIN_FEATURES = 5 floor and the `MDA > 0` gate trimming a few additional features in low-signal folds). The 10 lag columns and the seven 14d/30d macro pairs sit alongside engineered features in `X_tr_proc` and may or may not appear in `selected` depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
+**Typical result with `TOP_K_FRAC = 0.20`:** ~14-15 features selected per fold from the 73 candidates, of which the lag columns and the seven 14d/30d macro pairs may appear or not depending on per-fold MDA. AR Logistic always sees the lag columns regardless, because it bypasses MDA via `X_tr_full`.
 
-**Per-fold warning provenance.** When fewer than `MIN_FEATURES = 5` features clear MDA > 0 on a given fold and the function falls back to the top-5 by MDA value, the emitted `logger.warning(...)` is prefixed with `[split K/N]` where `K` is the 1-indexed CPCV split number and `N` is the total number of splits (28 in the locked configuration). The prefix is plumbed via the keyword-only `split_idx` and `n_splits` arguments to `select_features` and `preprocess_fold`, which `pipeline.py` populates inside the per-split loop. The prefix surfaces in the deferred-warning summary that `run_cpcv_pipeline` prints after the ✅ completion notice, so the reader can tell which specific folds tripped the fallback rather than assuming the issue applied uniformly across all 28.
+**Per-fold warning provenance.** When fewer than `MIN_FEATURES = 5` features clear z-MDA > 0 on a given fold and the function falls back to the top-5 by z-MDA value, the emitted `logger.warning(...)` is prefixed with `[split K/N]` where `K` is the 1-indexed CPCV split number and `N` is the total number of splits (28 in the locked configuration). The prefix is plumbed via the keyword-only `split_idx` and `n_splits` arguments to `select_features` and `preprocess_fold`, which `pipeline.py` populates inside the per-split loop. The prefix surfaces in the deferred-warning summary that `run_cpcv_pipeline` prints after the ✅ completion notice, so the reader can tell which specific folds tripped the fallback rather than assuming the issue applied uniformly across all 28.
 
-**TOP_K_FRAC trail and sensitivity (0.40 → 0.30 locked, with 0.25 and 0.20 as sensitivity checks).** The cap was tightened from common defaults of 0.40-0.50 in an earlier round of methodology development. The first tightening, from 0.40 to 0.30, came after a high-PBO run on the 66-feature pool revealed that only ~6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Two cap settings were evaluated as primary candidates at that point: 0.25 forced ~16 features through the bottleneck, and 0.30 forced ~19. Both produced essentially identical predictive metrics across all six models (mean accuracy and pooled AUC differed by less than 0.5 percentage points per model), but the backtest-derived metrics diverged substantially: PBO was 0.69 at 0.25 and 0.26 at 0.30, with model rankings reshuffling between the two. 0.30 was selected as primary because it produced the lower PBO; the divergence between the two configurations on the path-Sharpe-derived metrics, despite stable predictive metrics, was itself the AFML rank-instability finding made operational on this dataset.
+**TOP_K_FRAC trail.** The cap was tightened from common defaults of 0.40-0.50 in an earlier round of methodology development. The first tightening from 0.40 to 0.30 came after a high-PBO run on the 66-feature pool revealed that only ~6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. The May 2026 expansion of the feature pool from 66 to 73 columns (the 14-day macro return variants and the AR_LAGS extension from 6 to 10) was an advisor-driven structural change to the feature set; absolute-feature-count arithmetic motivated re-evaluating the cap at the same time. At the locked 73-feature pool, `0.20 × 73 ≈ 14-15` features restores the absolute count to roughly the original working point. The 0.20 cap is retained as the locked working configuration; the project memory note that `TOP_K_FRAC` is a sensitivity-check variable is preserved so future iterations can sweep over `{0.10, 0.15, 0.20, 0.25, 0.30}` as an appendix sensitivity table without modifying the code. Methodology rationale: with ~750 events in the inner training fold after the 80/10/10 three-way split, the KAN and LSTM parameter counts at `width1=6`, `hidden=16` already approach 1 sample per parameter at 15 features; expanding to 20+ features increases overparameterisation in the two most-watched neural models, which is why a tighter rather than looser cap was chosen.
 
-The May 2026 expansion of the feature pool from 66 to 73 columns (the 14-day macro return variants and the AR_LAGS extension) was an advisor-driven structural change to the feature set. The cap was held at 0.30 across this transition, unchanged from the pre-expansion primary configuration; the locked configuration uses the same 0.30 cap on the expanded pool. A tightened cap at 0.20 was evaluated as a sensitivity check on the new pool (motivated by an absolute-count argument: 0.20 × 73 ≈ 15 features per fold restores the absolute count to roughly the pre-expansion working point, since 0.30 × 73 ≈ 22 is somewhat looser than the original 0.30 × 66 ≈ 20). The 0.20 sensitivity result shifts KAN's median Sharpe from +0.38 to +0.84 and XGBoost's from +0.92 to +0.95, while LSTM moves from +1.34 (CI [0.41, 1.54], the first bootstrap CI in the experimental history not crossing zero) down to +0.60. PBO at 0.20 is 0.34 vs 0.37 at the locked 0.30 — within 0.03 of each other, so the cap choice is roughly PBO-neutral on this pool. The locked 0.30 setting is retained as the primary configuration on grounds of methodological parsimony: only the advisor-driven feature pool change is in effect, with the cap unchanged from the pre-expansion working point. The 0.20 result is reported as a sensitivity check showing that the qualitative findings (BH dominance, no DSR > 0.95, KAN ranks above AR Logistic on the post-expansion pool) are stable across cap settings while the point-estimate ranking and one model's CI-zero-crossing behavior reshuffle between them.
+#### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, y_test, w_test, t1_test, ffd_columns, top_k_frac, skip_selection=False)`
 
-#### `preprocess_fold(X_full, train_idx, test_idx, y_train, w_train, t1_train, ffd_columns, top_k_frac, skip_selection=False)`
+Orchestration chaining FFD → scaling → selection. **Returns a dict** with ten keys (rather than a tuple) so the pipeline can pass the entire preprocessing result through a single argument and so additional outputs (selected features, scaler, FFD d* values) flow alongside the train/test matrices without bare-tuple unpacking. The dict keys are: `X_tr_full`, `X_tr_sel`, `X_te_sel`, `y_train`, `w_train`, `t1_train`, `y_test`, `w_test`, `t1_test`, and `prep_info` (the FFD d* per column, the fitted scaler, the selected feature list).
 
-Orchestration chaining FFD → scaling → selection. Returns DataFrames with **all columns** (pre-selection) so the pipeline can provide full-column DataFrames to AR Logistic. The selected feature list is returned separately. The `skip_selection` flag is set when only AR Logistic is being evaluated; AR Logistic does not need MDA selection because it consumes only the precomputed lag columns from Step 6.c.
+The function returns full-column DataFrames (pre-selection) inside `X_tr_full` so the pipeline can route AR Logistic to the full matrix while the other models receive the MDA-selected subset via `X_tr_sel` / `X_te_sel`. The `skip_selection` flag is set when only AR Logistic is being evaluated; AR Logistic does not need MDA selection because it consumes only the precomputed lag columns from Step 6.c.
+
+The function accepts `y_test`, `w_test`, and `t1_test` because the FFD step may drop NaN rows from both the train and test partitions independently; the test-side alignment must be returned to the caller so downstream prediction storage uses the correct (potentially-shorter) test index. An earlier version returned only train-side aligned arrays and let the pipeline re-align the test side from positional indices, which silently broke when FFD's per-partition NaN drop produced a different test-side length than the caller expected.
 
 ---
 
@@ -665,9 +670,15 @@ The `run_cpcv_pipeline()` function accepts an `n_trials` parameter that override
 | LSTM | 30 | 20 | Expensive per trial; the notebook keeps 30 for parity with the classical models |
 | KAN | 30 | 20 | Expensive per trial; the notebook keeps 30 for parity with the classical models |
 
-#### `_purged_kfold_splits(X, y, w) → list[(train_idx, val_idx)]`
+#### `_purged_kfold_splits(X, y, w, t1) → list[(train_idx, val_idx)]`
 
-Creates 3 chronological inner folds with 10-observation embargo around boundaries (matches TBL num_days). Fewer folds (3 vs 5) improves runtime by ~40% and increases inner validation set size (~300 vs ~180 observations per fold), providing more reliable log loss estimates in a low-signal environment.
+Creates 3 chronological inner folds with label-overlap purging following AFML §7.4.1. The function accepts `t1` (the per-event barrier-touch timestamps that the outer CPCV also uses for purging) and removes inner-train observations whose label resolution falls inside any inner-val group. A one-sided post-val embargo of 10 observations is applied after each inner-val boundary; no pre-val embargo, because training labels resolving before inner-val begins contain no future information.
+
+Three inner folds (vs the AFML default of 5) improves runtime by ~40% and increases the inner validation set size (~300 vs ~180 observations per fold), providing more reliable log loss estimates in a low-signal environment. An earlier version of this function used a fixed-window purge of 10 observations on both sides of the inner-val boundary; the AFML §7.4.1 label-overlap purge is the methodologically correct approach because it removes only the observations whose triple-barrier label actually overlaps with the inner-val window, rather than a fixed temporal buffer that may drop too many or too few observations depending on the local event density.
+
+#### Tuning objective: weighted metrics
+
+`tune_logistic`, `tune_random_forest`, `tune_xgboost`, `tune_lstm`, and `tune_kan` all minimise weighted log loss (sklearn's `log_loss(..., sample_weight=w_val)`) computed on the inner-val fold and report weighted accuracy alongside. The weighted formulation is consistent with the AFML sample-weight framework used everywhere else in the pipeline: training uses `sample_weight=w_train` to discount overlapping labels, so the tuning objective must match or Optuna selects hyperparameters that perform well on a different effective distribution than the one the model is actually fit against. An earlier version used unweighted log loss and unweighted accuracy in the tuning objective, which silently let the inner-CV objective and the actual training objective diverge.
 
 #### Per-model tuning functions
 
@@ -797,17 +808,19 @@ XGBoost's `predict_logits` converts proba to log-odds via `log(p₁/p₀)` with 
 | Method | Models | Input | Mechanism |
 |--------|--------|-------|-----------|
 | **Platt scaling** (Platt 1999) | AR Logistic, Logistic Regression, Random Forest, XGBoost | 1D log-odds | Fits `LogisticRegression(C=1e10)` mapping logits → calibrated proba (slope and intercept) |
-| **Vector scaling** (Guo et al. 2017, §4.2) | LSTM, KAN | 2D logits (n, n_classes) | Fits temperature `T` and per-class bias `b` minimising NLL of `softmax((logits + b) / T)` via `scipy.optimize.minimize(L-BFGS-B)` with bounds `T ∈ [0.05, 20]`, `b_c ∈ [-5, 5]` |
+| **Vector scaling** (Guo et al. 2017, §4.2) | LSTM, KAN | 2D logits (n, n_classes) | Fits temperature `T` and per-class bias `b` minimising NLL of `softmax((logits + b) / T)` via `scipy.optimize.minimize(L-BFGS-B)` with bounds `T ∈ [0.05, 20]`, `b_c ∈ [-5, 5]`. The class-0 bias `b[0]` is pinned to zero to remove the softmax overparameterisation (the softmax is invariant to adding a constant to all class biases, so fitting both `b[0]` and `b[1]` leaves a one-dimensional ridge in the loss surface that L-BFGS-B can stall on); only `b[1]` is fitted as a free parameter |
 
-Both methods are two-parameter (Platt) or three-parameter (vector). Each can correct both miscalibration sharpness *and* directional bias. `fit_temperature_scaling` is retained in the module for reference and unit tests but is no longer the default for any model.
+Both methods are two-parameter (Platt) or two-parameter after the pin (vector). Each can correct both miscalibration sharpness *and* directional bias. `fit_temperature_scaling` is retained in the module for reference and unit tests but is no longer the default for any model.
 
-**`Calibrator` class** provides a unified interface: `fit(model, X_cal, y_cal)` auto-detects method from `model.get_name()`, `calibrate(logits)` applies the fitted calibration. For LSTM, `fit_from_logits(logits, y_cal, method)` handles the index-aligned calibration data. Method tags: `"platt"`, `"vector"` (default for PyTorch), `"temperature"` (opt-in for backward compatibility).
+**`Calibrator` class** provides a unified interface: `fit(model, X_cal, y_cal)` auto-detects method from `model.get_name()`, `calibrate(logits)` applies the fitted calibration. For LSTM, `fit_from_logits(logits, y_cal, method)` handles the index-aligned calibration data; the caller must pass logits already sliced to `valid_idx` so the calibrator sees only the NaN-free windows. Method tags: `"platt"`, `"vector"` (default for PyTorch), `"temperature"` (opt-in for backward compatibility).
 
-Calibration is fitted on the held-out 20% of the training fold (chronological split, no shuffling). Never touches test data. If calibration fails (logged as warning), the pipeline falls back to uncalibrated `predict_proba`.
+Calibration is fitted on the held-out 10% of the training fold (chronological split, no shuffling, separate from the 10% validation partition the model used for early stopping). Never touches test data. If calibration fails (logged as warning), the pipeline falls back to uncalibrated `predict_proba`.
 
 **Methodological note: why vector scaling rather than temperature scaling.** An earlier implementation used pure temperature scaling for PyTorch models. A calibration audit before final evaluation revealed that both LSTM and KAN exhibited systematic under-prediction of P(y=1) by 10-23 percentage points across the bulk of the predicted-probability distribution, while the empirical base rate of class 1 was approximately 0.55. Pure temperature scaling preserves the argmax of the raw logits by construction, so a single-parameter `T` cannot shift a "lean class 0" prediction to "lean class 1" no matter what value it takes. The bias propagated through bet sizing as systematic short bets in regimes where the market drifted upward, contributing to the negative path-level Sharpe ratio that an early version of the KAN equity curves displayed. Vector scaling adds a per-class bias `b` that lifts the directional constraint and is the natural extension recommended by Guo et al. (2017) for cases where temperature scaling alone is insufficient. The substitution was made before the final evaluation pass and constitutes a correction of methodological inadequacy rather than test-set-informed model selection.
 
-**Methodological note (calibration set dual role):** The 20% calibration subset serves a dual role: early-stopping monitor for XGBoost and input for Platt/vector scaling. Since early stopping only controls ensemble size (no individual tree decisions are influenced by the cal set), and each calibration method fits at most three parameters, this shared use introduces minimal information leakage. Splitting the already-small cal set (~180 observations at N=8) further would degrade both purposes.
+**Methodological note: unified temperature bounds.** Earlier versions used asymmetric bounds (Platt's slope was unconstrained but vector scaling's `T` had a `(0.1, 10)` range; the two methods could not be cleanly compared). The current configuration uses `T ∈ (0.05, 20)` for vector scaling, wide enough that the optimum is interior on every fold tested. Platt's slope is left unconstrained (sklearn's `LogisticRegression` doesn't expose bounds anyway). Optimum-at-boundary cases are logged but no longer expected with the wider bounds.
+
+**Methodological note (calibration set):** Under the 80/10/10 three-way split, the 10% calibration partition serves only Platt/vector scaling and is fully separate from the 10% validation partition that handles XGBoost's early stopping and the LSTM/KAN best-state tracking. An earlier 80/20 split used a single 20% subset for both purposes; the three-way split removes this dual-use coupling at the cost of fewer events per role.
 
 ---
 
@@ -819,19 +832,19 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 
 **Execution flow per split:**
 1. Extract fold data using positional indices
-2. `preprocess_fold()` (shared across all models): FFD → scale → select
+2. `preprocess_fold()` (shared across all models): FFD → scale → select; returns the dict described in Step 11.c
 3. Re-align y, w, t1 after FFD may drop NaN rows
 4. Keep `X_tr_full` (all columns) for AR Logistic alongside `X_tr_sel` (selected) for other models
-5. Chronological 80/20 split of training into model-train + calibration
+5. **Three-way 80/10/10 chronological split** of the training fold into model-train (80%) + validation (10%) + calibration (10%). The validation partition feeds the model's `X_val` / `y_val` for early stopping and best-state tracking; the calibration partition is held entirely separate and feeds Platt or vector scaling. An earlier 80/20 split used the same 20% subset for both early stopping and calibration, which introduced subtle leakage between the model's stopping decision and the calibration data it was later fitted against. The three-way split removes this coupling at the cost of slightly fewer events for each role.
 6. If `tune=True`: run nested Optuna tuning on `X_tr_sel` using `tune_all_models()`, apply results to module-level constants
 7. For each model × each seed:
    - `create_model(name, n_features, seed)`
    - Route correct X (full for AR Logistic, selected for others)
-   - `model.fit(X_fit, y_model, sample_weight=w_model, X_val=X_c, y_val=y_cal)`
-   - Calibrate (special LSTM handling via `fit_from_logits` for index alignment)
+   - `model.fit(X_fit, y_model, sample_weight=w_model, X_val=X_v, y_val=y_v, sample_weight_val=w_v)` — the `sample_weight_val` argument is passed through to XGBoost's `sample_weight_eval_set` and to LSTM/KAN's weighted val-loss tracking so early stopping observes the same sample-weighted objective as training
+   - Calibrate on `X_cal` / `y_cal` (the 10% held-out calibration partition, separate from `X_val`). For LSTM, the raw_logits tensor returned by `predict_logits` is sliced to `valid_idx` BEFORE calibration so the calibrator's input matches its target labels; an earlier ordering calibrated on the full logits and sliced afterward, producing a fitted calibrator whose temperature reflected NaN-padded positions
    - `model.predict_logits(X_test)` → `calibrator.calibrate(logits)` → argmax for predictions
    - Handle LSTM index mismatch via `last_valid_indices`
-   - Compute inline metrics: F1 macro, AUC-ROC, log-loss
+   - Compute inline metrics: F1 macro (weighted), AUC-ROC, log-loss (weighted)
    - Store: y_true, y_pred, cal_proba, timestamps, returns, prep_info, calibrator repr, tuned_params
 
 **Storage key:** `(model_name, split_idx, seed)` tuple.
@@ -846,7 +859,7 @@ Calibration is fitted on the held-out 20% of the training fold (chronological sp
 
 | Model | Seeds | Tuned per split | Notes |
 |-------|-------|-----------------|-------|
-| AR Logistic | 3 | No | Fixed: C=1.0, L2, lags [1,2,3,7,14,30]. Consumes precomputed lag columns from `pre_cpcv.features.compute_lag_features`; not subject to MDA. |
+| AR Logistic | 3 | No | Fixed: C=1.0, L2, lags `[1,2,3,4,5,6,7,14,21,30]`. Consumes precomputed lag columns from `pre_cpcv.features.compute_lag_features`; not subject to MDA. |
 | Logistic Regression | 3 | Yes (30 trials) | C, penalty |
 | Random Forest | 3 | Yes (30 trials) | n_estimators ≤ 300, depth, leaf, max_features |
 | XGBoost | 3 | Yes (30 trials) | 8 params, depth ≤ 6, early stopping |
@@ -934,19 +947,25 @@ Per-path financial metrics:
 
 #### Step 16.f — Deflated Sharpe Ratio (`compute_deflated_sharpe`)
 
-Implements AFML Chapter 14. Corrects observed Sharpe for selection bias (n_trials = 6 models) and non-normal returns:
+Implements AFML Chapter 14 (Bailey & Lopez de Prado 2014). Corrects observed Sharpe for selection bias (n_trials = 6 models) and non-normal returns:
 
 ```
-E[max SR] = √(2·ln(n)) × (1 - γ/(2·ln(n))) + γ/(2·√(2·ln(n)))
-SR_std    = √((1 - skew×SR + (kurt + 2)/4 × SR²) / (n_obs - 1))
-DSR       = Φ((SR_observed - E[max SR]) / SR_std)
+E[max SR] = (1 − γ) × Φ⁻¹(1 − 1/N) + γ × Φ⁻¹(1 − 1/(N·e))
+SR_std    = √((1 − skew × SR + (kurt + 2)/4 × SR²) / (n_obs − 1))
+DSR       = Φ((SR_observed − E[max SR]) / SR_std)
 ```
 
-**Kurtosis convention.** The Mertens (2002) variance formula assumes raw kurtosis (γ_4 = 3 for normal). `scipy.stats.kurtosis` returns *excess* kurtosis (γ_4 - 3 = 0 for normal). The implementation converts internally: `(γ_4 - 1)/4 = (excess + 3 - 1)/4 = (excess + 2)/4`. For normal returns (skew=0, excess=0), this correctly reduces to `1 + SR²/2` per the standard Lo (2002) approximation.
+where `γ ≈ 0.5772` is the Euler-Mascheroni constant, `Φ` is the standard normal CDF, and `Φ⁻¹` is its inverse.
+
+**Exact vs asymptotic E[max SR].** An earlier implementation used the asymptotic form `√(2·ln(N)) × (1 − γ/(2·ln(N))) + γ/(2·√(2·ln(N)))`, which is accurate for large N but overestimates `E[max]` by roughly 25-35% at the small N=6 the project actually evaluates. At observed Sharpe = 2.0 with `n_obs = 200`, the asymptotic form gave DSR ≈ 0.395 while the exact AFML §14.4 Eq 14.13 form gives DSR ≈ 0.569 — the asymptotic was making the multi-trials correction unnecessarily strict at small trial counts. The exact form is now the default; the two forms converge for large N so there is no regression for hypothetical higher-N runs.
+
+**Kurtosis convention.** The Mertens (2002) variance formula assumes raw kurtosis (γ_4 = 3 for normal). `scipy.stats.kurtosis` returns *excess* kurtosis (γ_4 − 3 = 0 for normal). The implementation converts internally: `(γ_4 − 1)/4 = (excess + 3 − 1)/4 = (excess + 2)/4`. For normal returns (skew=0, excess=0), this correctly reduces to `1 + SR²/2` per the standard Lo (2002) approximation.
 
 **`n_obs` source.** `compute_model_summary` passes `avg_n_returns` (mean across paths of `len(strategy_returns)`) as `n_obs`, matching the n used to estimate the Sharpe ratio. Earlier versions used `avg_n_trades` (subset where `bet_size ≠ 0`), which understated `n_obs` and inflated `sr_std` because the Mertens correction divides by `(n_obs − 1)`; the previous convention was conservative but inconsistent with the Sharpe estimation horizon.
 
-**Sharpe annualisation convention.** The Sharpe ratio uses `(mean / std) × √365`, treating each event's return as a daily-equivalent observation. Strategy returns are sampled at CUSUM event timestamps, not at every daily bar (~75 events per year, not 365), so the bet-frequency annualisation `√(N_events / years_elapsed) ≈ √75 ≈ 8.7` would give roughly half the reported Sharpe. The implementation is internally consistent (DSR de-annualises by the same `√365` factor, so DSR verdicts and model rankings are convention-invariant), but the absolute Sharpe values reported in the comparison table sit on the daily-equivalent scale rather than the bet-frequency scale. The methodology chapter discloses this choice explicitly.
+**Sharpe annualisation convention.** The Sharpe ratio uses `(mean / std) × √365`, treating each event's return as a daily-equivalent observation. Strategy returns are sampled at CUSUM event timestamps, not at every daily bar (~75 events per year, not 365), so the bet-frequency annualisation `√(N_events / years_elapsed) ≈ √75 ≈ 8.7` would give roughly half the reported Sharpe. The implementation is internally consistent (DSR de-annualises by the same `√365` factor, so DSR verdicts and model rankings are convention-invariant), but the absolute Sharpe values reported in the comparison table sit on the daily-equivalent scale rather than the bet-frequency scale. The methodology chapter discloses this choice explicitly and applies it symmetrically to the buy-and-hold benchmark so within-thesis comparisons remain consistent.
+
+**Skewness and kurtosis pooling.** When DSR is computed from per-path performance dicts, the function pools skewness and kurtosis across paths via `np.mean(per_path_values)` (path-level pooling) rather than concatenating per-event returns and computing the moments on the pooled series. The two estimators differ when path lengths or distributions are uneven; the path-level pooling matches the path-level Sharpe used as DSR's primary input and so keeps the DSR computation internally consistent. A return-level pooling would be a defensible sensitivity check.
 
 **NaN safety clamp.** The variance term `inner` is clamped to a minimum of 1e-10 before the square root, preventing `sqrt(negative)` for edge cases with extreme skew.
 
@@ -998,7 +1017,7 @@ Produces a model-summary-compatible row for buy-and-hold using the same CPCV pat
 
 The benchmark is a more aggressive position-size baseline than the models, which cap at `MAX_BET_SIZE = 0.75` via the S-curve. This asymmetry is conservative for the model side: a fully-leveraged long benchmark is harder to beat than a 0.75-leveraged one. The benchmark contextualises the model Sharpe ratios against the trivial strategy of holding BTC throughout each test path; the resulting row in the comparison table answers the "did your models actually beat just holding?" question directly. Predictive metrics (F1, accuracy, AUC, log loss, Brier) are NaN for the benchmark row since buy-and-hold makes no probabilistic predictions; DSR is also NaN because the metric requires a Sharpe under multiple-trials selection, and buy-and-hold was not selected from a pool.
 
-The benchmark is added by the notebook in section 5.1 immediately after `analyze_results(results)`: the user calls `compute_buy_and_hold_summary(...)`, appends the resulting dict to `analysis["all_summaries"]`, and re-runs `compare_models(...)` to regenerate the ranked comparison with the benchmark row sorted into the leaderboard by median Sharpe.
+**Integration into the analysis pipeline.** `analyze_results` calls `compute_buy_and_hold_summary` automatically and appends the resulting row to `all_summaries` before running `compare_models`, so the benchmark sits in the ranked comparison table out of the box. An earlier workflow required the notebook to invoke `compute_buy_and_hold_summary` manually, append to `analysis["all_summaries"]`, and re-run `compare_models`; the notebook cell that performed this manual merge is no longer needed and has been removed from the locked notebook to prevent double-counting (running it a second time over a result dict that already contains the BH row would append a duplicate). Methodological consequence: BH appears in the path-comparison table but intentionally NOT in `path_sharpes_matrix`, so PBO continues to assess only the six candidate models, not BH-vs-models, which would distort PBO's model-selection interpretation.
 
 #### Step 16.l — Display helpers (`render_ffd_stability`, `render_deflated_sharpe_table`, `render_pbo_summary`)
 
@@ -1030,7 +1049,11 @@ These are presentation-layer helpers only; all the statistical computation (FFD 
 
 #### Top-level orchestration (`analyze_results`)
 
-Called from notebook as `analysis = analyze_results(results)`. Chains: split metrics → path stitching → path performance → model summaries → comparison table → PBO → DeLong AUC significance → feature stability → FFD stability. Returns a dictionary with all results for the notebook's visualization cells (confusion matrices, equity curves, Sharpe box plots, feature stability bar chart, FFD d* values, DeLong significance heatmap).
+Called from notebook as `analysis = analyze_results(results)`. Chains: split metrics → path stitching → path performance → model summaries → **buy-and-hold benchmark** → comparison table → PBO → DeLong AUC significance → feature stability → FFD stability. Returns a dictionary with all results for the notebook's visualization cells (confusion matrices, equity curves, Sharpe box plots, feature stability bar chart, FFD d* values, DeLong significance heatmap).
+
+**BH included by default.** Since the May 2026 evaluation refactor, `analyze_results` automatically computes the buy-and-hold benchmark via `compute_buy_and_hold_summary` and appends its summary row to `all_summaries` before calling `compare_models`. The BH row appears in the comparison table as one of the candidate "models" alongside the six fitted models. BH is intentionally NOT added to `path_sharpes_matrix` because PBO is a model-selection diagnostic on candidate models, and a BH benchmark is not a selectable candidate; including it in the PBO matrix would distort the in-sample-best vs out-of-sample interpretation. The notebook's prior manual BH-merge step (a Cell that re-ran `compare_models` after appending BH externally) is no longer needed and is removed in the locked notebook.
+
+**`n_groups` from the result dict.** Path stitching reads `n_groups` from `cpcv_results["n_groups"]` (now populated at the top level of the result by `pipeline.py`) with fallback to `cpcv_results["split_info"]["n_groups"]`, with the project's locked N=8 as a last-resort default. The previous lookup defaulted to a stale value of 6, which caused path stitching to use the wrong group-boundary scheme when stitching predictions produced under N=8; every Sharpe, DSR, and PBO number from prior runs at N=8 with the old stitching is now corrected.
 
 Each component (`compute_pbo`, `compute_auc_significance`, `compute_feature_stability`, `compute_ffd_stability`, `stitch_paths`, `compute_split_metrics`, `compute_model_summary`, `compare_models`) is also exposed as a standalone function. The notebook's results section can call them à la carte for individual subsections without going through the full orchestration. This is useful when iterating on a single subsection's figure without re-running the entire analysis.
 
@@ -1038,9 +1061,13 @@ Each component (`compute_pbo`, `compute_auc_significance`, `compute_feature_stab
 
 ### Step 17 — Symbolic Extraction (`symbolic_extraction.py`)
 
-**1,412 lines.** The most complex file in the project. Re-trains a PyKAN model independently from efficient-kan, following Algorithm 1 from the VIX KAN paper, with extensive robustness engineering for PyKAN's fragile APIs.
+**~2,200 lines.** The most complex file in the project. Re-trains a PyKAN model independently from efficient-kan, following Algorithm 1 from the VIX KAN paper, with extensive robustness engineering for PyKAN's fragile APIs.
+
+**Workflow honesty.** What's transferred from CPCV to symbolic extraction is the *hyperparameter set* (width1, width2, grid, k), not the learned weights. The two libraries use different spline parameterisations under the hood, so direct weight transfer is not feasible. The PyKAN is retrained from scratch on the same training fold via the staged optimiser below. The extracted symbolic formula therefore represents a PyKAN with matching architecture and training data, whose decision boundary approximates but does not equal the CPCV-evaluated efficient-kan's. The pre/post symbolic accuracy and pre-symbolic val accuracy diagnostics quantify how close this approximation is for any given fold; large gaps signal the symbolic formula is not faithful to the CPCV-evaluated KAN and the thesis chapter flags the fold accordingly.
 
 **Architecture.** Inherits `KAN_HIDDEN=5`, `KAN_GRID=5`, `KAN_K=3` from `kan_model.py` as architecture defaults but applies a data-aware safety floor that can reduce these based on training-sample count (`PYKAN_MIN_SAMPLES_PER_PARAM=5`). The two libraries share the same B-spline basis and the same tanh input normalisation, but no per-instance state is passed between them — the symbolic pipeline reconstructs everything it needs from `prep_info` (FFD d* values, the fitted scaler, the selected feature list).
+
+**Reproducibility seeding.** `train_pykan` seeds `torch.manual_seed`, `torch.cuda.manual_seed_all` (when CUDA is available), `numpy.random.seed`, and `random.seed` at function entry with a fixed seed. The PyKAN constructor's own `seed=42` covers only spline initialisation; the Adam optimiser, the Gaussian-noise tensor injected on each Adam step, and any PyKAN-internal RNG calls are otherwise unseeded. Without this, repeat extractions on the same fold produce slightly different formulas across runs.
 
 **Module-level constants (PyKAN-specific, not shared with efficient-kan):**
 ```
@@ -1049,9 +1076,9 @@ Training:
   PYKAN_NOISE_STD=0.05 (Gaussian noise injection as regularizer)
   PYKAN_LBFGS_STEPS=40, PYKAN_LBFGS_LR=0.01, PYKAN_LBFGS_WARMUP_FRAC=0.5
   PYKAN_LAMB=0.002, PYKAN_LAMB_L1=1.0, PYKAN_LAMB_ENTROPY=2.0
-  PYKAN_GRID_INIT=3, PYKAN_GRID_EXTEND=False (disabled, too few samples)
+  PYKAN_GRID_INIT=3, PYKAN_GRID_EXTEND=True (gated to n_train > 1000 at runtime)
   PYKAN_MIN_SAMPLES_PER_PARAM=5 (data-aware architecture sizing)
-  PYKAN_MIN_ACCURACY=0.53 (gate: must beat random by 3%)
+  PYKAN_MIN_ACCURACY=0.53 (gate floor; actual gate is max(0.53, majority_baseline + 0.01))
 
 Symbolic:
   PRUNE_THRESHOLD=0.01
@@ -1084,16 +1111,23 @@ Counts how often each feature was selected across all KAN CPCV folds. Returns `[
 #### Step 17.c — Data preparation (`prepare_extraction_data`)
 
 Reconstructs the extraction fold's preprocessed data:
-1. Resolves CPCV configuration (`n_groups`, `k`, `embargo_pct`) and either re-generates the splits or accepts them from the caller
+1. Resolves CPCV configuration (`n_groups`, `k`, `embargo_pct`) from `cpcv_results["split_info"]` and regenerates the splits using those exact values rather than relying on cv.py's module-level defaults
 2. Applies stored FFD d* values to full series, extracts training fold
 3. Applies stored scaler transform
 4. Selects features (stored selection or explicit subset override)
-5. 80/20 chronological split into model-train / validation
-6. **Tanh normalization** fitted on training split: `z = tanh((x - mean) / (std + ε))`, matching efficient-kan's input preprocessing
+5. **80/20 chronological split** into model-train / validation. The CPCV pipeline uses 80/10/10 because its KAN predictions go through a calibration step, but PyKAN's symbolic extraction consumes none of those probabilistic outputs downstream; the val set's only role here is best-state tracking inside `train_pykan`, so a 80/20 split (no calibration partition) is the right local choice.
+6. **Tanh normalization** fitted on training split: `z = tanh((x − mean) / (std + ε))`, matching efficient-kan's input preprocessing
 
-Returns PyKAN-format dataset dict with normalized float32 tensors.
+Returns a dict with PyKAN-format normalized float32 tensors **and the raw-to-tanh transform parameters** under the `input_transform` key.
 
-**CPCV-config threading.** The function accepts `splits`, `n_groups`, `k`, and `embargo_pct` as optional parameters and resolves them in this priority order: explicit `splits` → explicit `n_groups`/`k`/`embargo_pct` → values stored in `cpcv_results["split_info"]` → `ValueError`. The previous version called `generate_cpcv_splits(X, t1)` with no arguments and silently fell back to the cv.py module defaults; if the module defaults differed from what `cpcv_results` was actually trained against, the function would silently regenerate the wrong fold (different N produces different group boundaries, so `splits[best_split_idx]` would point to a completely different training set). The current design refuses to guess: if the configuration cannot be resolved from any of the three sources, the function raises rather than silently using a mismatched fold.
+**`input_transform` for downstream sensitivity helpers.** The PyKAN model's spline activations are learned in tanh-normalised feature space, so the extracted symbolic formula's variables (despite being renamed to the original feature names for readability) represent tanh-normalised values, not raw values. Any downstream code that substitutes raw feature values into the formula evaluates it at the wrong point and produces meaningless numbers. To prevent this silent failure mode, `prepare_extraction_data` computes per-feature `(a, b)` parameters so that `z_i = tanh((x_raw_i − a_i) / b_i)` reproduces the full `raw → scaler → tanh-normalise` chain:
+
+- If a `RobustScaler` was stored in `prep_info["scaler"]`: `a_i = median_i + input_mean_i × iqr_i` and `b_i = iqr_i × input_std_i`, where the medians and IQRs come from the scaler's `center_` and `scale_` arrays indexed at the selected feature's position in the original column ordering.
+- If no scaler was used: `a_i = input_mean_i`, `b_i = input_std_i`.
+
+The dataset dict stores `input_transform = {feature_a: dict[str, float], feature_b: dict[str, float]}`; `extract_formulas` propagates this into the symbolic result dict under the same key so `compute_feature_sensitivity` and `plot_marginal_effects` can convert raw centrality points to tanh space before evaluating the formula. Both helpers raise `ValueError` if `input_transform` is missing, refusing to produce wrong numbers silently.
+
+**CPCV-config threading.** The function accepts `splits`, `n_groups`, `k`, and `embargo_pct` as optional parameters and resolves them in this priority order: explicit `splits` → explicit `n_groups`/`k`/`embargo_pct` → values stored in `cpcv_results["split_info"]` → cv.py module defaults. The previous version called `generate_cpcv_splits(X, t1)` with no arguments and silently fell back to the cv.py module defaults; if the module defaults differed from what `cpcv_results` was actually trained against, the function would silently regenerate the wrong fold (different N produces different group boundaries, so `splits[best_split_idx]` would point to a completely different training set). The current design reads from `split_info` first so the extraction stays aligned with the actual CPCV run.
 
 #### Step 17.d — PyKAN training (`train_pykan`)
 
@@ -1105,7 +1139,7 @@ Returns PyKAN-format dataset dict with normalized float32 tensors.
 
 This faithful-by-default behaviour replaces an earlier configuration that hardcoded `PYKAN_SYMBOLIC_DROP_WIDTH2 = True` and `PYKAN_SYMBOLIC_FORCE_GRID = 3` on the rationale that simpler architectures produce more readable formulas. With width2 already hardcoded to 0 in the CPCV tuning stage and grid ∈ {3, 5} producing tractable formulas in both cases, the architecture used for CPCV evaluation now matches the architecture extracted in Phase 3 by construction; the "force grid=3" override would only diverge when the tuned grid was 5, in which case forcing it to 3 produces a less faithful formula for marginal interpretability gains. The legacy override constants are retained so the user can fall back to the simpler-formula behaviour if the tuned configuration produces a sympy-intractable formula on a given fold.
 
-**Data-aware safety floor.** Independent of the tuned width, the function applies a samples-per-parameter floor. If `n_train / total_params < 5`, the hidden width is reduced. For ~350 training samples (after the 80/20 cal split) with grid=3 and k=3, this typically caps hidden width at 4-5 regardless of the tuned value.
+**Data-aware safety floor.** Independent of the tuned width, the function applies a samples-per-parameter floor. If `n_train / total_params < 5`, the hidden width is reduced. For a typical extraction fold (6 of 8 CPCV groups ≈ 860 events into `prepare_extraction_data`, then 80/20 split → ~690 training events) with grid=3 and k=3, this typically caps hidden width at 4-5 regardless of the tuned value. The floor is a budget guard, not a methodology choice; it activates only when the tuned configuration would produce a parameter count the data cannot support.
 
 **Three-phase training protocol:**
 
@@ -1115,9 +1149,9 @@ This faithful-by-default behaviour replaces an earlier configuration that hardco
 | 2a. LBFGS warmup | LBFGS (lr=0.01) | 20 | No regularization. Light refinement only. |
 | 2b. LBFGS sparsity | LBFGS (lr=0.01) | 20 | L1 + entropy regularization via `model.regularization_loss()`. Encourages sparse, interpretable activations. |
 
-Grid extension is **disabled** (`PYKAN_GRID_EXTEND=False`) because with ~350 samples, increasing the grid further adds parameters and causes memorization. Only recommended for datasets > 1,000 samples.
+Grid extension is gated to `n_train > 1000` at runtime. `PYKAN_GRID_EXTEND = True` enables the feature; the runtime size check then disables it on the project's ~350-sample extraction folds where additional grid parameters would cause memorisation. Flipping the constant to `False` disables the feature unconditionally.
 
-**Accuracy gate:** If validation accuracy < 53% after Adam phase, logs warning but continues. Symbolic extraction may yield constants in this case.
+**Accuracy gate (majority-class-aware).** The 0.53 minimum-accuracy gate from earlier versions has been replaced with a majority-class-aware gate: the function computes `majority_baseline = max(P(y=0), P(y=1))` from the training labels and gates at `max(0.53, majority_baseline + 0.01)`. If the post-`drop_rare(0.085)` class balance is 55/45, the gate becomes 0.56 rather than 0.53; an absolute 0.53 floor would have let a "predict the majority class" trivial baseline pass on imbalanced folds. The gate logs a warning rather than raising, so symbolic extraction proceeds on weak folds but with visible methodological caveat in the cell output.
 
 **Diagnostic checkpoints:** Logs train/val accuracy after each phase, including the resolved width1, width2, and grid alongside their respective sources (`tuned`, `forced`, `fallback`, or `data-aware`).
 
@@ -1125,10 +1159,10 @@ Grid extension is **disabled** (`PYKAN_GRID_EXTEND=False`) because with ~350 sam
 
 1. Forward pass to populate cached activations
 2. Edge survival analysis: counts active edges (above threshold) vs total
-3. `model.attribute()` for importance scoring
+3. `model.attribute()` for importance scoring. Failure logs a clear warning and prints to stdout that pruning may proceed with stale attribution scores and produce an unreliable architecture; an earlier version logged the failure at warning level only, which made the unreliable-prune risk invisible in the notebook output
 4. `model.prune(threshold=0.01)` with multi-API fallback (PyKAN versions vary)
 5. Verifies pruned model can still forward-pass; reverts if broken
-6. Post-prune accuracy check + network visualization saved to `cache/kan_pruned_network.png`
+6. Post-prune accuracy check (against the majority-class-aware gate from Step 17.d) + network visualization saved to `cache/kan_pruned_network.png`
 
 Typical result: `[12, 5, 2] → [5, 3, 2]` or similar compression.
 
@@ -1142,7 +1176,7 @@ The most complex function (~350 lines) due to PyKAN's inconsistent API. For each
    - DataFrame (rows = candidates)
    - Flat tuple `(fn_name, lambdas, R², complexity)`
    - Nested tuple of tuples
-4. **Constant-skip logic:** If `"0"` wins (due to zero complexity in total_loss), runs brute-force: tries each candidate via `fix_symbolic`, captures R² from PyKAN's stdout via regex `r"r2 is ([\d.eE+-]+)"`, keeps the best non-constant function
+4. **Constant-skip logic:** If `"0"` wins (due to zero complexity in total_loss), runs brute-force: tries each candidate via `fix_symbolic`, captures R² from PyKAN's stdout via two regex patterns (`r"r2 is ([\d.eE+-]+)"` and `r"r\^?2\s*[:=]\s*([\d.eE+-]+)"`, both case-insensitive) to tolerate format drift across PyKAN versions, keeps the best non-constant function. When every candidate misses both regex patterns on a given edge, a warning fires noting that PyKAN's `fix_symbolic` log format may have changed and the brute-force fallback is no longer recovering R² values; the warning points at the `R2_PATTERNS` constant in the source so the user can add a new pattern variant rather than discovering the silent regression through downstream sensitivity diagnostics
 5. If best R² ≥ 0.3: `model.fix_symbolic(l, i, j, best_fn)`
 6. If best R² < 0.3: keeps spline (partial symbolification)
 
@@ -1174,8 +1208,14 @@ Saves `cache/kan_symbolified_network.png`.
     'symbolification_rate': float,     # fraction of edges symbolified
     'pruned_architecture': list,       # e.g., [5, 3, 2]
     'surviving_features': list,        # features in the final formula
+    'input_transform': {               # S1: raw → tanh transform parameters
+        'feature_a': dict[str, float], # raw value mapping to z = 0 per feature
+        'feature_b': dict[str, float], # raw scale factor per feature
+    },
 }
 ```
+
+`input_transform` carries the per-feature `(a, b)` so that `z_i = tanh((x_raw_i − a_i) / b_i)` reproduces the full raw → scaler → tanh-normalise chain. Downstream consumers (`compute_feature_sensitivity`, `plot_marginal_effects`) MUST use these to convert raw centrality / sweep points to tanh space before substituting into the formula; the formula's variables represent tanh-normalised values, not raw values, despite being renamed to the original feature names.
 
 **Notebook usage** (Section 6):
 ```python
@@ -1205,7 +1245,17 @@ print_term_structure_summary(sensitivity_df, symbolic)
 
 The `print_*`, `compute_feature_sensitivity`, and `plot_marginal_effects` helpers live in `symbolic_extraction.py` so the notebook stays slim; what was previously a six-cell block of inline sympy / matplotlib formatting is now seven one-line calls.
 
-**Singular-gradient handling (`compute_feature_sensitivity`).** PyKAN's symbolic library includes `1/x`, `log(x)`, and similar reciprocal/logarithmic primitives that produce poles in the learned activation. When the symbolic gradient is evaluated at a point near such a pole (which can happen for heavily right-skewed features whose mean lands far from the bulk of the distribution, e.g. the `jarque_bera` feature with mean ≈ 218 and std ≈ 775), `float(deriv.subs(point))` returns `inf` or `-inf`, which then propagates silently through the sigma_effect and approx_delta_p columns. The `_safe_eval_at_point` helper detects non-finite gradients and substitutes NaN, which downstream formatters render as the string `"   N/A "` rather than `"+nan"`. The function reports a count of singular features in a footer line and accepts an `eval_point="median"` kwarg that evaluates gradients at the per-feature median instead of the mean, which is more robust for skewed distributions and typically avoids the singularity. An earlier version of this code computed gradients with no NaN-safety, producing `-inf` rows in the sensitivity table for any feature whose distribution had a near-pole at the mean; the fix is documented in code comments and presented as a known PyKAN-symbolic-library quirk in the methodology chapter.
+**`compute_feature_sensitivity` — three corrections applied together.**
+
+*1. Input-space evaluation via the stored transform.* The formula's variables live in tanh-normalised space even though they're renamed to the original feature names; substituting raw values silently evaluates the formula at the wrong point. The helper resolves this by reading `input_transform` from the symbolic result and converting every centrality point: given raw centre `x_raw` and per-feature `(a, b)`, the tanh-space value is `z = tanh((x_raw − a) / b)`. The symbolic partial derivative is evaluated in tanh space, then transformed back to raw space via the chain rule: `df/dx_raw = (df/dz) × (1 − z²) / b`. The function raises `ValueError` if `input_transform` is missing rather than producing wrong numbers from a raw-space substitution.
+
+*2. Probability-effect uses the actual sigmoid slope, not the worst-case 1/4.* The reported probability impact of a one-σ feature move is `sigma_delta_p ≈ p_center × (1 − p_center) × Δlogit_σ`, where `p_center` is the symbolic-formula's predicted probability at the centre point and `Δlogit_σ` is the change in the decision function across `±σ` of the feature in raw space (computed by finite difference, since the chain-rule gradient is only locally accurate for non-trivial activations). The earlier `1/4 × Δlogit_σ` form used the maximum slope of the logistic at `p = 0.5` regardless of the actual operating point, overstating sigma_delta_p by up to 4× on high-confidence folds where the centre point sits in the saturation region. The renamed column is `sigma_delta_p` (was `approx_sigma_delta_p`).
+
+*3. Column rename.* Centre points may be the dataset mean or the per-feature median depending on the `eval_point` kwarg, so the columns are renamed `d_decision/d_feature_at_center` and `sigma_delta_p` (the latter without the `approx_` prefix that suggested the value was a rough estimate when in fact it's now the formula's literal probability response at the centre).
+
+*4. Singular-gradient handling.* PyKAN's symbolic library includes `1/x`, `log(x)`, and similar reciprocal/logarithmic primitives that produce poles in the learned activation. When the symbolic gradient is evaluated at a point near such a pole, `float(deriv.subs(point))` returns `inf` or `-inf`, which then propagates silently through the `sigma_delta_p` column. The `_safe_eval_at_point` helper detects non-finite gradients and substitutes NaN, which downstream formatters render as the string `"   N/A "` rather than `"+nan"`. The function reports a count of singular features in a footer line and accepts an `eval_point="median"` kwarg that evaluates gradients at the per-feature median instead of the mean; the median is more robust for skewed distributions (e.g. `jarque_bera` with mean ≈ 218, std ≈ 775) and typically avoids the singularity.
+
+`plot_marginal_effects` follows the same input-space discipline: it sweeps each feature across its empirical `[q_low, q_high]` raw range, converts each sweep point to tanh space via `input_transform`, holds the other features at their raw medians (also converted), and substitutes the tanh-space values into the formula. The previous version swept in raw space and substituted directly, producing curves that traced the formula's behaviour outside the spline grid where its values are not interpretable.
 
 **Known fragilities** (documented in code comments):
 - `'sigmoid'` is NOT in PyKAN's internal `SYMBOLIC_LIB` → causes `KeyError`
@@ -1259,8 +1309,8 @@ All functions operate on `cpcv_results["predictions"]` or `analysis["path_result
 | Hyperparameter tuning on full data | Nested Optuna TPE inside each training fold (3-fold Purged K-Fold) | `tuning.py` |
 | Overlapping triple-barrier labels | Purging removes training obs whose t1 extends into test | `cv.py` |
 | Serial correlation across CV boundary | Embargo removes buffer after test boundary | `cv.py` |
-| Calibration on test data | Calibrator fitted on held-out training partition (20%), never on test | `calibration.py` |
-| Shared cal set for XGB early stop + calibration | Acknowledged trade-off; only ensemble size affected, no tree decisions | `pipeline.py` |
+| Calibration on test data | Calibrator fitted on held-out 10% calibration partition of the training fold, never on test | `calibration.py` |
+| Coupling between early-stopping and calibration | Three-way 80/10/10 train/val/cal split: val partition (10%) drives early stopping, cal partition (10%) drives Platt/vector scaling, fully separate | `pipeline.py` |
 | On-chain data look-ahead | CoinMetrics data shifted by 1 day before alignment | `external_features.py` |
 | CUSUM threshold on full data | Minor approximation (h uses full-sample vol mean); acknowledged, negligible impact | `labeling.py` |
 | NaN imputation across train-test boundary | `ffill().bfill()` applied independently within each partition; FFD columns drop NaN rather than impute | `preprocessing.py` |
