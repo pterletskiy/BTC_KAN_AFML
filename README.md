@@ -170,5 +170,5 @@ External data sources: Yahoo Finance (BTC OHLCV, macro), FRED (macro series), Co
 
 ---
 
-**Author:** [Petr Terletskiy](https://www.linkedin.com/in/petr-terletskiy/)
+**Author:** [Petr Terletskiy](https://www.linkedin.com/in/petr-terletskiy/) <br>
 **Context:**  Mathematical Finance Master's Final Work (ISEG)
