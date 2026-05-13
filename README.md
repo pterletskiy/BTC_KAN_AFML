@@ -1,6 +1,6 @@
 # Bitcoin Daily Direction Prediction with Kolmogorov-Arnold Networks 📈
 
-This repository contains a Master's thesis (ISEG, Mathematical Finance) on predicting daily Bitcoin price direction under the leakage-free evaluation protocol from *Advances in Financial Machine Learning* (López de Prado, 2018) and the Kolmogorov-Arnold Network architecture (Liu et al., 2024).
+This repository contains a **Master's Final Work** (ISEG, Mathematical Finance) on predicting daily Bitcoin price direction under the leakage-free evaluation protocol from *Advances in Financial Machine Learning* (López de Prado, 2018) and the Kolmogorov-Arnold Network architecture (Liu et al., 2024).
 
 The crypto-ML literature reports 85% to 95% daily-direction accuracy using deep learning architectures trained on fixed-horizon labels with overlapping spans, naive train-test splits, and no statistical correction for multi-trials selection bias. This thesis runs the same prediction problem under the full AFML correction stack (CUSUM events, triple-barrier labels, sample weights, fractional differencing, Combinatorial Purged Cross-Validation, plus DSR, PBO, and DeLong corrections) to test what survives, and extracts a closed-form symbolic formula from the trained KAN as the novel methodological contribution.
 
