@@ -23,7 +23,6 @@ import logging
 import os
 import re
 import sys
-import threading
 
 import numpy as np
 import pandas as pd
@@ -1557,27 +1556,16 @@ def extract_formulas(
             except (AttributeError, TypeError):
                 pass
 
-    # sympy.simplify can hang on complex KAN expressions, so run it in a thread with a 30s timeout.
-    def _simplify_with_timeout(expr, timeout_sec=30):
-        """Run ``sympy.simplify(expr)`` with a wall-clock timeout; return the original on timeout."""
-        result = [expr]
-
-        def _worker():
-            try:
-                result[0] = sympy.simplify(expr)
-            except Exception:
-                pass
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        t.join(timeout=timeout_sec)
-        if t.is_alive():
-            logger.warning("sympy.simplify timed out after %ds. Using unsimplified.", timeout_sec)
-            print(f"    ⚠ sympy.simplify timed out after {timeout_sec}s. Skipping.")
-        return result[0]
-
+    # sympy.simplify is deliberately NOT called on the KAN decision expression. On nested
+    # tanh/sin/cos/polynomial expressions of the shape KAN produces, simplify rarely improves
+    # readability and routinely runs for many minutes. The thread-based wall-clock timeout we
+    # used to wrap it could not actually kill the worker on timeout (Python threads cannot be
+    # cancelled cooperatively), so on heavy expressions the daemon thread continued running
+    # sympy.simplify in the background and held the GIL for hours afterward — starving every
+    # subsequent kernel operation, including the simple print() calls in this module, with
+    # apparent wall-clock costs of tens of minutes for what should be microseconds of work.
+    # The nsimplify pass below handles the rational-number cleanup that's actually useful.
     decision = logit_bullish - logit_bearish
-    decision = _simplify_with_timeout(decision, timeout_sec=30)
 
     # nsimplify for cleaner rational numbers; also protected against hangs.
     try:
