@@ -209,6 +209,12 @@ def plot_paths_grid(
         y=1.02,
     )
     plt.tight_layout()
+    # plt.close detaches the figure from pyplot's inline-backend tracking so it does
+    # not auto-display at cell-end. IPython will still render the returned fig via
+    # its _repr_png_, giving exactly one display when the function is called bare.
+    # Callers who assign the return value (fig = plot_paths_grid(...)) get a usable
+    # Figure object for savefig / further customisation.
+    plt.close(fig)
     return fig
 
 
@@ -223,17 +229,18 @@ def interactive_path_explorer(results: dict, analysis: dict):
         print("ipywidgets is not installed. Run: pip install ipywidgets")
         return
 
-    # P2 FIX: derive the "since" year options dynamically from the data instead of
-    # hardcoding 2020/2022/2023/2024. The most recent five years that the data covers
-    # become the options, so 2025+ appears automatically when the data extends there.
+    # Collect every year that appears in any path's date index. The earlier version only
+    # added each path's first and last year, which silently dropped intermediate years
+    # whenever no path endpoint happened to fall in them. With CPCV's non-uniform path
+    # ranges that exclusion routinely hid years like 2022 or 2023 even when the data
+    # clearly covered them. The fix iterates the full index of each path and unions all
+    # unique years, then keeps the most recent five for the dropdown.
     years_in_data: set[int] = set()
     for paths in analysis.get("path_results", {}).values():
         for path_data in paths.values():
             sr = path_data.get("returns")
             if sr is not None and len(sr) > 0:
-                idx = sr.index
-                years_in_data.add(idx[0].year)
-                years_in_data.add(idx[-1].year)
+                years_in_data.update(int(y) for y in sr.index.year.unique())
     recent_years = sorted(y for y in years_in_data if y >= 2020)[-5:]
     since_options = (
         [("Full history", None)]
