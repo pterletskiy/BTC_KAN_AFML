@@ -1887,33 +1887,29 @@ def print_symbolic_decision(symbolic: dict, max_chars: int | None = None) -> Non
     """Print the decision function, P(up) formula reference, and surviving features.
 
     Prints the full decision function by default. Pass ``max_chars`` (e.g. ``240``)
-    to truncate; long sympy expressions can take a noticeable moment to render in
-    Jupyter due to cell syntax highlighting and word-wrap, so the option is kept
-    available for anyone who wants a snappier readout.
+    to truncate the preview if your Jupyter frontend struggles with very long lines.
     """
     decision_str = symbolic["decision_function"]
-    print("Decision function:")
     if max_chars is not None and len(decision_str) > max_chars:
-        print(f"  {decision_str[:max_chars]}…")
-    else:
-        print(f"  {decision_str}")
-    print(f"\nP(up) = 1 / (1 + exp(-decision))")
+        decision_str = decision_str[:max_chars] + "…"
+
+    print("Decision function:")
+    print(f"  {decision_str}")
+    print("\nP(up) = 1 / (1 + exp(-decision))")
     print(f"\nSurviving features: {symbolic['surviving_features']}")
 
 
 # Print the pre/post symbolic accuracy gap; near-zero gap means symbolic substitution faithfully captured the spline.
 def print_extraction_metrics(symbolic: dict) -> None:
-    """Print pre / post symbolic accuracy, symbolification rate, and pruned architecture."""
-    pre = symbolic.get("pre_symbolic_accuracy", float("nan"))
-    post = symbolic.get("post_symbolic_accuracy", float("nan"))
-    rate = symbolic.get("symbolification_rate", float("nan"))
-    arch = symbolic.get("pruned_architecture", "N/A")
+    """Print pre/post symbolic accuracy, symbolification rate, and pruned architecture."""
+    pre = symbolic["pre_symbolic_accuracy"]
+    post = symbolic["post_symbolic_accuracy"]
+    rate = symbolic["symbolification_rate"]
+    arch = symbolic["pruned_architecture"]
+
     print(f"Pre-symbolic accuracy:  {pre:.4f}")
     print(f"Post-symbolic accuracy: {post:.4f}")
-    if isinstance(rate, (int, float)) and np.isfinite(rate):
-        print(f"Symbolification rate:   {rate:.0%}")
-    else:
-        print(f"Symbolification rate:   N/A")
+    print(f"Symbolification rate:   {rate * 100:.0f}%")
     print(f"Pruned architecture:    {arch}")
 
 
