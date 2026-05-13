@@ -493,8 +493,13 @@ def run_cpcv_pipeline(
 
                 # Calibration on the truly-held-out X_c. LSTM produces NaN at warm-up rows
                 # (M1 contract), so slice cal logits to valid indices before vector scaling.
-                # w_cal is passed through so the calibration NLL matches the AFML-weighted
-                # training loss; either branch defaults to unweighted if w_cal is None.
+                # Weighted-Platt / weighted-vector NLL is supported by calibration.py via
+                # the optional sample_weight argument but is intentionally NOT triggered
+                # here: an empirical audit showed it pushed every model's calibration miss
+                # FURTHER from the empirical base rate (3/6 flagged → 5/6 flagged) and
+                # compressed median Sharpes across the board. The likely mechanism is that
+                # AFML weights tilt the calibrator toward the high-weight (rare, unique-
+                # label) subset whose class balance differs from the population base rate.
                 try:
                     calibrator = Calibrator()
                     if model_name == "lstm" and hasattr(model, "last_valid_indices"):
@@ -502,13 +507,11 @@ def run_cpcv_pipeline(
                         cal_valid_idx = model.last_valid_indices
                         cal_logits = cal_logits_full[cal_valid_idx]
                         y_cal_aligned = y_cal.iloc[cal_valid_idx]
-                        w_cal_aligned = w_cal.iloc[cal_valid_idx]
                         calibrator.fit_from_logits(
                             cal_logits, y_cal_aligned, method="vector",
-                            sample_weight=w_cal_aligned,
                         )
                     else:
-                        calibrator.fit(model, X_c, y_cal, sample_weight=w_cal)
+                        calibrator.fit(model, X_c, y_cal)
 
                 except Exception as e:
                     # Fallback path: a failed calibration falls back to uncalibrated probabilities below.

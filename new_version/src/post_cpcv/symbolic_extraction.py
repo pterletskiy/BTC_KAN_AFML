@@ -1666,7 +1666,7 @@ def run_symbolic_extraction(
     """
     model_label = "MultKAN" if use_multkan else "PyKAN"
     print("=" * 60)
-    print("Symbolic Extraction (VIX KAN Paper, Algorithm 1)")
+    print("Symbolic Extraction")
     print(f"  CPCV model: efficient-kan | Extraction model: {model_label}")
     print("=" * 60)
 
@@ -1777,14 +1777,9 @@ def run_symbolic_extraction(
         f"\n  but does not exactly equal the CPCV-evaluated efficient-kan's. The pre/post symbolic"
         f"\n  accuracy gap above quantifies how faithful the symbolic substitution is."
     )
-    print(f"\n  Decision function (first 240 chars):")
-    decision_str = result["decision_function"]
-    if len(decision_str) > 240:
-        print(f"    {decision_str[:240]}…")
-        print(f"    ({len(decision_str)} chars total; access via result['decision_function'])")
-    else:
-        print(f"    {decision_str}")
-    print(f"\n  P(up) = 1 / (1 + exp(-decision))  [see result['p_up_formula']]")
+    print(f"\n  Decision function:")
+    print(f"    {result['decision_function']}")
+    print(f"\n  P(up) = 1 / (1 + exp(-decision))")
     print(f"{'='*60}")
 
     return result
@@ -1888,23 +1883,21 @@ def _safe_eval_at_point(deriv, point: dict) -> float:
 
 
 # Print the headline outputs of run_symbolic_extraction.
-def print_symbolic_decision(symbolic: dict, max_chars: int = 240) -> None:
-    """Print the decision function (truncated to ``max_chars`` for readability), P(up)
-    formula reference, and surviving features.
+def print_symbolic_decision(symbolic: dict, max_chars: int | None = None) -> None:
+    """Print the decision function, P(up) formula reference, and surviving features.
 
-    Long sympy expressions can take noticeable time for Jupyter to render due to the
-    cell's syntax highlighting and word-wrap calculations. Passing ``max_chars=None``
-    prints the full expression; the default 240 keeps the cell snappy and the full
-    string remains available via ``symbolic['decision_function']``.
+    Prints the full decision function by default. Pass ``max_chars`` (e.g. ``240``)
+    to truncate; long sympy expressions can take a noticeable moment to render in
+    Jupyter due to cell syntax highlighting and word-wrap, so the option is kept
+    available for anyone who wants a snappier readout.
     """
     decision_str = symbolic["decision_function"]
     print("Decision function:")
     if max_chars is not None and len(decision_str) > max_chars:
         print(f"  {decision_str[:max_chars]}…")
-        print(f"  ({len(decision_str)} chars total; access via symbolic['decision_function'])")
     else:
         print(f"  {decision_str}")
-    print(f"\nP(up) = 1 / (1 + exp(-decision))  [full string in symbolic['p_up_formula']]")
+    print(f"\nP(up) = 1 / (1 + exp(-decision))")
     print(f"\nSurviving features: {symbolic['surviving_features']}")
 
 
