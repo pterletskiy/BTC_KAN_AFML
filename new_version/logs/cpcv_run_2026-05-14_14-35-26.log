@@ -1,0 +1,277 @@
+14:36:41  src.pre_cpcv.data_loader  INFO  [data_loader] BTC-USD: 2014-11-01 → 2026-05-09 | 4208 rows | 0 warning(s)
+14:36:46  src.pre_cpcv.labeling  INFO  Triple-barrier: 1270 events labeled. Class distribution: {1: 664, -1: 504, 0: 102}
+14:36:48  src.pre_cpcv.labeling  WARNING  Dropped 102 row(s) belonging to rare class(es) [0] (< 8.5%).
+14:36:51  src.pre_cpcv.sample_weights  INFO  Capped 12 weights at 2.84 (99% percentile).
+14:36:53  src.pre_cpcv.features  INFO  Lag features: 10 columns, 4208 rows (lags=[1, 2, 3, 4, 5, 6, 7, 14, 21, 30]).
+14:36:54  src.pre_cpcv.features  INFO  TA features: 25 columns, 4208 rows.
+14:36:56  src.pre_cpcv.external_features  INFO  External features loaded from cache (29 cols).
+14:36:57  src.pre_cpcv.features  INFO  Math features loaded from cache ({'negentropy', 'jarque_bera', 'variance_ratio', 'smt_exp', 'shannon_entropy', 'smt_poly1', 'lz_complexity', 'sadf', 'hurst'}).
+14:36:57  src.pre_cpcv.features  INFO  symmetric log applied to: ['obv', 'chaikin_osc']
+14:36:57  src.pre_cpcv.features  INFO  log applied to: ['atr'] (eps=1e-08)
+14:37:27  src.pre_cpcv.alignment  WARNING  Remaining NaNs in 2 feature column(s) after alignment:
+oil_ret_30    1
+oil_ret_14    1
+14:37:27  src.pre_cpcv.alignment  INFO  Alignment validation passed (1168 samples, 73 features).
+14:37:28  src.cpcv.cv  INFO  CPCV: 28 splits generated (N=8, k=2, embargo=11 obs).
+14:37:28  src.cpcv.cv  INFO  Path matrix: 7 paths, 8 groups, 28 splits.
+14:37:33  src.cpcv.pipeline  INFO  ============================================================
+14:37:33  src.cpcv.pipeline  INFO  CPCV Pipeline
+14:37:33  src.cpcv.pipeline  INFO  ============================================================
+14:37:33  src.cpcv.pipeline  INFO    Models:         ['ar_logistic']
+14:37:33  src.cpcv.pipeline  INFO    Seeds/fold:     5
+14:37:33  src.cpcv.pipeline  INFO    Groups (N):     8
+14:37:33  src.cpcv.pipeline  INFO    Test groups (k):2
+14:37:33  src.cpcv.pipeline  INFO    Embargo:        1.0%
+14:37:33  src.cpcv.pipeline  INFO    FFD columns:    ['atr']
+14:37:33  src.cpcv.pipeline  INFO    Samples:        1168
+14:37:33  src.cpcv.pipeline  INFO    Features:       73
+14:37:33  src.cpcv.pipeline  INFO    Splits:         28, Paths: 7
+14:37:33  src.cpcv.pipeline  INFO    Tuning:         OFF
+14:37:33  src.cpcv.pipeline  INFO  ============================================================
+14:37:33  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:33  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=605 + val=130 + cal=130, test=93
+14:37:33  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:33  src.cpcv.pipeline  INFO    [  1/140]          ar_logistic (seed=0) F1=0.530  AUC=0.542  LL=0.6804 (0.2s)
+14:37:33  src.cpcv.pipeline  INFO    [  2/140]          ar_logistic (seed=1) F1=0.530  AUC=0.542  LL=0.6804 (0.0s)
+14:37:33  src.cpcv.pipeline  INFO    [  3/140]          ar_logistic (seed=2) F1=0.530  AUC=0.542  LL=0.6804 (0.0s)
+14:37:33  src.cpcv.pipeline  INFO    [  4/140]          ar_logistic (seed=3) F1=0.530  AUC=0.542  LL=0.6804 (0.0s)
+14:37:33  src.cpcv.pipeline  INFO    [  5/140]          ar_logistic (seed=4) F1=0.530  AUC=0.542  LL=0.6804 (0.0s)
+14:37:33  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:33  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=566 + val=121 + cal=122, test=146
+14:37:33  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:33  src.cpcv.pipeline  INFO    [  6/140]          ar_logistic (seed=0) F1=0.488  AUC=0.515  LL=0.7238 (0.0s)
+14:37:33  src.cpcv.pipeline  INFO    [  7/140]          ar_logistic (seed=1) F1=0.488  AUC=0.515  LL=0.7238 (0.0s)
+14:37:33  src.cpcv.pipeline  INFO    [  8/140]          ar_logistic (seed=2) F1=0.488  AUC=0.515  LL=0.7238 (0.0s)
+14:37:33  src.cpcv.pipeline  INFO    [  9/140]          ar_logistic (seed=3) F1=0.488  AUC=0.515  LL=0.7238 (0.0s)
+14:37:33  src.cpcv.pipeline  INFO    [ 10/140]          ar_logistic (seed=4) F1=0.488  AUC=0.515  LL=0.7238 (0.0s)
+14:37:34  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:34  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=567 + val=122 + cal=122, test=146
+14:37:34  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:34  src.cpcv.pipeline  INFO    [ 11/140]          ar_logistic (seed=0) F1=0.534  AUC=0.533  LL=0.7168 (0.0s)
+14:37:34  src.cpcv.pipeline  INFO    [ 12/140]          ar_logistic (seed=1) F1=0.534  AUC=0.533  LL=0.7168 (0.0s)
+14:37:34  src.cpcv.pipeline  INFO    [ 13/140]          ar_logistic (seed=2) F1=0.534  AUC=0.533  LL=0.7168 (0.0s)
+14:37:34  src.cpcv.pipeline  INFO    [ 14/140]          ar_logistic (seed=3) F1=0.534  AUC=0.533  LL=0.7168 (0.0s)
+14:37:34  src.cpcv.pipeline  INFO    [ 15/140]          ar_logistic (seed=4) F1=0.534  AUC=0.533  LL=0.7168 (0.0s)
+14:37:34  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:34  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=567 + val=122 + cal=122, test=146
+14:37:34  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:34  src.cpcv.pipeline  INFO    [ 16/140]          ar_logistic (seed=0) F1=0.532  AUC=0.551  LL=0.6892 (0.0s)
+14:37:34  src.cpcv.pipeline  INFO    [ 17/140]          ar_logistic (seed=1) F1=0.532  AUC=0.551  LL=0.6892 (0.0s)
+14:37:34  src.cpcv.pipeline  INFO    [ 18/140]          ar_logistic (seed=2) F1=0.532  AUC=0.551  LL=0.6892 (0.0s)
+14:37:34  src.cpcv.pipeline  INFO    [ 19/140]          ar_logistic (seed=3) F1=0.532  AUC=0.551  LL=0.6892 (0.0s)
+14:37:34  src.cpcv.pipeline  INFO    [ 20/140]          ar_logistic (seed=4) F1=0.532  AUC=0.551  LL=0.6892 (0.0s)
+14:37:34  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:35  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=567 + val=122 + cal=122, test=146
+14:37:35  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:35  src.cpcv.pipeline  INFO    [ 21/140]          ar_logistic (seed=0) F1=0.442  AUC=0.434  LL=0.7532 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 22/140]          ar_logistic (seed=1) F1=0.442  AUC=0.434  LL=0.7532 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 23/140]          ar_logistic (seed=2) F1=0.442  AUC=0.434  LL=0.7532 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 24/140]          ar_logistic (seed=3) F1=0.442  AUC=0.434  LL=0.7532 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 25/140]          ar_logistic (seed=4) F1=0.442  AUC=0.434  LL=0.7532 (0.0s)
+14:37:35  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:35  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=567 + val=122 + cal=122, test=146
+14:37:35  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:35  src.cpcv.pipeline  INFO    [ 26/140]          ar_logistic (seed=0) F1=0.476  AUC=0.542  LL=0.6901 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 27/140]          ar_logistic (seed=1) F1=0.476  AUC=0.542  LL=0.6901 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 28/140]          ar_logistic (seed=2) F1=0.476  AUC=0.542  LL=0.6901 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 29/140]          ar_logistic (seed=3) F1=0.476  AUC=0.542  LL=0.6901 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 30/140]          ar_logistic (seed=4) F1=0.476  AUC=0.542  LL=0.6901 (0.0s)
+14:37:35  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:35  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=575 + val=123 + cal=124, test=146
+14:37:35  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:35  src.cpcv.pipeline  INFO    [ 31/140]          ar_logistic (seed=0) F1=0.377  AUC=0.594  LL=0.6808 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 32/140]          ar_logistic (seed=1) F1=0.377  AUC=0.594  LL=0.6808 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 33/140]          ar_logistic (seed=2) F1=0.377  AUC=0.594  LL=0.6808 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 34/140]          ar_logistic (seed=3) F1=0.377  AUC=0.594  LL=0.6808 (0.0s)
+14:37:35  src.cpcv.pipeline  INFO    [ 35/140]          ar_logistic (seed=4) F1=0.377  AUC=0.594  LL=0.6808 (0.0s)
+14:37:36  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:36  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=503 + val=108 + cal=108, test=239
+14:37:36  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:36  src.cpcv.pipeline  INFO    [ 36/140]          ar_logistic (seed=0) F1=0.508  AUC=0.533  LL=0.6945 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 37/140]          ar_logistic (seed=1) F1=0.508  AUC=0.533  LL=0.6945 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 38/140]          ar_logistic (seed=2) F1=0.508  AUC=0.533  LL=0.6945 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 39/140]          ar_logistic (seed=3) F1=0.508  AUC=0.533  LL=0.6945 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 40/140]          ar_logistic (seed=4) F1=0.508  AUC=0.533  LL=0.6945 (0.0s)
+14:37:36  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:36  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=494 + val=106 + cal=107, test=239
+14:37:36  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:36  src.cpcv.pipeline  INFO    [ 41/140]          ar_logistic (seed=0) F1=0.532  AUC=0.551  LL=0.6977 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 42/140]          ar_logistic (seed=1) F1=0.532  AUC=0.551  LL=0.6977 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 43/140]          ar_logistic (seed=2) F1=0.532  AUC=0.551  LL=0.6977 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 44/140]          ar_logistic (seed=3) F1=0.532  AUC=0.551  LL=0.6977 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 45/140]          ar_logistic (seed=4) F1=0.532  AUC=0.551  LL=0.6977 (0.0s)
+14:37:36  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:36  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=494 + val=106 + cal=107, test=239
+14:37:36  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:36  src.cpcv.pipeline  INFO    [ 46/140]          ar_logistic (seed=0) F1=0.544  AUC=0.531  LL=0.6959 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 47/140]          ar_logistic (seed=1) F1=0.544  AUC=0.531  LL=0.6959 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 48/140]          ar_logistic (seed=2) F1=0.544  AUC=0.531  LL=0.6959 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 49/140]          ar_logistic (seed=3) F1=0.544  AUC=0.531  LL=0.6959 (0.0s)
+14:37:36  src.cpcv.pipeline  INFO    [ 50/140]          ar_logistic (seed=4) F1=0.544  AUC=0.531  LL=0.6959 (0.0s)
+14:37:37  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:37  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=494 + val=106 + cal=107, test=239
+14:37:37  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:37  src.cpcv.pipeline  INFO    [ 51/140]          ar_logistic (seed=0) F1=0.435  AUC=0.467  LL=0.7194 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 52/140]          ar_logistic (seed=1) F1=0.435  AUC=0.467  LL=0.7194 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 53/140]          ar_logistic (seed=2) F1=0.435  AUC=0.467  LL=0.7194 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 54/140]          ar_logistic (seed=3) F1=0.435  AUC=0.467  LL=0.7194 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 55/140]          ar_logistic (seed=4) F1=0.435  AUC=0.467  LL=0.7194 (0.0s)
+14:37:37  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:37  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=494 + val=106 + cal=107, test=239
+14:37:37  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:37  src.cpcv.pipeline  INFO    [ 56/140]          ar_logistic (seed=0) F1=0.506  AUC=0.533  LL=0.6988 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 57/140]          ar_logistic (seed=1) F1=0.506  AUC=0.533  LL=0.6988 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 58/140]          ar_logistic (seed=2) F1=0.506  AUC=0.533  LL=0.6988 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 59/140]          ar_logistic (seed=3) F1=0.506  AUC=0.533  LL=0.6988 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 60/140]          ar_logistic (seed=4) F1=0.506  AUC=0.533  LL=0.6988 (0.0s)
+14:37:37  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:37  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=502 + val=108 + cal=108, test=239
+14:37:37  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:37  src.cpcv.pipeline  INFO    [ 61/140]          ar_logistic (seed=0) F1=0.391  AUC=0.555  LL=0.6724 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 62/140]          ar_logistic (seed=1) F1=0.391  AUC=0.555  LL=0.6724 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 63/140]          ar_logistic (seed=2) F1=0.391  AUC=0.555  LL=0.6724 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 64/140]          ar_logistic (seed=3) F1=0.391  AUC=0.555  LL=0.6724 (0.0s)
+14:37:37  src.cpcv.pipeline  INFO    [ 65/140]          ar_logistic (seed=4) F1=0.391  AUC=0.555  LL=0.6724 (0.0s)
+14:37:38  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:38  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=464 + val=99 + cal=100, test=292
+14:37:38  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:38  src.cpcv.pipeline  INFO    [ 66/140]          ar_logistic (seed=0) F1=0.503  AUC=0.521  LL=0.7201 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 67/140]          ar_logistic (seed=1) F1=0.503  AUC=0.521  LL=0.7201 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 68/140]          ar_logistic (seed=2) F1=0.503  AUC=0.521  LL=0.7201 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 69/140]          ar_logistic (seed=3) F1=0.503  AUC=0.521  LL=0.7201 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 70/140]          ar_logistic (seed=4) F1=0.503  AUC=0.521  LL=0.7201 (0.0s)
+14:37:38  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:38  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=455 + val=98 + cal=98, test=292
+14:37:38  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:38  src.cpcv.pipeline  INFO    [ 71/140]          ar_logistic (seed=0) F1=0.518  AUC=0.511  LL=0.7325 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 72/140]          ar_logistic (seed=1) F1=0.518  AUC=0.511  LL=0.7325 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 73/140]          ar_logistic (seed=2) F1=0.518  AUC=0.511  LL=0.7325 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 74/140]          ar_logistic (seed=3) F1=0.518  AUC=0.511  LL=0.7325 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 75/140]          ar_logistic (seed=4) F1=0.518  AUC=0.511  LL=0.7325 (0.0s)
+14:37:38  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:38  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=455 + val=98 + cal=98, test=292
+14:37:38  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:38  src.cpcv.pipeline  INFO    [ 76/140]          ar_logistic (seed=0) F1=0.454  AUC=0.484  LL=0.7351 (0.0s)
+14:37:38  src.cpcv.pipeline  INFO    [ 77/140]          ar_logistic (seed=1) F1=0.454  AUC=0.484  LL=0.7351 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 78/140]          ar_logistic (seed=2) F1=0.454  AUC=0.484  LL=0.7351 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 79/140]          ar_logistic (seed=3) F1=0.454  AUC=0.484  LL=0.7351 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 80/140]          ar_logistic (seed=4) F1=0.454  AUC=0.484  LL=0.7351 (0.0s)
+14:37:39  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:39  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=455 + val=98 + cal=98, test=292
+14:37:39  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:39  src.cpcv.pipeline  INFO    [ 81/140]          ar_logistic (seed=0) F1=0.538  AUC=0.543  LL=0.7191 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 82/140]          ar_logistic (seed=1) F1=0.538  AUC=0.543  LL=0.7191 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 83/140]          ar_logistic (seed=2) F1=0.538  AUC=0.543  LL=0.7191 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 84/140]          ar_logistic (seed=3) F1=0.538  AUC=0.543  LL=0.7191 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 85/140]          ar_logistic (seed=4) F1=0.538  AUC=0.543  LL=0.7191 (0.0s)
+14:37:39  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:39  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=463 + val=99 + cal=100, test=292
+14:37:39  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:39  src.cpcv.pipeline  INFO    [ 86/140]          ar_logistic (seed=0) F1=0.369  AUC=0.565  LL=0.7051 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 87/140]          ar_logistic (seed=1) F1=0.369  AUC=0.565  LL=0.7051 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 88/140]          ar_logistic (seed=2) F1=0.369  AUC=0.565  LL=0.7051 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 89/140]          ar_logistic (seed=3) F1=0.369  AUC=0.565  LL=0.7051 (0.0s)
+14:37:39  src.cpcv.pipeline  INFO    [ 90/140]          ar_logistic (seed=4) F1=0.369  AUC=0.565  LL=0.7051 (0.0s)
+14:37:40  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:40  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=465 + val=100 + cal=100, test=292
+14:37:40  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:40  src.cpcv.pipeline  INFO    [ 91/140]          ar_logistic (seed=0) F1=0.500  AUC=0.521  LL=0.7049 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [ 92/140]          ar_logistic (seed=1) F1=0.500  AUC=0.521  LL=0.7049 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [ 93/140]          ar_logistic (seed=2) F1=0.500  AUC=0.521  LL=0.7049 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [ 94/140]          ar_logistic (seed=3) F1=0.500  AUC=0.521  LL=0.7049 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [ 95/140]          ar_logistic (seed=4) F1=0.500  AUC=0.521  LL=0.7049 (0.0s)
+14:37:40  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:40  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=457 + val=98 + cal=98, test=292
+14:37:40  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:40  src.cpcv.pipeline  INFO    [ 96/140]          ar_logistic (seed=0) F1=0.479  AUC=0.491  LL=0.7334 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [ 97/140]          ar_logistic (seed=1) F1=0.479  AUC=0.491  LL=0.7334 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [ 98/140]          ar_logistic (seed=2) F1=0.479  AUC=0.491  LL=0.7334 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [ 99/140]          ar_logistic (seed=3) F1=0.479  AUC=0.491  LL=0.7334 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [100/140]          ar_logistic (seed=4) F1=0.479  AUC=0.491  LL=0.7334 (0.0s)
+14:37:40  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:40  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=457 + val=98 + cal=98, test=292
+14:37:40  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:40  src.cpcv.pipeline  INFO    [101/140]          ar_logistic (seed=0) F1=0.479  AUC=0.529  LL=0.7145 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [102/140]          ar_logistic (seed=1) F1=0.479  AUC=0.529  LL=0.7145 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [103/140]          ar_logistic (seed=2) F1=0.479  AUC=0.529  LL=0.7145 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [104/140]          ar_logistic (seed=3) F1=0.479  AUC=0.529  LL=0.7145 (0.0s)
+14:37:40  src.cpcv.pipeline  INFO    [105/140]          ar_logistic (seed=4) F1=0.479  AUC=0.529  LL=0.7145 (0.0s)
+14:37:41  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:41  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=464 + val=100 + cal=100, test=292
+14:37:41  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:41  src.cpcv.pipeline  INFO    [106/140]          ar_logistic (seed=0) F1=0.355  AUC=0.545  LL=0.6911 (0.0s)
+14:37:41  src.cpcv.pipeline  INFO    [107/140]          ar_logistic (seed=1) F1=0.355  AUC=0.545  LL=0.6911 (0.0s)
+14:37:41  src.cpcv.pipeline  INFO    [108/140]          ar_logistic (seed=2) F1=0.355  AUC=0.545  LL=0.6911 (0.0s)
+14:37:41  src.cpcv.pipeline  INFO    [109/140]          ar_logistic (seed=3) F1=0.355  AUC=0.545  LL=0.6911 (0.0s)
+14:37:41  src.cpcv.pipeline  INFO    [110/140]          ar_logistic (seed=4) F1=0.355  AUC=0.545  LL=0.6911 (0.0s)
+14:37:41  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:41  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=465 + val=100 + cal=100, test=292
+14:37:41  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:41  src.cpcv.pipeline  INFO    [111/140]          ar_logistic (seed=0) F1=0.516  AUC=0.502  LL=0.7176 (0.0s)
+14:37:41  src.cpcv.pipeline  INFO    [112/140]          ar_logistic (seed=1) F1=0.516  AUC=0.502  LL=0.7176 (0.0s)
+14:37:41  src.cpcv.pipeline  INFO    [113/140]          ar_logistic (seed=2) F1=0.516  AUC=0.502  LL=0.7176 (0.0s)
+14:37:41  src.cpcv.pipeline  INFO    [114/140]          ar_logistic (seed=3) F1=0.516  AUC=0.502  LL=0.7176 (0.0s)
+14:37:41  src.cpcv.pipeline  INFO    [115/140]          ar_logistic (seed=4) F1=0.516  AUC=0.502  LL=0.7176 (0.0s)
+14:37:42  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:42  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=457 + val=98 + cal=98, test=292
+14:37:42  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:42  src.cpcv.pipeline  INFO    [116/140]          ar_logistic (seed=0) F1=0.530  AUC=0.525  LL=0.7148 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [117/140]          ar_logistic (seed=1) F1=0.530  AUC=0.525  LL=0.7148 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [118/140]          ar_logistic (seed=2) F1=0.530  AUC=0.525  LL=0.7148 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [119/140]          ar_logistic (seed=3) F1=0.530  AUC=0.525  LL=0.7148 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [120/140]          ar_logistic (seed=4) F1=0.530  AUC=0.525  LL=0.7148 (0.0s)
+14:37:42  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:42  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=464 + val=100 + cal=100, test=292
+14:37:42  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:42  src.cpcv.pipeline  INFO    [121/140]          ar_logistic (seed=0) F1=0.369  AUC=0.551  LL=0.6776 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [122/140]          ar_logistic (seed=1) F1=0.369  AUC=0.551  LL=0.6776 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [123/140]          ar_logistic (seed=2) F1=0.369  AUC=0.551  LL=0.6776 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [124/140]          ar_logistic (seed=3) F1=0.369  AUC=0.551  LL=0.6776 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [125/140]          ar_logistic (seed=4) F1=0.369  AUC=0.551  LL=0.6776 (0.0s)
+14:37:42  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:42  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=465 + val=100 + cal=100, test=292
+14:37:42  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:42  src.cpcv.pipeline  INFO    [126/140]          ar_logistic (seed=0) F1=0.449  AUC=0.463  LL=0.7393 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [127/140]          ar_logistic (seed=1) F1=0.449  AUC=0.463  LL=0.7393 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [128/140]          ar_logistic (seed=2) F1=0.449  AUC=0.463  LL=0.7393 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [129/140]          ar_logistic (seed=3) F1=0.449  AUC=0.463  LL=0.7393 (0.0s)
+14:37:42  src.cpcv.pipeline  INFO    [130/140]          ar_logistic (seed=4) F1=0.449  AUC=0.463  LL=0.7393 (0.0s)
+14:37:43  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:43  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=464 + val=100 + cal=100, test=292
+14:37:43  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:43  src.cpcv.pipeline  INFO    [131/140]          ar_logistic (seed=0) F1=0.345  AUC=0.501  LL=0.7049 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO    [132/140]          ar_logistic (seed=1) F1=0.345  AUC=0.501  LL=0.7049 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO    [133/140]          ar_logistic (seed=2) F1=0.345  AUC=0.501  LL=0.7049 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO    [134/140]          ar_logistic (seed=3) F1=0.345  AUC=0.501  LL=0.7049 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO    [135/140]          ar_logistic (seed=4) F1=0.345  AUC=0.501  LL=0.7049 (0.0s)
+14:37:43  src.cpcv.preprocessing  INFO  Feature selection skipped (AR Logistic uses lagged returns only)
+14:37:43  src.cpcv.pipeline  INFO    Preprocessing: FFD + scaling only (no feature selection), train=473 + val=101 + cal=102, test=292
+14:37:43  src.cpcv.pipeline  INFO    AR Logistic lags: [1, 2, 3, 4, 5, 6, 7, 14, 21, 30]
+14:37:43  src.cpcv.pipeline  INFO    [136/140]          ar_logistic (seed=0) F1=0.364  AUC=0.441  LL=0.7194 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO    [137/140]          ar_logistic (seed=1) F1=0.364  AUC=0.441  LL=0.7194 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO    [138/140]          ar_logistic (seed=2) F1=0.364  AUC=0.441  LL=0.7194 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO    [139/140]          ar_logistic (seed=3) F1=0.364  AUC=0.441  LL=0.7194 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO    [140/140]          ar_logistic (seed=4) F1=0.364  AUC=0.441  LL=0.7194 (0.0s)
+14:37:43  src.cpcv.pipeline  INFO  ============================================================
+14:37:43  src.cpcv.pipeline  INFO  CPCV Pipeline Complete
+14:37:43  src.cpcv.pipeline  INFO  ============================================================
+14:37:43  src.cpcv.pipeline  INFO    Total time:     10.6s (0.2m)
+14:37:43  src.cpcv.pipeline  INFO    Tasks:          140 succeeded, 0 failed
+14:37:43  src.cpcv.pipeline  INFO    Results keys:   140 (model, split, seed) entries
+14:37:43  src.cpcv.pipeline  INFO    Backtest paths: 7
+14:37:43  src.cpcv.pipeline  INFO  ============================================================
+14:37:44  src.cpcv.pipeline  INFO  ============================================================
+14:37:44  src.cpcv.pipeline  INFO  CPCV Pipeline
+14:37:44  src.cpcv.pipeline  INFO  ============================================================
+14:37:44  src.cpcv.pipeline  INFO    Models:         ['logistic']
+14:37:44  src.cpcv.pipeline  INFO    Seeds/fold:     5
+14:37:44  src.cpcv.pipeline  INFO    Groups (N):     8
+14:37:44  src.cpcv.pipeline  INFO    Test groups (k):2
+14:37:44  src.cpcv.pipeline  INFO    Embargo:        1.0%
+14:37:44  src.cpcv.pipeline  INFO    FFD columns:    ['atr']
+14:37:44  src.cpcv.pipeline  INFO    Samples:        1168
+14:37:44  src.cpcv.pipeline  INFO    Features:       73
+14:37:44  src.cpcv.pipeline  INFO    Splits:         28, Paths: 7
+14:37:44  src.cpcv.pipeline  INFO    Tuning:         NESTED (per-split) — ['logistic'] [40 trials]
+14:37:44  src.cpcv.pipeline  INFO  ============================================================
+14:37:44  src.cpcv.preprocessing  INFO  Computing MDA (Random Forest)...
