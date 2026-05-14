@@ -822,6 +822,8 @@ Calibration is fitted on the held-out 15% of the training fold (chronological sp
 
 **Methodological note (calibration set):** Under the 70/15/15 three-way split, the 15% calibration partition serves only Platt/vector scaling and is fully separate from the 15% validation partition that handles XGBoost's early stopping and the LSTM/KAN best-state tracking. An earlier 80/20 split used a single 20% subset for both purposes; the three-way split removes this dual-use coupling. The 80/10/10 ratio used initially was widened to 70/15/15 after a calibration audit revealed all six models systematically under-predicting P(Up) by 4-7 percentage points across folds; with ~750 events per outer training fold, 10% (~75 events) was too small for both the vector-scaling fit (T, b[1] estimated on ~75 binary labels) AND the LSTM/KAN early-stopping signal. The 15% partitions raise both to ~112-129 events at the cost of ~75 fewer training events per fold.
 
+**Methodological note (weighted vs unweighted calibration):** Both `fit_platt_scaling` and `fit_vector_scaling` accept an optional `sample_weight` argument that weights the per-sample NLL by AFML sample weights before averaging, aligning the calibration objective with the AFML-weighted training loss. The pipeline does NOT pass weights through to the calibrator: an empirical audit on the full six-model pool showed weighted Platt/vector calibration pushed every model's calibration miss FURTHER from the empirical base rate (3/6 flagged → 5/6 flagged) and compressed median Sharpes across the board. The likely mechanism is that AFML weights over-represent the high-weight (rare, unique-label) subset whose class balance differs from the population base rate. The optional `sample_weight` parameter remains in `calibration.py` for future experiments but is intentionally not triggered from `pipeline.py`; a comment block above the call site documents the audit evidence.
+
 ---
 
 ### Step 15 — Pipeline Orchestration (`pipeline.py`)
@@ -1199,10 +1201,9 @@ Saves `cache/kan_symbolified_network.png`.
 2. `model.symbolic_formula(var=...)` — falls back to no-var call
 3. Extracts `logit_bearish` (class 0) and `logit_bullish` (class 1)
 4. Substitutes placeholder variables with actual feature names
-5. **Simplification with 30-second timeout** (sympy can hang on complex expressions) via threading
-6. `nsimplify` for cleaner rational coefficients
-7. Computes post-symbolic accuracy
-8. Identifies surviving features (those appearing in `decision.free_symbols`)
+5. `nsimplify` for cleaner rational coefficients. **`sympy.simplify` is deliberately NOT called** on the decision expression: on KAN-shape expressions (nested tanh / sin / cos / polynomial) it rarely improves readability and routinely runs for many minutes. An earlier version wrapped the call in a thread with a 30-second wall-clock timeout, but Python threads cannot be cancelled cooperatively, so on heavy expressions the worker continued running in the background after the timeout fired and held the GIL for hours afterward, starving subsequent kernel operations (visible as 25- to 175-minute apparent wait times on simple `print()` calls in downstream cells). The `nsimplify` pass handles the rational-number cleanup that's actually useful.
+6. Computes post-symbolic accuracy
+7. Identifies surviving features (those appearing in `decision.free_symbols`)
 
 **Output:**
 ```python
@@ -1231,16 +1232,17 @@ Saves `cache/kan_symbolified_network.png`.
 symbolic = run_symbolic_extraction(results, X, y, w, t1,
                                    n_top_features=5, fold_selection="last")
 
-# Decision-function summary. Long expressions truncate to 240 chars by default;
-# pass max_chars=None for the full expression (slow to render in Jupyter for
-# large formulas). The full string is always in symbolic["decision_function"].
+# Decision-function summary. Prints the full expression by default.
+# Pass max_chars=240 (or similar) if your Jupyter frontend struggles to
+# render very long lines.
 print_symbolic_decision(symbolic)
-# print_symbolic_decision(symbolic, max_chars=None)  # full expression
+# print_symbolic_decision(symbolic, max_chars=240)  # truncated preview
 
 # Pre/post symbolic accuracy + symbolification rate + pruned architecture.
-# This is a small fixed-size readout; the perceived slowness sometimes
-# attributed to this helper is actually Jupyter's render time on the
-# preceding decision-function string above.
+# A fixed-size readout of pre-computed floats; runs in microseconds. If it
+# ever appears to take tens of minutes, the cause is not this helper but a
+# zombie thread from a previous extraction (see Step 17.g note on the
+# removal of sympy.simplify); a kernel restart resolves it.
 print_extraction_metrics(symbolic)
 
 # Symbolic partial derivative of the decision function w.r.t. each feature
@@ -1277,7 +1279,7 @@ The `print_*`, `compute_feature_sensitivity`, and `plot_marginal_effects` helper
 - `'1/x'` causes division-by-zero at affine fine-tuning
 - PyKAN uses 1-based variable naming (`x_1..x_n`), not 0-based
 - `suggest_symbolic` return format varies across PyKAN versions
-- `sympy.simplify` can hang indefinitely on complex expressions (→ 30s timeout)
+- `sympy.simplify` can hang indefinitely on complex expressions; the call is no longer made (a threading-based timeout left a zombie worker holding the GIL on heavy expressions)
 - `"0"` (constant) always wins `total_loss` due to zero complexity penalty (→ brute-force fallback)
 
 **Defensive input handling at `prepare_extraction_data`.** The function coerces `y` to a `pd.Series` indexed on `X.index` before any indexing, regardless of whether the caller passed a Series, a numpy array, or another array-like. If the supplied `y` length does not match `X`, the function raises a clear `ValueError` rather than letting pandas's generic length-mismatch error propagate. This catches a common notebook pattern where `y` gets shadowed by a pooled-prediction array (e.g., from a calibration audit cell that does `y = np.concatenate(...)`) and fails fast with a message naming the alignment requirement.
