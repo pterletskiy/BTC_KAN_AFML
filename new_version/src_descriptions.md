@@ -413,7 +413,7 @@ The LSTM tuning loop deliberately runs fewer epochs and a shorter patience windo
 
 ### Default trial counts
 
-`N_TRIALS_CLASSICAL = 30` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 30` (LSTM, KAN). The `run_cpcv_pipeline()` function accepts an `n_trials` override, and the notebook currently passes `n_trials=30` for every tuned model.
+`N_TRIALS_CLASSICAL = 60` (Logistic, RF, XGBoost), `N_TRIALS_NEURAL = 40` (LSTM, KAN). The `run_cpcv_pipeline()` function accepts an `n_trials` override, and the notebook passes `n_trials=40` for every tuned model in the locked configuration.
 
 ### Key function: `tune_all_models`
 
@@ -785,7 +785,7 @@ Provides standalone diagnostic and rendering helpers for the notebook's results 
 10. **Bet-size histogram grid.** `render_bet_size_histograms(analysis, bins=None, n_cols=3, save_path=None)` renders a grid of histograms over the four-step bet discretisation (default bin edges target ±0.25, ±0.50, ±0.75 with abstention straddling zero). Custom `bins` can be passed to match alternative discretisation schemes.
 11. **Regime-concentration scatter.** `render_regime_concentration_scatter(dispersion, k=5, concentration_threshold=0.5, save_path=None)` renders top-K share against path Sharpe with one point per (model, path). The vertical reference at `concentration_threshold` flags the regime-fluke risk band. Consumes the DataFrame produced by `build_path_dispersion_table`.
 
-**`n_seeds` and `n_splits` default-resolution.** Functions in this module that pool predictions across the `(model, split, seed)` grid (`pool_predictions`, `calibration_audit`, `compute_reliability_curve`) accept `n_seeds` and `n_splits` as optional keyword arguments. When not passed (default `None`), they read `results["n_seeds"]` and `results["n_splits"]` so the diagnostic stays in sync with the actual pipeline configuration without the caller having to track those values. Pass explicit integers to override (e.g. for sensitivity checks that pool a subset of seeds). This default change replaced an earlier version where these arguments were hardcoded to `n_seeds=2, n_splits=15`, which silently produced incorrect pooling once the locked configuration moved to `n_seeds=3` and `n_splits=28`. Callers that pass explicit values continue to work unchanged.
+**`n_seeds` and `n_splits` default-resolution.** Functions in this module that pool predictions across the `(model, split, seed)` grid (`pool_predictions`, `calibration_audit`, `compute_reliability_curve`) accept `n_seeds` and `n_splits` as optional keyword arguments. When not passed (default `None`), they read `results["n_seeds"]` and `results["n_splits"]` so the diagnostic stays in sync with the actual pipeline configuration without the caller having to track those values. Pass explicit integers to override (e.g. for sensitivity checks that pool a subset of seeds). This default change replaced an earlier version where these arguments were hardcoded to `n_seeds=2, n_splits=15`, which silently produced incorrect pooling once the locked configuration moved to `n_seeds=5` and `n_splits=28`. Callers that pass explicit values continue to work unchanged.
 
 ### Why this matters for the thesis
 

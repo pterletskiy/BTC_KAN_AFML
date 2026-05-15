@@ -17,6 +17,33 @@ The project predicts Bitcoin daily price direction using Kolmogorov–Arnold Net
 **Tuning:** Nested Optuna TPE + Purged K-Fold, per-split, inside each CPCV training fold (AFML Ch. 7 compliant).
 **Interpretability contribution:** Symbolic formula extraction from KAN via PyKAN re-training, pruning, and symbolification.
 
+### Locked notebook constants
+
+The values below are the locked configuration as the notebook ships them. Any change to one of these counts as a new configuration that needs to be disclosed in the methodology chapter.
+
+| Constant | Value | Used in |
+|---|---|---|
+| `START_DATE` | `'2014-11-01'` | data ingest |
+| `END_DATE` | `'2026-05-10'` | data ingest |
+| `CUSUM_MULT` | `1.00` | event filter threshold (multiplier on mean daily vol) |
+| `CUSUM_START_DATE` | `'2015-08-08'` | first eligible event (ETH/BTC ratio availability) |
+| `PT_SL_COMBO` | `(1.5, 1.5)` | symmetric profit-take / stop-loss multipliers |
+| `NUM_DAYS` | `10` | vertical-barrier horizon |
+| `MIN_RETURN` | `0.02` | minimum profitable return floor for label assignment |
+| `drop_rare_labels min_pct` | `0.085` | residual class-0 elimination threshold |
+| `oldest_weight` | `0.4` | linear time-decay factor in `compute_sample_weights` |
+| `weight_cap_quantile` | `0.99` | sample-weight capping percentile |
+| `LOG_COLUMNS` | `['atr']` | `apply_log` whitelist |
+| `SYM_LOG_COLUMNS` | `['obv', 'chaikin_osc']` | `apply_sym_log` whitelist |
+| `N_GROUPS` | `8` | CPCV outer-fold group count |
+| `K_TEST` | `2` | CPCV test-groups per split (→ 28 splits, 7 paths) |
+| `EMBARGO_PCT` | `0.01` | post-test embargo fraction |
+| `N_SEEDS` | `5` | seeds averaged per (split, model) — Run E |
+| `TOP_K_FRAC` | `0.20` | MDA selection cap (≈ 14-15 of 73 features per fold) |
+| `N_TRIALS` | `40` | Optuna trials per tuned model |
+
+The AR Logistic call deliberately omits `top_k_frac`, `tune`, and `tune_models` — it bypasses MDA selection (consuming the 10 lag columns by name) and has no hyperparameters to tune, so those arguments would be no-ops.
+
 ---
 
 ## Repository Structure
@@ -96,7 +123,7 @@ Fetches daily OHLCV from yfinance and returns a validated DataFrame with columns
 | Volume < 0 | Logs warning, keeps row |
 | NaN Close | Drops row + logs warning |
 
-**Parameters used in notebook:** `ticker="BTC-USD"`, `start="2014-11-01"`, `end="2026-05-01"`
+**Parameters used in notebook:** `ticker="BTC-USD"`, `start="2014-11-01"`, `end="2026-05-10"`
 
 **Internal helpers:** `_fill_small_gaps(df)` handles gap detection and forward-filling with the 3-day limit. `_check_ohlcv_consistency(df)` validates OHLCV relationships row-by-row.
 
@@ -470,12 +497,12 @@ The X passed to CPCV may therefore contain partial-NaN rows. This is intentional
 
 ### Pre-CPCV Output Summary
 
-The shape numbers below reflect the locked configuration with `START_DATE="2014-11-01"`, `END_DATE="2026-05-01"`, `CUSUM_START_DATE="2015-08-08"`, `CUSUM_MULT=1.0`, `pt_sl=(1.5, 1.5)`, `num_days=10`, and `drop_rare_labels(min_pct=0.085)`. Approximate event count is given below; the figure depends on the exact CUSUM event density in the August 2015 → May 2026 window and is updated after the locked end-to-end run. The previous configuration (raw data from September 2014, no CUSUM truncation) produced 1,245 events; the buffer-and-truncate configuration drops events that fired before August 8, 2015, reducing the event count by approximately 80-100.
+The shape numbers below reflect the locked configuration with `START_DATE="2014-11-01"`, `END_DATE="2026-05-10"`, `CUSUM_START_DATE="2015-08-08"`, `CUSUM_MULT=1.0`, `pt_sl=(1.5, 1.5)`, `num_days=10`, and `drop_rare_labels(min_pct=0.085)`. The locked end-to-end run produced approximately 1,250 events after CUSUM filtering and rare-label removal.
 
 | Object | Shape | Description |
 |--------|-------|-------------|
 | `X` | ~1,150 × 73 | Feature matrix (25 TA + 9 math + 29 external + 10 lag, post log-transform). All 73 columns are eligible for MDA selection; AR Logistic restricts itself to the 10 lag columns by name from the pre-MDA matrix. |
-| `y` | ~1,150 | Binary labels {-1, +1}. The 0 class is removed by `drop_rare_labels(min_pct=0.085)` after triple-barrier labeling. |
+| `y` | ~1,250 | Binary labels {-1, +1}. The 0 class is removed by `drop_rare_labels(min_pct=0.085)` after triple-barrier labeling. |
 | `w` | ~1,150 | AFML sample weights (uniqueness × return attribution × time decay, capped at 99th pctile) |
 | `t1` | ~1,150 | Barrier touch timestamps (DatetimeIndex, for CPCV purging) |
 
@@ -660,15 +687,15 @@ N_TRIALS_CLASSICAL = 60        # default trials for Logistic, RF, XGBoost
 N_TRIALS_NEURAL = 40           # default trials for LSTM, KAN
 ```
 
-The `run_cpcv_pipeline()` function accepts an `n_trials` parameter that overrides these defaults. The notebook currently passes `n_trials=30` for every tuned model. The recommendations below give a wider menu balancing exploration against runtime:
+The `run_cpcv_pipeline()` function accepts an `n_trials` parameter that overrides these defaults. The notebook passes `n_trials=40` for every tuned model in the locked configuration. The recommendations below give a wider menu balancing exploration against runtime:
 
 | Model | Notebook `n_trials` | Lower-cost alternative | Rationale |
 |-------|---------------------|------------------------|-----------|
-| Logistic | 30 | — | Cheap per trial, only 2 hyperparameters |
-| Random Forest | 30 | — | Moderate cost, 4 hyperparameters |
-| XGBoost | 30 | — | Moderate cost, 8 hyperparameters (early stopping compensates) |
-| LSTM | 30 | 20 | Expensive per trial; the notebook keeps 30 for parity with the classical models |
-| KAN | 30 | 20 | Expensive per trial; the notebook keeps 30 for parity with the classical models |
+| Logistic | 40 | 30 | Cheap per trial, only 2 hyperparameters |
+| Random Forest | 40 | 30 | Moderate cost, 4 hyperparameters |
+| XGBoost | 40 | 30 | Moderate cost, 8 hyperparameters (early stopping compensates) |
+| LSTM | 40 | 25 | Expensive per trial; the notebook keeps 40 for parity with the classical models |
+| KAN | 40 | 25 | Expensive per trial; the notebook keeps 40 for parity with the classical models |
 
 #### `_purged_kfold_splits(X, y, w, t1) → list[(train_idx, val_idx)]`
 
@@ -986,7 +1013,7 @@ PBO < 0.3 → robust selection. PBO > 0.5 → anti-predictive (in-sample winner 
 
 For each pair of models, tests the null hypothesis that their AUCs are equal using the DeLong (1988) method:
 
-1. For each (model, split), averages predicted probabilities across all available seeds (3 for every model in the locked configuration). This matches what `stitch_paths` already does for path-level financial metrics, so the AUC test reflects the same averaged predictions that the Sharpe/DSR/PBO results are computed from.
+1. For each (model, split), averages predicted probabilities across all available seeds (5 for every model in the locked configuration). This matches what `stitch_paths` already does for path-level financial metrics, so the AUC test reflects the same averaged predictions that the Sharpe/DSR/PBO results are computed from.
 2. Pools the seed-averaged predictions across all 28 CPCV splits per model. Pooling is valid because CPCV test sets are non-overlapping.
 3. Computes AUC for each model on the pooled data.
 4. Uses the non-parametric covariance estimator (`_delong_covariance`) via placement values (midranks).
@@ -1308,7 +1335,7 @@ All functions operate on `cpcv_results["predictions"]` or `analysis["path_result
 - `collect_bet_sizes(analysis, model) → np.ndarray`: raw bet-size array for a given model, pooled across paths. Convenience helper for histogram plotting.
 
 #### Step 18.d — Reliability curves
-- `compute_reliability_curve(model, results, n_seeds=None, n_splits=None, n_bins=10, min_count=10) → DataFrame`: returns binned `(predicted_mean, empirical_mean, n_samples)` triples ready for plotting as a reliability diagram. `n_seeds` and `n_splits` default to `None`; when not passed, they are read from `results["n_seeds"]` and `results["n_splits"]` so the diagnostic stays in sync with the pipeline configuration without requiring the caller to track those values. Pass explicit integers to override (e.g. for a sensitivity check that pools a subset of seeds). This default change replaced an earlier version where these arguments were hardcoded to `n_seeds=2, n_splits=15`, which silently produced incorrect pooling once the locked configuration moved to `n_seeds=3` and `n_splits=28`. The same default-resolution pattern is used by `pool_predictions` and `calibration_audit` in this module.
+- `compute_reliability_curve(model, results, n_seeds=None, n_splits=None, n_bins=10, min_count=10) → DataFrame`: returns binned `(predicted_mean, empirical_mean, n_samples)` triples ready for plotting as a reliability diagram. `n_seeds` and `n_splits` default to `None`; when not passed, they are read from `results["n_seeds"]` and `results["n_splits"]` so the diagnostic stays in sync with the pipeline configuration without requiring the caller to track those values. Pass explicit integers to override (e.g. for a sensitivity check that pools a subset of seeds). This default change replaced an earlier version where these arguments were hardcoded to `n_seeds=2, n_splits=15`, which silently produced incorrect pooling once the locked configuration moved to `n_seeds=5` and `n_splits=28`. The same default-resolution pattern is used by `pool_predictions` and `calibration_audit` in this module.
 
 **Why a separate module.** `evaluation.py` is the canonical AFML evaluation pipeline (DSR, PBO, DeLong, comparison table). It runs once per CPCV experiment and produces the headline numbers. `diagnostics.py` holds inspection helpers called interactively while writing the thesis. Different lifetimes, different stability requirements; separating them keeps `evaluation.py` focused.
 
