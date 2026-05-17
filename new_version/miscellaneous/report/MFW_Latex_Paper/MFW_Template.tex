@@ -308,7 +308,7 @@ To my family and God.
 %         formula uses six clean primitives (sin, cos, tanh, x\^2, x\^3,
 %         x\^4); the previous configuration's Abs(.) non-
 %         differentiability flag is resolved and all surviving features
-%         have finite gradients at the dataset mean. A lag feature
+%         have finite gradients everywhere. A lag feature
 %         survives extraction for the second consecutive locked
 %         configuration (log\_returns\_lag1 -> log\_returns\_lag6).
 %   - Position the symbolic contribution as the first closed-form
@@ -373,8 +373,10 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 \pagenumbering{arabic}
 
 \begin{center}
-\textbf{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK BY PETR TERLETSKIY} \\
+\textsc{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK}\\
 
+\vspace{0.5cm}
+\textsc{BY PETR TERLETSKIY}\\
 \end{center}
 
 
@@ -456,6 +458,7 @@ Bitcoin (BTC) was presented to the world on October 31, 2008 by Satoshi Nakamoto
 
 Machine Learning (ML) adoption in financial markets has grown exponentially. Unlike classical econometric methods that impose functional forms a priori, ML models are capable of inferring structure directly from the data, which suits the non-linear behaviour of asset returns. However, most ML models, and Neural Networks in particular, operate as black boxes whose internal logic cannot be directly interpreted. Liu et al.\ \citeyearpar{liu_kan_2024} propose Kolmogorov-Arnold Networks (KANs), a Multi-Layer Perceptron (MLP) alternative whose edges carry learnable B-splines that can be distilled into closed-form symbolic functions, offering interpretability that conventional Deep Learning (DL) architectures do not provide. To the author's knowledge, no prior work applies KANs to BTC price direction prediction or extracts symbolic formulas from a classification KAN under the Advances in Financial Machine Learning (AFML) framework \citep{lopez_de_prado_2018}. This gap defines the four research questions of this thesis.
 
+
 \subsection{Problems and Research Questions}\label{subsec:objectives}
 
 % Q1
@@ -482,11 +485,12 @@ This thesis asks where the KAN sits in a six-model cross-section evaluated under
 
 This thesis asks whether a human-readable mathematical expression for the probability of an upward BTC price move (P(Up)) can be extracted from a CPCV-trained KAN while preserving most of its predictive accuracy. It evaluates this by running PyKAN's four-step train-prune-symbolify-tune pipeline on the last CPCV fold and comparing pre- and post-symbolic validation accuracy.
 
+
 \subsection{Contributions}\label{subsec:contributions}
 
 %C1
 
-\textbf{C1.} This thesis applies the complete AFML stack to BTC direction prediction: CUSUM event sampling, triple-barrier labeling, sample weights (uniqueness × return attribution × time decay), fractional differencing, Combinatorial Purged Cross-Validation with purging and embargo, and the Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong AUC tests. The pipeline implements every leakage and multiple-testing correction in a single reproducible workflow.
+\textbf{C1.} This thesis applies the complete AFML stack to BTC direction prediction: CUSUM event sampling, triple-barrier labeling, sample weights combining uniqueness, return attribution, and time decay, fractional differencing, Combinatorial Purged Cross-Validation with purging and embargo, and the Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong AUC tests. The pipeline implements every leakage and multiple-testing correction in a single reproducible workflow.
 
 % C2
 
@@ -494,15 +498,18 @@ This thesis asks whether a human-readable mathematical expression for the probab
 
 % C3
 
-\textbf{C3.} This thesis benchmarks a KAN against five baselines (AR Logistic, Logistic Regression, Random Forest, Extreme Gradient Boosting, Long Short-Term Memory) under identical CPCV splits, identical features, identical sample weights, and identical metrics. Pairwise DeLong AUC tests determine which differences across the six-model cross-section are statistically real.
+\textbf{C3.} This thesis benchmarks a KAN against five baselines (AR Logistic, Logistic Regression, Random Forest, Extreme Gradient Boosting, Long Short-Term Memory) under identical CPCV splits, identical features, identical sample weights, and identical metrics. Pairwise DeLong AUC tests determine which differences across the six-model cross-section are statistically significant.
 
 % C4
 
 \textbf{C4.} This thesis extracts a human-readable mathematical expression for P(Up) from the trained KAN via PyKAN's prune-and-symbolify pipeline. To the author's knowledge, this is the first closed-form classification formula derived from a CPCV-trained KAN in a weak-signal regime, and the primary novel contribution of this work.
 
+
 \subsection{Document Structure}\label{subsec:structure}
 
 Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML methodology. Section 3 details the data and the full empirical pipeline. Section 4 reports the results, Section 5 discusses them, Section 6 concludes, and Section 7 outlines directions for future work.
+
+
 
 % ==================================================================
 % CHAPTER 2: LITERATURE REVIEW
@@ -1316,10 +1323,10 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %
 % Locked-run audit (informational): across all 28 splits the average
 % train size is 858 events, average test size is 292, average purged-
-% per-split is 0.8 observations, and average embargoed-per-split is
-% 17.5 observations. Per-group sample size is 144 for groups 0 to 6
-% and 151 for the remainder group 7. Group date ranges span 2015-08-08
-% (G0) to 2026-04-19 (G7). Zero leakage detected across all 28 splits.
+% per-split is 1.9 observations, and average embargoed-per-split is
+% 16.5 observations. Per-group sample size is 146 events (uniform
+% across all 8 groups). Group date ranges span 2015-08-08 (G0) to
+% 2026-05-02 (G7). Zero leakage detected across all 28 splits.
 %
 % Table suggestion: group boundaries (group ID, positional index range,
 % date range, count). Self-contained caption.
@@ -2347,7 +2354,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %      LBFGS phases does not get past 50\%. The Abs(.) non-
 %      differentiability flag from earlier configurations is resolved:
 %      the formula uses sin, cos, tanh, x\^2, x\^3, and x\^4 as
-%      primitives, all smooth at the dataset mean."
+%      primitives, all smooth everywhere."
 %
 % Roadmap: 4.2 model comparison, 4.3 classification, 4.4 financial,
 % 4.5 stability, 4.6 symbolic.
@@ -3091,38 +3098,40 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     terms" pattern from the previous run does not survive the n=3
 %     input dimensionality of v5.
 %
-% ── Numerical sensitivity at the dataset mean ────────────────────
+% ── Numerical sensitivity at the dataset median ──────────────────
 %
-% Partial derivatives evaluated at the mean of each feature, scaled by
-% the feature's standard deviation, give the per-sigma effect on the
-% decision function (logit). All three surviving features now have
-% finite, well-defined gradients at the dataset mean (the previous
+% Partial derivatives evaluated at the median of each feature, scaled
+% by the feature's standard deviation, give the per-sigma effect on
+% the decision function (logit). All three surviving features now have
+% finite, well-defined gradients at the dataset median (the previous
 % run's natgas Abs-primitive non-differentiability is gone). Locked-run
-% table (paste as a tabular environment in the thesis); values are TBD
-% pending the locked-notebook sensitivity-cell rerun:
+% table (paste as a tabular environment in the thesis):
 %
-%   Feature           | mean | std | d/dx at mean | sigma-effect on logit | sigma Delta\_p (linearised)
-%   eth\_btc\_ratio    | TBD  | TBD | TBD          | TBD                   | TBD
-%   log\_returns\_lag6 | TBD  | TBD | TBD          | TBD                   | TBD
-%   natgas\_ret\_30    | TBD  | TBD | TBD          | TBD                   | TBD
+%   Feature           | median  | std    | d/dx at median | sigma-effect on logit | sigma Delta\_p (linearised)
+%   eth\_btc\_ratio    | +0.0460 | +0.0247| -41.1765       | -0.2805               | -0.0598
+%   log\_returns\_lag6 | -0.0008 | +0.0394| +30.6748       | -0.4608               | -0.0983
+%   natgas\_ret\_30    | +0.0025 | +0.1618| +0.4236        | +0.0838               | +0.0179
 %
-%   - Sensitivity table values are TBD pending the sensitivity
-%     computation cell run in the locked notebook. The symbolic
-%     decision function and its partial derivatives are reported in
-%     the notebook output (Section 6.4 of main.ipynb); the
-%     sigma-scaled effects need to be transcribed once the cell is
-%     rerun with the current locked seed configuration. The
-%     qualitative pattern from the symbolic form: natgas\_ret\_30
-%     enters via tanh and x\^3 (both bounded primitives at the dataset
-%     mean), log\_returns\_lag6 enters via x\^4 and the trigonometric
-%     inner arguments (x\^4 contributes a steep gradient if the inner
-%     argument is far from zero; at the dataset mean log\_returns\_lag6
-%     ~ -0.0005 the x\^4 term contributes a small gradient),
-%     eth\_btc\_ratio enters via the cos inner argument and the tanh
-%     outer wrapper (both bounded and smooth at the dataset mean). The
-%     locked formula is therefore everywhere-differentiable at the
-%     dataset mean; the non-differentiability that previous-run readers
-%     would have had to manage is resolved.
+%   - Reading the sensitivity table. log\_returns\_lag6 carries the
+%     largest per-sigma effect on the logit (-0.4608) and the largest
+%     per-sigma linearised probability shift (-0.0983), driven by the
+%     quartic primitive in the first outer term. eth\_btc\_ratio is
+%     second (-0.2805 / -0.0598) and contributes via the cos inner
+%     argument and the tanh outer wrapper. natgas\_ret\_30 carries the
+%     smallest per-sigma effect (+0.0838 / +0.0179) despite appearing
+%     in all four outer terms; the bounded tanh and x\^3 primitives
+%     saturate near the dataset median, attenuating its marginal
+%     contribution. The qualitative pattern from the symbolic form:
+%     natgas\_ret\_30 enters via tanh and x\^3 (both bounded primitives
+%     at the dataset median), log\_returns\_lag6 enters via x\^4 and
+%     the trigonometric inner arguments (x\^4 contributes a steep
+%     gradient if the inner argument is far from zero; at the dataset
+%     median log\_returns\_lag6 ~ -0.0008 the x\^4 term contributes a
+%     small gradient), eth\_btc\_ratio enters via the cos inner
+%     argument and the tanh outer wrapper (both bounded and smooth at
+%     the dataset median). The locked formula is everywhere-
+%     differentiable; the non-differentiability that previous-run
+%     readers would have had to manage is resolved.
 %   - Scale check. All three surviving features have interpretable
 %     scales. eth\_btc\_ratio is bounded above by the historical
 %     maximum (~0.13 in this sample); log\_returns\_lag6 is a 6-day log
@@ -3182,7 +3191,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %      0.4815 < 0.5693), and the pre-prune gate also fails. The Abs(.)
 %      non-differentiability flag from the previous configuration is
 %      resolved: with |.| no longer in the primitive set, no surviving
-%      feature posts an undefined gradient at the dataset mean. RQ4
+%      feature posts an undefined gradient anywhere. RQ4
 %      conclusion: closed-form interpretability is achievable (100\%
 %      symbolification rate, clean primitives, finite gradients
 %      everywhere), but the locked-run model on the deployment fold
@@ -3584,23 +3593,30 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     methodology rather than about the underlying BTC direction
 %     process: the formula's functional signature is regime- and
 %     configuration-conditional, not stable.
-%   - Numerical sensitivity at the dataset mean. All three surviving
+%   - Numerical sensitivity at the dataset median. All three surviving
 %     features have finite, well-defined gradients at the dataset
-%     mean (the previous run's natgas Abs-primitive non-
-%     differentiability is gone). The sensitivity table values are
-%     TBD pending the locked-notebook sensitivity-cell rerun (see
-%     Section 4.6 numerical sensitivity bullet). The qualitative
-%     pattern from the symbolic form: natgas\_ret\_30 enters via tanh
-%     and x\^3 (both bounded at the dataset mean), log\_returns\_lag6
-%     enters via x\^4 and the trigonometric inner arguments (x\^4
-%     contributes a steep gradient if the inner argument is far from
-%     zero; at the dataset mean log\_returns\_lag6 ~ -0.0005 the x\^4
-%     term contributes a small gradient), eth\_btc\_ratio enters via
-%     the cos inner argument and the tanh outer wrapper (both bounded
-%     and smooth at the dataset mean). The locked formula is therefore
-%     everywhere-differentiable at the dataset mean; the non-
-%     differentiability that previous-run readers would have had to
-%     manage is resolved.
+%     median (the previous run's natgas Abs-primitive non-
+%     differentiability is gone). From the locked-notebook sensitivity
+%     table (Section 4.6): log\_returns\_lag6 carries the largest
+%     per-sigma effect (sigma-effect on logit -0.4608, sigma Delta\_p
+%     -0.0983), driven by the x\^4 primitive in the first outer term;
+%     eth\_btc\_ratio is second (sigma-effect -0.2805, sigma Delta\_p
+%     -0.0598), entering via the cos inner argument and the tanh outer
+%     wrapper; natgas\_ret\_30 carries the smallest per-sigma effect
+%     (sigma-effect +0.0838, sigma Delta\_p +0.0179), with the bounded
+%     tanh and x\^3 primitives saturating near the dataset median
+%     despite the feature appearing in all four outer terms. The
+%     qualitative pattern from the symbolic form: natgas\_ret\_30
+%     enters via tanh and x\^3 (both bounded at the dataset median),
+%     log\_returns\_lag6 enters via x\^4 and the trigonometric inner
+%     arguments (x\^4 contributes a steep gradient if the inner
+%     argument is far from zero; at the dataset median
+%     log\_returns\_lag6 ~ -0.0008 the x\^4 term contributes a small
+%     gradient), eth\_btc\_ratio enters via the cos inner argument and
+%     the tanh outer wrapper (both bounded and smooth at the dataset
+%     median). The locked formula is everywhere-differentiable; the
+%     non-differentiability that previous-run readers would have had
+%     to manage is resolved.
 %   - The on-chain finding hardens further across configurations. No
 %     on-chain feature survives extraction in any of the three
 %     73-feature locked configurations. The previous 62-feature
@@ -3688,7 +3704,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %         x\^3, x\^4) is entirely differentiable. The previous run's
 %         |.| primitive that introduced the SymPy re/im decomposition
 %         issue at the dataset mean is no longer in the surviving
-%         formula. Sensitivity at the dataset mean is now finite for
+%         formula. Sensitivity at the dataset median is now finite for
 %         every surviving feature.
 %       * Architectural parity has been resolved. The single-hidden-
 %         layer / width1 <= 6 configuration matches the CPCV-
