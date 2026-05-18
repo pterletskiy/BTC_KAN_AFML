@@ -129,7 +129,7 @@
 \makeglossaries
 
 % ── Acronyms ──────────────────────────────────────────────────────────
-% AFML \& Methodology
+% AFML & Methodology
 \newacronym{afml}{AFML}{Advances in Financial Machine Learning}
 \newacronym{tbl}{TBL}{Triple Barrier Labeling}
 \newacronym{cusum}{CUSUM}{Cumulative Sum}
@@ -137,9 +137,12 @@
 \newacronym{cpcv}{CPCV}{Combinatorial Purged Cross-Validation}
 \newacronym{dsr}{DSR}{Deflated Sharpe Ratio}
 \newacronym{pbo}{PBO}{Probability of Backtest Overfitting}
+\newacronym{auc}{AUC}{Area Under the Curve}
+\newacronym{isoos}{IS/OOS}{In-Sample / Out-of-Sample}
 \newacronym{mda}{MDA}{Mean Decrease Accuracy}
-
-% Models
+% ML & Models
+\newacronym{ml}{ML}{Machine Learning}
+\newacronym{dl}{DL}{Deep Learning}
 \newacronym{kan}{KAN}{Kolmogorov-Arnold Network}
 \newacronym{lstm}{LSTM}{Long Short-Term Memory}
 \newacronym{rf}{RF}{Random Forest}
@@ -147,7 +150,6 @@
 \newacronym{lr}{LR}{Logistic Regression}
 \newacronym{ar}{AR}{Autoregressive}
 \newacronym{mlp}{MLP}{Multi-Layer Perceptron}
-
 % Technical
 \newacronym{btc}{BTC}{Bitcoin}
 \newacronym{ohlcv}{OHLCV}{Open-High-Low-Close-Volume}
@@ -163,8 +165,7 @@
 \newacronym{vix}{VIX}{CBOE Volatility Index}
 \newacronym{mvrv}{MVRV}{Market Value to Realized Value}
 \newacronym{sadf}{SADF}{Supremum Augmented Dickey-Fuller}
-
-% Financial
+% Academic & Financial
 \newacronym{mfw}{MFW}{Master's Final Work}
 \newacronym{jel}{JEL}{Journal of Economic Literature}
 \newacronym{emh}{EMH}{Efficient Market Hypothesis}
@@ -373,10 +374,7 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 \pagenumbering{arabic}
 
 \begin{center}
-\textsc{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK}\\
-
-\vspace{0.5cm}
-\textsc{BY PETR TERLETSKIY}\\
+\textsc{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK BY PETR TERLETSKIY}
 \end{center}
 
 
@@ -385,78 +383,22 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 % ==================================================================
 \section{Introduction}\label{sec:introduction}
 
-% Target: max 20\% of textual part (~7 pages for 35-page MFW).
-% Cochrane: "Start with your central contribution."
-% Thatcher R1: "First 1-2 sentences state a clear, field-relevant claim."
-% No subsection number for the opening paragraphs.
-%
-% ── OPENING PARAGRAPHS (before any subsection) ───────────────────
-%
-% Three sentences, in order:
-%   - This thesis applies KANs to BTC daily direction prediction within the
-%     full AFML framework (CUSUM + TBL + FFD + sample weights + CPCV +
-%     DSR + PBO + DeLong).
-%   - It benchmarks KAN against five models (AR Logistic, LR, RF, XGBoost,
-%     LSTM) under CPCV with N=8, k=2, 28 splits, and 7 backtest paths;
-%     the locked configuration uses 5 seeds across all six models,
-%     producing 840 prediction entries.
-%   - The novel deliverable is a closed-form symbolic decision function
-%     extracted from the trained KAN.
-%
-% Telegraph the headline findings immediately (T-R1, T-R3) using the
-% locked-run v6 numbers:
-%   - No model achieves DSR >= 0.95 (top DSR among trained models =
-%     0.2470, KAN). Buy-and-hold posts a higher median Sharpe (2.2722)
-%     than every trained model but is excluded from DSR since it does
-%     not enter the selection pool.
-%   - PBO = 0.657 sits in the adversarial regime (23 of 35 IS/OOS
-%     partitions); the IS-best is the OOS-loser in nearly two of three
-%     partitions. 6 of 7 bootstrap 95\% CIs cross zero; only
-%     buy-and-hold's CI (1.8903, 2.4685) stays strictly positive.
-%     The previous run's KAN strict-positive CI (0.0971, 1.2413) does
-%     NOT reproduce under uniform 5-seed evaluation; KAN's CI is now
-%     (-0.4677, 1.1607). Leave-one-out PBO shows Random Forest is the
-%     PBO-anchor (Delta +0.000), while every other model's exclusion
-%     reduces PBO (logistic -0.286, ar\_logistic -0.200, lstm -0.200,
-%     xgboost -0.114, kan -0.114). Random Forest sits low enough in
-%     the IS ranking to be PBO-neutral; Logistic Regression is the
-%     largest destabiliser.
-%   - DeLong: 2 of 15 pairwise AUC tests reach alpha=0.05 (AR Logistic
-%     vs XGBoost p=0.0427, Random Forest vs XGBoost p=0.0318), both
-%     with XGBoost as the lower-AUC half. The first locked
-%     configuration with any DeLong-significant pair; the 5-seed
-%     averaging reduces the noise floor enough for the largest AUC
-%     gaps to clear.
-%   - The symbolic extraction pipeline succeeds with 100\% symbolification
-%     rate (15 of 15 edges, no skips); three features survive
-%     (eth\_btc\_ratio, log\_returns\_lag6, natgas\_ret\_30);
-%     post-symbolic accuracy 51.85\% (a 5.18 pp gain over pre-symbolic
-%     46.67\%, but both numbers sit at or below the 50\% baseline).
-%     The symbolic-extraction outputs are identical to the previous
-%     3-seed run (PyKAN retrained with fixed seed on same training
-%     fold). The formula uses six clean primitives (sin, cos, tanh,
-%     x\^2, x\^3, x\^4); the previous configuration's Abs(.)
-%     non-differentiability flag is resolved. A lag feature survives
-%     extraction for the second consecutive locked configuration
-%     (log\_returns\_lag6 displaces the previous run's
-%     log\_returns\_lag1). The Phase-1 dynamic gate (max(0.53,
-%     base\_rate + 0.01) = 0.5693) fails at val\_acc 0.4815; the
-%     pre-prune gate also fails, and recovery in the LBFGS phases
-%     does not push validation accuracy above the 50\% baseline.
-%
-% KAN reference here is one sentence only. No theorem, no splines, no
-% architecture details. Save those for Section 2.1.
+This thesis applies a Kolmogorov-Arnold Network (KAN) to Bitcoin (BTC) price direction prediction within the full Advances in Financial Machine Learning (AFML) framework of \citet{lopez_de_prado_2018}. On the data side, the framework uses Cumulative Sum (CUSUM) event sampling, triple-barrier labeling (TBL), fractional differencing (FFD), and sample weighting. On the evaluation side, it uses Combinatorial Purged Cross-Validation (CPCV), the Deflated Sharpe Ratio (DSR), the Probability of Backtest Overfitting (PBO), and pairwise DeLong Area Under the Curve (AUC) tests. The KAN is benchmarked against five baselines: Autoregressive (AR) Logistic, Logistic Regression (LR), Random Forest (RF), Extreme Gradient Boosting (XGBoost), and Long Short-Term Memory (LSTM). All six models run under identical CPCV splits with $N=8$ groups, $k=2$ test groups per split, 28 splits, and 7 backtest paths. The locked configuration uses 5 seeds across all six models, producing 840 prediction entries. The novel deliverable is a closed-form symbolic decision function for the probability of an upward move, $P(\textup{Up})$, extracted from the trained KAN.
+
+Under leakage-free evaluation with multiple-testing correction, no model achieves $\textup{DSR} \geq 0.95$. The top DSR among trained models is 0.2470 (KAN). Buy-and-hold posts a higher median Sharpe (2.2722) than every trained model, though it is excluded from the DSR computation because it does not enter the selection pool. PBO sits in the adversarial regime at 0.657. The in-sample best model underperforms the out-of-sample median in 23 of the 35 IS/OOS partitions, so model selection across this six-model cross-section is actively misleading in nearly two of three sub-path partitions. Of the 7 bootstrap 95\% confidence intervals on the median Sharpe, 6 cross zero. Only buy-and-hold's interval, $(1.8903, 2.4685)$, stays strictly positive. The KAN interval is $(-0.4677, 1.1607)$. Leave-one-out PBO identifies Random Forest as the anchor model ($\Delta = 0.000$). Every other model's exclusion reduces PBO, with Logistic Regression the largest destabiliser ($\Delta = -0.286$, returning the cross-section to the moderate-overfitting band). Two of the 15 pairwise DeLong AUC tests reach $\alpha = 0.05$: AR Logistic versus XGBoost ($p = 0.0427$) and Random Forest versus XGBoost ($p = 0.0318$), both with XGBoost on the lower-AUC side.
+
+The symbolic extraction pipeline succeeds. All 15 edges symbolify cleanly, giving a 100\% symbolification rate. Three features survive: \texttt{eth\_btc\_ratio}, \texttt{log\_returns\_lag6}, and \texttt{natgas\_ret\_30}. Post-symbolic validation accuracy is 51.85\%, a 5.18 percentage-point gain over the pre-symbolic 46.67\%. However, both numbers sit well below the 56.85\% majority baseline and close to the 50\% baseline. The closed-form expression combines six primitives, $\sin$, $\cos$, $\tanh$, $x^2$, $x^3$, and $x^4$, all everywhere differentiable on the standardised feature support. The PyKAN model itself fails its Phase-1 dynamic accuracy gate ($\max(0.53,\,\textup{base\_rate} + 0.01) = 0.5693$) at validation accuracy 0.4815, and the pre-prune gate also fails. The closed-form formula therefore faithfully captures a model that did not extract directional signal on the deployment fold.
 
 
 \subsection{Research Context and Motivation}\label{subsec:context}
 
 % Why BTC
 
-Bitcoin (BTC) was presented to the world on October 31, 2008 by Satoshi Nakamoto. Since its first transaction on January 12, 2009, BTC has produced one of the highest cumulative returns of any major asset, and it gave birth to the cryptocurrency asset class. It is today the largest cryptocurrency by market capitalization. Unlike traditional asset classes, BTC trades 365 days a year, 24/7 on a transparent and publicly auditable blockchain, exposing on-chain activity that has no equivalent in equity or fixed-income markets.
+Bitcoin was presented to the world on October 31, 2008 by Satoshi Nakamoto. Since its first transaction on January 12, 2009, BTC has produced one of the highest cumulative returns of any major asset, and it gave birth to the cryptocurrency asset class. It is today the largest cryptocurrency by market capitalization. Unlike traditional asset classes, BTC trades 365 days a year, 24/7 on a transparent and publicly auditable blockchain, exposing on-chain activity that has no equivalent in equity or fixed-income markets.
 
 % Why KANs
 
-Machine Learning (ML) adoption in financial markets has grown exponentially. Unlike classical econometric methods that impose functional forms a priori, ML models are capable of inferring structure directly from the data, which suits the non-linear behaviour of asset returns. However, most ML models, and Neural Networks in particular, operate as black boxes whose internal logic cannot be directly interpreted. Liu et al.\ \citeyearpar{liu_kan_2024} propose Kolmogorov-Arnold Networks (KANs), a Multi-Layer Perceptron (MLP) alternative whose edges carry learnable B-splines that can be distilled into closed-form symbolic functions, offering interpretability that conventional Deep Learning (DL) architectures do not provide. To the author's knowledge, no prior work applies KANs to BTC price direction prediction or extracts symbolic formulas from a classification KAN under the Advances in Financial Machine Learning (AFML) framework \citep{lopez_de_prado_2018}. This gap defines the four research questions of this thesis.
+Machine Learning (ML) adoption in financial markets has grown exponentially. Unlike classical econometric methods that impose functional forms a priori, ML models are capable of inferring structure directly from the data, which suits the non-linear behaviour of asset returns. However, most ML models, and Neural Networks in particular, operate as black boxes whose internal logic cannot be directly interpreted. Liu et al.\ \citeyearpar{liu_kan_2024} propose KANs, a Multi-Layer Perceptron (MLP) alternative whose edges carry learnable B-splines that can be distilled into closed-form symbolic functions, offering interpretability that conventional Deep Learning (DL) architectures do not provide. To the author's knowledge, no prior work applies KANs to BTC price direction prediction or extracts symbolic formulas from a classification KAN under the AFML framework \citep{lopez_de_prado_2018}. This gap defines the four research questions of this thesis.
 
 
 \subsection{Problems and Research Questions}\label{subsec:objectives}
@@ -465,50 +407,49 @@ Machine Learning (ML) adoption in financial markets has grown exponentially. Unl
 
 \textbf{Q1.} Many recent BTC ML studies report daily-direction accuracies of 85 to 95 percent \citep{omole_enke_2024}. These results come from traditional ML pipelines, which rely on fixed-horizon labels, overlapping label spans, and train-test splits that do not purge concurrent observations or apply an embargo across fold boundaries. Under these conditions, training labels can carry information about test-period prices and the high reported accuracies may be inflated by an unknown margin.
 
-This thesis asks whether BTC price direction remains predictable once labels and features stop leaking the future and overlapping observations are weighted properly. It evaluates the claim against three tests on a six-model cross-section: the Deflated Sharpe Ratio (DSR), the Probability of Backtest Overfitting (PBO), and pairwise DeLong Area Under the Curve (AUC) comparisons.
+This thesis asks whether BTC price direction remains predictable once labels and features stop leaking the future and overlapping observations are weighted properly. It evaluates the claim against three tests on a six-model cross-section: the DSR, the PBO, and pairwise DeLong AUC comparisons.
 
 % Q2
 
 \textbf{Q2.} Most cryptocurrency ML studies rely on one or two feature families, typically technical indicators or price histories fed into neural networks and other ML models \citep{bourday_crypto_dl_2024}. There is no consensus on whether macroeconomic, crypto-macro, or on-chain features add information beyond price-derived inputs. Without a uniform evaluation across families, the question of which families actually carry signal remains unanswered.
 
-This thesis asks which feature families carry signal under a leakage-free evaluation, and whether on-chain features deliver the "free lunch" over price-derived inputs. It answers both by recording per-family selection frequencies from multi-model permutation importance across the 28 Combinatorial Purged Cross-Validation (CPCV) folds, covering technical, mathematical, macroeconomic, crypto-macro, on-chain, and autoregressive lag inputs.
+This thesis asks which feature families carry signal under a leakage-free evaluation, and whether on-chain features deliver the "free lunch" over price-derived inputs. It answers both by recording per-family selection frequencies from multi-model permutation importance across the 28 CPCV folds, covering technical, mathematical, macroeconomic, crypto-macro, on-chain, and autoregressive lag inputs.
 
 % Q3
 
 \textbf{Q3.} KANs have been applied to VIX forecasting \citep{cho_lee_kim_2025}, stock prediction \citep{oad_kasper_2025}, and cryptocurrency regression \citep{gao_decokan_2025}, but never to BTC direction classification. KANs' position relative to econometric, linear, tree-based, and deep-learning baselines is unknown. Whether the predictive strengths reported in other financial time-series tasks carry over to BTC direction under a uniform protocol is therefore untested.
 
-This thesis asks where the KAN sits in a six-model cross-section evaluated under identical CPCV splits, features, sample weights, and metrics. The five baselines span four families: econometric (AR Logistic), linear ML (Logistic Regression), tree-based (Random Forest, Extreme Gradient Boosting), and recurrent deep learning (Long Short-Term Memory).
+This thesis asks where the KAN sits in a six-model cross-section evaluated under identical CPCV splits, features, sample weights, and metrics. The five baselines span four families: econometric (AR Logistic), linear ML (LR), tree-based (RF, XGBoost), and recurrent deep learning (LSTM).
 
 % Q4
 
 \textbf{Q4.} Existing KAN symbolic-extraction work in finance targets regression problems on relatively predictable series, such as VIX forecasting \citep{cho_lee_kim_2025}, stock prediction \citep{oad_kasper_2025}, and cryptocurrency price modelling \citep{gao_decokan_2025}. No published work, to the author's knowledge, has extracted a closed-form classification formula from a CPCV-trained KAN in a weak-signal regime. Whether this pipeline carries over from regression on predictable series to classification under leakage-free evaluation is therefore untested.
 
-This thesis asks whether a human-readable mathematical expression for the probability of an upward BTC price move (P(Up)) can be extracted from a CPCV-trained KAN while preserving most of its predictive accuracy. It evaluates this by running PyKAN's four-step train-prune-symbolify-tune pipeline on the last CPCV fold and comparing pre- and post-symbolic validation accuracy.
+This thesis asks whether a human-readable mathematical expression for the probability of an upward BTC price move, $P(\textup{Up})$, can be extracted from a CPCV-trained KAN while preserving most of its predictive accuracy. It evaluates this by running PyKAN's four-step train-prune-symbolify-tune pipeline on the last CPCV fold and comparing pre- and post-symbolic validation accuracy.
 
 
 \subsection{Contributions}\label{subsec:contributions}
 
-%C1
+% C1
 
-\textbf{C1.} This thesis applies the complete AFML stack to BTC direction prediction: CUSUM event sampling, triple-barrier labeling, sample weights combining uniqueness, return attribution, and time decay, fractional differencing, Combinatorial Purged Cross-Validation with purging and embargo, and the Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong AUC tests. The pipeline implements every leakage and multiple-testing correction in a single reproducible workflow.
+\textbf{C1.} This thesis applies the complete AFML stack to BTC direction prediction. Data preparation uses CUSUM event sampling, triple-barrier labeling, fractional differencing, and sample weights that combine uniqueness, return attribution, and time decay. Evaluation uses CPCV with purging and embargo, the DSR, the PBO, and pairwise DeLong AUC tests. Every leakage and multiple-testing correction is implemented in a single reproducible workflow.
 
 % C2
 
-\textbf{C2.} This thesis assembles a 73-feature universe spanning four families: 25 technical, 9 statistical (AFML Part 4), 29 external (20 macroeconomic, 1 crypto-macro, 8 on-chain from CoinMetrics), and 10 autoregressive lag features. All 73 features compete in multi-model permutation importance selection across the 28 CPCV folds, with no family privileged a priori.
+\textbf{C2.} This thesis assembles a 73-feature universe spanning four families: 25 technical, 9 statistical (AFML Part 4), 29 external (20 macroeconomic, 1 crypto-macro, and 8 on-chain from CoinMetrics), and 10 autoregressive lag features. All 73 features compete in multi-model permutation importance selection across the 28 CPCV folds. No family is privileged a priori.
 
 % C3
 
-\textbf{C3.} This thesis benchmarks a KAN against five baselines (AR Logistic, Logistic Regression, Random Forest, Extreme Gradient Boosting, Long Short-Term Memory) under identical CPCV splits, identical features, identical sample weights, and identical metrics. Pairwise DeLong AUC tests determine which differences across the six-model cross-section are statistically significant.
+\textbf{C3.} This thesis benchmarks a KAN against five baselines: AR Logistic, LR, RF, XGBoost, and LSTM. All six models run under identical CPCV splits, identical features, identical sample weights, and identical metrics. Pairwise DeLong AUC tests determine which differences across the six-model cross-section are statistically significant.
 
 % C4
 
-\textbf{C4.} This thesis extracts a human-readable mathematical expression for P(Up) from the trained KAN via PyKAN's prune-and-symbolify pipeline. To the author's knowledge, this is the first closed-form classification formula derived from a CPCV-trained KAN in a weak-signal regime, and the primary novel contribution of this work.
+\textbf{C4.} This thesis extracts a human-readable mathematical expression for $P(\textup{Up})$ from the trained KAN, using PyKAN's prune-and-symbolify pipeline. To the author's knowledge, this is the first closed-form classification formula derived from a CPCV-trained KAN in a weak-signal regime. It is the primary novel contribution of this work.
 
 
-\subsection{Document Structure}\label{subsec:structure}
+\subsection{Thesis Outline}\label{subsec:structure}
 
 Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML methodology. Section 3 details the data and the full empirical pipeline. Section 4 reports the results, Section 5 discusses them, Section 6 concludes, and Section 7 outlines directions for future work.
-
 
 
 % ==================================================================
@@ -3803,15 +3744,16 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 
 
 % ==================================================================
-% CHAPTER 6: CONCLUSION
+% CHAPTER 6: CONCLUSION AND FUTURE WORK
 % ==================================================================
 \newpage
-\section{Conclusion}\label{sec:conclusion}
+\section{Conclusion and Future Work}
 
 % Cochrane: do not restate all findings. T-R16: end with resonance, not
-% a hedge. Target <= 10\% of the textual part (~3.5 pages).
+% a hedge. Target <= 10\% of the textual part (~3.5 pages including
+% the future-work block).
 %
-% Suggested four-paragraph structure:
+% Suggested five-block structure:
 %
 %   - One paragraph stating the contribution: this thesis applies the
 %     complete AFML pipeline (CUSUM, TBL, FFD, sample weights, CPCV,
@@ -3911,6 +3853,31 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     rate, six clean primitives, finite gradients everywhere, and a
 %     closed-form formula on three economically interpretable features
 %     are themselves the contribution.
+%   - One paragraph (or compact bullet list) on future work.
+%     Cochrane: do not write your grant application here. Concrete,
+%     actionable directions only.
+%       - MultKAN (KAN 2.0) on the last fold. Multiplication nodes
+%         enable discovery of multiplicative interactions. Same
+%         symbolic pipeline. Cite: \cite{liu_kan2_2024}.
+%       - Higher-frequency data. Hourly bars would multiply CUSUM
+%         events approximately 24 times and unlock microstructure
+%         features. Pipeline timeframe-agnostic.
+%       - Per-fold symbolic extraction. Count which features and
+%         primitives recur across all 28 folds to distinguish
+%         structural signal from one-off noise.
+%       - Regime-conditional analysis. Decompose Sharpe by regime
+%         (approximately 5 distinct regimes 2014 to 2026).
+%       - Meta-labeling layer. A second classifier on the best primary
+%         classifier's output, trained to predict whether to take the
+%         trade (AFML Ch. 3). Singh and Joubert (2019) provide
+%         empirical evidence that meta-labeling improves signal
+%         efficacy across asset classes; applying it on top of this
+%         thesis's calibrated probabilities is the natural next layer.
+%         Cite: \cite{singh_joubert_2019}.
+%       - Alternative assets. ETH, gold for symbolic-formula
+%         comparison (different on-chain availability).
+%       - Walk-forward vs. CPCV. Compare conclusions under both
+%         protocols.
 %   - One closing sentence with resonance. T-R16 example template:
 %     "X is not a constraint, but a catalyst, for Y." Adapt for this
 %     thesis: "Methodological honesty is not a constraint on financial
@@ -3918,40 +3885,6 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     interpretability as a contribution in its own right, and for
 %     reading buy-and-hold's dominance over every trained model as a
 %     result rather than a failure."
-
-
-
-% ==================================================================
-% CHAPTER 7: FUTURE WORK
-% ==================================================================
-\newpage
-\section{Future Work}\label{sec:future}
-
-% Cochrane: do not write your grant application here. Concrete,
-% actionable directions only.
-%
-% Topics:
-%   - MultKAN (KAN 2.0) on the last fold. Multiplication nodes enable
-%     discovery of multiplicative interactions. Same symbolic pipeline.
-%     Cite: \cite{liu_kan2_2024}.
-%   - Higher-frequency data. Hourly bars would multiply CUSUM events
-%     approximately 24 times and unlock microstructure features.
-%     Pipeline timeframe-agnostic.
-%   - Per-fold symbolic extraction. Count which features and primitives
-%     recur across all 28 folds to distinguish structural signal from
-%     one-off noise.
-%   - Regime-conditional analysis. Decompose Sharpe by regime
-%     (approximately 5 distinct regimes 2014 to 2026).
-%   - Meta-labeling layer. A second classifier on the best primary
-%     classifier's output, trained to predict whether to take the trade
-%     (AFML Ch. 3). Singh and Joubert (2019) provide empirical evidence
-%     that meta-labeling improves signal efficacy across asset classes;
-%     applying it on top of this thesis's calibrated probabilities is
-%     the natural next layer. Cite: \cite{singh_joubert_2019}.
-%   - Alternative assets. ETH, gold for symbolic-formula comparison
-%     (different on-chain availability).
-%   - Walk-forward vs. CPCV. Compare conclusions under both protocols.
-
 
 
 % =============================================
