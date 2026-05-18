@@ -142,7 +142,7 @@ Can a forecasting framework combining Discrete Wavelet Transform (DWT) with Kolm
 - DecoKAN demonstrated highly efficient theoretical computation (e.g., 0.0073 GFLOPs at T=96) and competitive inference speeds, despite requiring longer training times due to unoptimized B-spline operations.
 
 ## 5. Relevant direct quotations (max 3)
-- "To overcome these limitations, we propose DecoKAN, an interpretable forecasting framework that integrates multi-level Discrete Wavelet Transform (DWT) for decoupling ing and hierarchical signal decomposition with Kolmogorov-Arnold Network (KAN) mixers for transparent and interpretable nonlinear modeling." (p. 1)
+- "To overcome these limitations, we propose DecoKAN, an interpretable forecasting framework that integrates multi-level Discrete Wavelet Transform (DWT) for decoupling and hierarchical signal decomposition with Kolmogorov-Arnold Network (KAN) mixers for transparent and interpretable nonlinear modeling." (p. 1)
 - "Unlike traditional time series (e.g., electricity load) dominated by strong temporal autocorrelation, cryptocurrency prices are often driven by high-frequency shocks and the instantaneous interplay between system variables... Consequently, the performance of DecoKAN here relies predominantly on the Feature KAN component's ability to capture these complex cross-variate dependencies..." (p. 9)
 - "Interpretability analysis revealed a functional separation within the model: the Detail Branch captures explicit symbolic relations for high-frequency fluctuations, while the Approximation Branch acts as a robust structural backbone for the forecasting task." (p. 11)
 
