@@ -1,116 +1,384 @@
-# Article record: Review of Deep Learning Models for Crypto Price Prediction: Implementation and Evaluation
-
-## Metadata
-- **BibTeX key**: wu_crypto_dl_review_2024
-- **Authors**: Jingyang Wu, Xinyi Zhang, Fangyixuan Huang, Haochen Zhou, and Rohtiash Chandra
-- **Year**: 2024
-- **Title**: Review of Deep Learning Models for Crypto Price Prediction: Implementation and Evaluation
-- **Journal/Publication**: arXiv preprint arXiv:2405.11431
-- **DOI/URL**: https://arxiv.org/abs/2405.11431
-- **Keywords from article**: cryptocurrency, deep learning, time series prediciton
-
-## 1. Study objective(s)
-To comprehensively review the literature on deep learning for cryptocurrency forecasting and to empirically evaluate novel deep learning models (variants of LSTM, CNN, and Transformer) for multi-step ahead cryptocurrency price prediction. The study specifically aims to compare univariate and multivariate approaches and to investigate the impact of the COVID-19 pandemic's extreme market volatility on prediction accuracy.
-
-## 2. Research question / Hypothesis
-Which deep learning architectures (LSTM variants, CNNs, or Transformers) provide the best multi-step ahead prediction accuracy for highly volatile cryptocurrency prices? Furthermore, how do multivariate models (incorporating external features like gold and correlated cryptos) compare to univariate models, and how does the high volatility induced by the COVID-19 pandemic impact the models' predictive capabilities?
-
-## 3. Methodology
-- **Study design**: Literature review combined with a comparative experimental, quantitative evaluation of deep learning models for time-series forecasting.
-- **Sample / corpus**: Daily historical data for four cryptocurrencies: Bitcoin (BTC), Ethereum (ETH), Dogecoin (DOGE), and Litecoin (LTC). External data included the daily stock price of Gold from the London Bullion Market (LBMA). Data spans from 2013/2015 to April 2024, yielding up to 3,991 daily observations per asset.
-- **Instruments / materials**: Six deep learning models: LSTM, Bidirectional LSTM (BD-LSTM), Encoder-Decoder LSTM (ED-LSTM), Convolutional LSTM (Conv-LSTM), CNN, and Transformer. Baseline models included Multilayer Perceptron (MLP) and ARIMA. Optimization was performed using the Adam optimizer, and data was normalized using a Min-Max scaler.
-- **Procedures**:
-  1. Data extraction and pre-processing, including linear interpolation to fill missing gold prices on weekends/holidays, and min-max scaling.
-  2. Data splitting into two distinct experimental sets: Dataset 1 (training on pre-COVID-19 data) and Dataset 2 (training on data including the COVID-19 period), split using a 70:30 train-test ratio.
-  3. Hyperparameter selection based on literature, trial runs, and minimum RMSE on the training set (optimizing hidden units, learning rates, etc.).
-  4. Pre-experiment data analysis, specifically calculating the monthly volatility of the target assets and mapping feature correlations using Pearson coefficients.
-  5. Experiment 1: Evaluating the models on Dataset 1, comparing Univariate and standard Multivariate strategies.
-  6. Experiment 2: Evaluating the models on Dataset 2 using the Univariate and an enhanced "Multivariate*" strategy (which adds the price of the most highly correlated alternative cryptocurrency) to test robustness against COVID-19 volatility.
-- **Data analysis**: Root Mean Square Error (RMSE) used as the primary performance criterion. Models were run 30 independent times to compute the mean RMSE and 95% confidence intervals for multi-step prediction horizons (1 to 5 days ahead). Pearson correlation was utilized for feature selection.
-
-## 4. Main results (only facts from the article)
-- The Convolutional LSTM (Conv-LSTM) model utilizing the enhanced multivariate strategy consistently provided the best prediction accuracy across both pre-COVID-19 and COVID-19 experimental settings.
-- Multivariate deep learning models exhibited notably better performance and stability in forecasting the four cryptocurrencies when compared to univariate models.
-- The enhanced "Multivariate*" strategy, which included the crypto's open, high, low, close prices, Gold prices, and the close price of the most correlated alternative cryptocurrency (e.g., adding Ethereum data when predicting Bitcoin), significantly outperformed standard univariate and multivariate baselines.
-- Prediction accuracy for all models naturally deteriorated (RMSE increased) as the multi-step prediction horizon expanded from 1 day to 5 days ahead.
-- Training models on the COVID-19 dataset (Experiment 2) resulted in worse overall accuracy (e.g., BTC test mean RMSE dropped from ~0.02 to ~0.03) compared to pre-COVID-19 data, proving that high historical volatility weakens prediction precision.
-- Dogecoin yielded the worst prediction accuracy (highest RMSE) among the four assets, heavily attributed to its extreme and sudden price fluctuations driven by social media rather than steady market trends.
-- The Transformer model delivered surprisingly unsatisfactory results (ranking lowest or second lowest in many tests), which the researchers attributed to the lack of sufficient training data size required for attention-heavy models.
-
-## 5. Relevant direct quotations (max 3)
-- "Our results show that the convolutional LSTM with a multivariate approach provides the best prediction accuracy in two major experimental settings." (p. 1)
-- "Our findings indicate that combining the closing prices of the highest-correlated cryptocurrencies into the multivariate model leads to a significant enhancement in the model's accuracy in forecasting." (p. 30)
-- "Our experimental results show that utilising a training data set with high volatility weakens the precision of our predictions." (p. 30)
-
-## 6. Authors' conclusions
-The authors conclude that deep learning methodologies, particularly the Convolutional LSTM architecture, are highly effective tools for cryptocurrency time-series forecasting, significantly outperforming traditional statistical models like ARIMA and standard MLPs. They assert that relying purely on univariate historical data is insufficient for this asset class; instead, multi-step predictions are drastically improved by adopting a multivariate strategy that incorporates external, highly correlated features, specifically the price of gold and closely related cryptocurrencies. Ultimately, they conclude that while deep learning captures the complex, non-linear dynamics of crypto markets well, extreme market disruptions (such as the COVID-19 pandemic) introduce levels of volatility that inherently degrade the predictive capabilities and robustness of all tested models.
-
-## 7. Limitations acknowledged by the authors
-- Lack of uncertainty quantification in the point-forecasts, which could be remedied in the future by adopting Bayesian deep learning methods (like MCMC sampling or variational inference).
-- The study relied exclusively on unimodal (numerical time-series) data. It did not capture qualitative market drivers such as news media sentiment or social media text, which heavily influence cryptocurrency markets.
-- The limited size of the available historical dataset constrained the performance of data-hungry models, particularly the Transformer architecture.
-
-## 8. Relevance to my thesis (leave empty)
-
-## 9. Critical notes / questions raised (leave empty)
-
----
-
 # Article record: Next step for bitcoin: Confluence of technical indicators and machine learning
 
 ## Metadata
 - **BibTeX key**: mate_confluence_2024
-- **Authors**: Domicián Máté, Hassan Raza, Ishtiaq Ahmad, and Sándor Kovács
+- **Authors**: Domicián Máté, Hassan Raza, Ishtiaq Ahmad, Sándor Kovács
 - **Year**: 2024
 - **Title**: Next step for bitcoin: Confluence of technical indicators and machine learning
-- **Journal/Publication**: Journal of International Studies, 17(3), 68-94
+- **Journal/Conference**: Journal of International Studies, Vol. 17, No. 3
 - **DOI/URL**: 10.14254/2071-8330.2024/17-3/4
-- **Keywords from article**: bitcoin forecasting, comparative analysis, cryptocurrency market trends, machine learning algorithms, predictive model evaluation
+- **Keywords**: bitcoin forecasting, comparative analysis, cryptocurrency market trends, machine learning algorithms, predictive model evaluation
 
-## 1. Study objective(s)
-To evaluate and compare the effectiveness of four advanced machine learning models (ANN, CNN-LSTM, SVM, and Random Forest) combined with 27 specific technical indicators in predicting the daily directional price movements of Bitcoin.
+## 1. Theoretical foundation
 
-## 2. Research question / Hypothesis
-How do different machine learning techniques (ANN, SVM, CNN-LSTM, and RF) compare in their predictive power for Bitcoin's one-day directional movement when utilizing a comprehensive suite of 27 technical indicators (including temporal and spatial trends like momentum, ROC, and %K)?
+**Key theorems**: [not found]
 
-## 3. Methodology
-- **Study design**: Comparative quantitative analysis and predictive modeling using historical time-series data and technical indicators for binary classification (predicting upward or downward trends).
-- **Sample / corpus**: Historical Bitcoin stock data (OHLCV) obtained from the Yahoo Finance API, spanning September 17, 2014, to October 1, 2023.
-- **Instruments / materials**: Python 3.10.4 utilizing the numpy, pandas, tensorflow, and sklearn packages. Four ML models were tested: Artificial Neural Network (ANN), Support Vector Machine (SVM), Convolutional Neural Network combined with Long Short-Term Memory (CNN-LSTM), and Random Forest (RF).
-- **Procedures**:
-  1. Extracted historical data and removed missing values to clean the dataset.
-  2. Calculated 27 technical indicators (e.g., Stochastic Oscillator %K and %D, ROC, MACD, Bollinger Bands, RSI, OBV, Chaikin Oscillator, etc.).
-  3. Created a binary "direction" target variable representing the next day's movement (1 for up, 0 for down) by temporally shifting historical data forward by one day to prevent look-ahead bias.
-  4. Normalized all feature values to a range between 0 and 1 using Min-Max scaling.
-  5. Split the dataset sequentially into 80% for training and 20% for testing.
-  6. Trained and optimized the models (e.g., ANN trained for 50 epochs with a batch size of 64 using the Adam optimizer and binary cross-entropy loss).
-  7. Evaluated model performance on the test set and extracted feature importance weights to determine which indicators drove the predictions.
-- **Data analysis**: Binary classification evaluation metrics, specifically confusion matrices, accuracy, precision, recall, and F1-scores. Feature importance was quantified by analyzing the average absolute weights assigned by the models to the input variables.
+**Key mathematical definitions**: [not found]
 
-## 4. Main results (only facts from the article)
-- The Artificial Neural Network (ANN) and Random Forest (RF) models both achieved a strong overall prediction accuracy of 81%.
-- The Support Vector Machine (SVM) achieved the highest comparative performance with an overall accuracy of 82% and an F1-score of 0.82 for both positive and negative classifications.
-- The CNN-LSTM model demonstrated an accuracy rate of 80%, providing competitive performance but falling slightly behind the ANN, SVM, and RF models.
-- Feature importance varied by model architecture. The ANN relied most heavily on %R, %D, %K, and the Chaikin Oscillator; the SVM prioritized %D, %K, and %R; the CNN-LSTM was heavily influenced by %K, ROC, and Momentum; and the RF model was predominantly driven by the Chaikin Oscillator.
-- The implemented machine learning models consistently outperformed traditional statistical regression (such as standard ARIMA), often improving prediction accuracy by 20% to 30% in practical applications.
+**Key lemmas or propositions**: [not found]
 
-## 5. Relevant direct quotations (max 3)
-- "The results showed that ANN and SVM achieve a significant prediction accuracy of 81% and 82%, respectively, which is higher than the results of traditional models such as standard ARIMA." (p. 68-69)
+**Relevant mathematical proofs (summary)**: [not found]
+
+## 2. Proposed method / architecture / model
+
+**Name of method/model**: Artificial Neural Network (ANN), Support Vector Machines (SVM), Convolutional Neural Network and Long Short-Term Memory (CNN-LSTM), and Random Forest (RF).
+
+**Core mathematical formulation:**
+
+- ANN weighted sum: $Z_i = \sum_j W_{i,j}x_j + b_i$
+- ANN hidden layer (ReLU): $\alpha_i = \text{Max}(0, z_j)$
+- ANN output layer (Sigmoid): $h(x) = \frac{1}{1 + e^{-z}}$
+- SVM optimal hyperplane: $w \cdot x + b = 0$
+- SVM Margin: $\frac{1}{||w||}$
+- SVM kernel transformation: $w \cdot \Phi(x) + b = 0$
+- RF decision tree: $T_i = f(D_i, F_i)$
+- RF tree prediction: $P_i(x) = T_i(x)$
+- RF classification (majority voting): $P(x) = \text{mode}\{P_1(x), P_2(x), ..., P_n(x)\}$
+- RF regression: $P(x) = \frac{1}{n}\sum_{i=1}^n P_i(x)$
+
+**Technical Indicators (Table 1):**
+
+- $\%K = \frac{(close\_Price - lowest\_low)}{(highest\_high - lowest\_low)} * 100$
+- $\%D = (1/n)\sum_{i=0}^{n-1}\Sigma\%K_{i-1}$
+- $ROC = \frac{(cp - cp_n)}{cp_n} * 100$
+- $\%R = \frac{(highest\_high - close)}{(highest\_high - low)} * 100$
+- $Momentum = close - close\_4$
+- $Disparity\_5 = \frac{close}{MA5} * 100$
+- $Disparity\_14 = \frac{close}{MA14} * 100$
+- $OSCP = MA5 - MA10$
+- $CCI = \frac{(typical\_price - MA)}{(0.015 \times mean\_deviation)}$
+- $RSI = 100 - [\frac{100}{(1 + relative\_strength)}]$
+- $PP = \frac{(high + low + close)}{\alpha}$ (where $\alpha=3$)
+- $S1 = (PP * 2) - high$
+- $S2 = PP - (high - low)$
+- $R1 = (PP * 2) - low$
+- $R2 = PP + (high - low)$
+- $MA_t = EMA_{t-1} + \alpha * (Price_t - EMA_{t-1})$
+- $WMA = \frac{\omega_1 P_t + \omega_2 P_{t-1} + \dots + \omega_n P_{t-n}}{\omega_1 + \omega_2 + \dots + \omega_n}$
+- $Upper\_Band = SMA + (std\_multiplier * STD)$
+- $LB = SMA - (std\_multiplier * STD)$
+- $MACD = Short\_EMA - Long\_EMA$
+- $Signal\_Line = \text{EMA}(MACD\_Histogram, Signal\_Window)$
+- $ATR = \frac{ATR_{prev}(n-1) + TR}{n}$
+- $OBV = OBV_{prev} + volume$ (if close > close$_{prev}$); $0$ (if equal); $-volume$ (if close < close$_{prev}$)
+- $Chaikin\_Oscillator = CO$ (3 day EMA of ADL) - (10 day EMA of ADL)
+- $MFI = 100 - \frac{100}{(1 + Money\_Flow\_Ratio)}$
+- $Day\_of\_Week\_Anomaly = \text{close.groupby}(Day\_of\_Week)\text{.trans(mean)}$
+- $Week\_of\_Month\_Anomaly = \text{close.groupby}(Week\_of\_month)\text{.trans(mean)}$
+
+**Algorithm pseudocode**: [not found]
+
+**Architecture details:**
+
+- **ANN**: 3 layers. Input layer with 27 features. Hidden layer with 32 neurons using ReLU activation. Output layer with 1 neuron using Sigmoid activation.
+- **SVM**: Uses a Radial Basis Function (RBF) kernel.
+- **CNN-LSTM**: First LSTM layer has 50 units. Second LSTM layer has 50 units. Followed by a densely connected layer with a single unit using Sigmoid activation.
+
+**Innovative components**: The study's novelty lies in integrating 27 specific technical indicators, heavily focusing on temporal and spatial trends via momentum, ROC, and %K features, with multiple advanced ML architectures (ANN, SVM, CNN-LSTM, RF) in a side-by-side comparative framework for predicting highly volatile cryptocurrency directional movements.
+
+## 3. Data
+
+**Dataset name(s)**: Historical Bitcoin Data
+
+**Data source**: Yahoo Finance API
+
+**Data size**: Spans from September 17, 2014, to October 1, 2023. Daily frequency.
+
+**Data preprocessing:**
+
+- Missing data was eliminated.
+- Target formulation: Added a binary "direction" column (1 for upward price movement relative to threshold, 0 for downward movement).
+- Temporal alignment: Historical data was shifted forward by one day to prevent lookahead bias when predicting the target.
+- Normalization: Min-Max scaling was applied to rescale all feature values to a uniform range between 0 and 1.
+
+**Train/validation/test split**: 80% Training set, 20% Testing set.
+
+**Data augmentation techniques**: [not found]
+
+## 4. Experimental setup
+
+**Baseline models compared against**: Standard ARIMA (mentioned historically), ANN, SVM, CNN-LSTM, and RF.
+
+**Evaluation metrics:**
+
+- **Accuracy**: Proportion of correctly classified directional movements.
+- **Precision**: True Positives / (True Positives + False Positives).
+- **Recall**: True Positives / (True Positives + False Negatives).
+- **F1-score**: Harmonic mean of precision and recall.
+- **Confusion Matrix**: Tabulation of True Positives, False Positives, True Negatives, False Negatives.
+
+**Hyperparameters:**
+
+- **ANN**: Optimizer = Adam, Loss Function = Binary cross-entropy, Epochs = 50, Batch Size = 64.
+- **CNN-LSTM**: Optimizer = Adam, Loss Function = Binary cross-entropy, Epochs = 10, Batch Size = 32.
+- **Random Forest**: Parameters like number of trees ($n$), max depth ($d$), and features per split ($m$) are tuned via cross-validation $\text{argmin}_{n,d,m} \text{CV\_error}(n,d,m)$.
+
+**Hardware/software environment**: Python 3.10.4, using the NumPy, Pandas, TensorFlow, and Scikit-learn libraries.
+
+**Number of runs / seeds**: [not found]
+
+**Statistical tests performed**: [not found]
+
+## 5. Results
+
+**Quantitative results:**
+
+- **ANN Classification Results (Support: Class 0=291, Class 1=330):**
+  - Accuracy: 0.81
+  - Class 0: Precision=0.78, Recall=0.81, F1=0.80
+  - Class 1: Precision=0.83, Recall=0.80, F1=0.81
+  - Confusion Matrix: TN=237, FP=54, FN=67, TP=263
+- **SVM Classification Results (Support: Class 0=291, Class 1=330):**
+  - Accuracy: 0.82
+  - Class 0: Precision=0.78, Recall=0.85, F1=0.82
+  - Class 1: Precision=0.86, Recall=0.79, F1=0.82
+  - Confusion Matrix: TN=248, FP=43, FN=69, TP=261
+- **CNN-LSTM Classification Results (Support: Class 0=291, Class 1=330):**
+  - Accuracy: 0.80
+  - Class 0: Precision=0.76, Recall=0.84, F1=0.80
+  - Class 1: Precision=0.84, Recall=0.77, F1=0.81
+  - Confusion Matrix: TN=244, FP=47, FN=75, TP=255
+- **Random Forest Classification Results (Support: Class 0=291, Class 1=330):**
+  - Accuracy: 0.81
+  - Class 0: Precision=0.80, Recall=0.80, F1=0.80
+  - Class 1: Precision=0.82, Recall=0.83, F1=0.83
+  - Confusion Matrix: TN=233, FP=58, FN=57, TP=273
+
+**Qualitative results:**
+
+- Feature importance was visually analyzed via bar charts for each model.
+- **ANN Top Features**: %R (0.22014), %D (0.16778), %K (0.15491), Chaikin Oscillator (0.14894).
+- **SVM Top Features**: %D (7.36412), %R (5.04162), %K (5.02149).
+- **CNN-LSTM Top Features**: %K and ROC (0.3349), Momentum (0.3140), Disparity_5 (0.2641).
+- **RF Top Features**: Chaikin Oscillator (0.2435), %R (0.1518), Disparity_5 (0.0700).
+
+**Ablation studies**: [not found]
+
+**Comparison with baselines**: All tested ML models achieved significantly lower error rates than traditional statistical models, improving prediction accuracy by an estimated 20-30% over standard ARIMA models. Among the ML models, SVM achieved the highest testing accuracy (82%), closely followed by RF and ANN (81%), and CNN-LSTM (80%).
+
+## 6. Direct quotations
+
+- "The results showed that ANN and SVM achieve a significant prediction accuracy of 81% and 82%, respectively, which is higher than the results of traditional models such as standard ARIMA." (p. 69)
 - "The unique contribution of the current work was the use of temporal and spatial trends via momentum, ROC, and %K features, which demonstrated a holistic approach to cryptocurrency market forecasting." (p. 70)
-- "Machine learning models typically achieve significantly lower error rates, often improving prediction accuracy by 20-30% over standard ARIMA models in practical applications..." (p. 89)
+- "In contrast, machine learning models such as ANN, SVM, CNN-LSTM, and RF can capture complex patterns and relationships within the data, resulting in more accurate predictions. Machine learning models typically achieve significantly lower error rates, often improving prediction accuracy by 20-30% over standard ARIMA models in practical applications..." (p. 89)
+- "The comparative lens employed here seeks to uncover the nuances of each model's predictive power, thereby providing a holistic understanding of their effectiveness" (p. 70)
+- "These models are highly applicable in real-world trading scenarios, where accurate predictions can lead to significant financial gains. For example, the ANN's reliance on the Williams Percent Range (%R) and the SVM's reliance on the %D moving average underscored the critical role of these technical indicators in guiding trading strategies." (p. 89)
 
-## 6. Authors' conclusions
-The authors conclude that advanced machine learning algorithms (ANN, SVM, CNN-LSTM, and RF) are highly robust and significantly more efficient than traditional regression models at navigating the non-linear volatility of the Bitcoin market. By combining these models with a broad spectrum of 27 technical indicators, particularly highlighting the predictive power of oscillators like %R, %K, and the Chaikin Oscillator, the study proves that algorithmic forecasting can achieve over 80% accuracy. Ultimately, they assert that integrating these data-driven machine learning frameworks into trading strategies can empower investors to make highly informed decisions, improve profitability, and effectively manage financial risks within the cryptocurrency landscape.
+## 7. Authors' conclusions
 
-## 7. Limitations acknowledged by the authors
-- The quality and reliability of historical Bitcoin data can negatively affect the accuracy of the models.
-- Sudden price fluctuations and rapid market changes present significant forecasting challenges.
-- Deep learning architectures (like Neural Networks) demand substantial computational resources.
-- Unexpected regulatory changes in the cryptocurrency sector can disrupt model performance, requiring the models to be continuously adapted.
+The authors conclude that machine learning techniques significantly outperform traditional statistical regression methodologies (such as ARIMA) in navigating the extreme volatility and non-linearity of the Bitcoin market. Through comparative analysis, ANN, SVM, CNN-LSTM, and Random Forest models all demonstrated robust predictive capabilities, achieving accuracy rates between 80% and 82%. A critical component of this success was the heavy reliance on data mining and the extraction of 27 specific technical indicators. The feature importance metrics revealed that indicators like Williams %R, Stochastic Oscillators (%K and %D), ROC, and the Chaikin Oscillator act as primary drivers for predictive accuracy. Ultimately, integrating these sophisticated ML algorithms with well-engineered technical indicators provides traders and financial experts with highly reliable tools for anticipating market direction, improving investment strategies, and managing risk.
 
-## 8. Relevance to my thesis (leave empty)
+## 8. Limitations stated by authors
 
-## 9. Critical notes / questions raised (leave empty)
+- Historical Bitcoin data quality and reliability can negatively impact the accuracy of machine learning models.
+- Sudden, extreme price fluctuations and rapid market shifts present major predictive challenges.
+- Deep learning architectures (like CNN-LSTM and large neural networks) demand substantial computational resources.
+- Continual regulatory changes in the cryptocurrency space can alter market dynamics, requiring the models to be constantly updated and adapted.
+
+## 9. Future work suggested by authors
+
+- Exploring the interplay of these models (e.g., creating ensembles or hybrids) to push predictive accuracy even higher.
+- Refining feature extraction methods.
+- Expanding the forecasting dataset to include other cryptocurrencies beyond Bitcoin.
+- Incorporating alternative data streams, such as social media sentiment analysis, to extract deeper market insights and improve model robustness.
+
+## Additional critical details
+
+- **Discrepancy in Text vs. Tables**: In the text (page 84), the authors state "Both models [ANN and SVM] achieved the same overall accuracy of 85%". However, Table 4 explicitly records the SVM accuracy as 0.82 (82%), which matches the abstract and conclusion of the paper.
+- The target output is formulated strictly as a binary classification problem (1 = upward movement, 0 = downward movement) rather than a continuous price regression.
+
+---
+**Extraction date**: 2026-05-19
+**PDF source**: Next_step_for_bitcoin__Confluence_of_TA_and_ML.pdf
+
+---
+
+# Article record: Review of deep learning models for crypto price prediction: implementation and evaluation
+
+## Metadata
+- **BibTeX key**: wu_crypto_dl_review_2024
+- **Authors**: Jingyang Wu, Xinyi Zhang, Fangyixuan Huang, Haochen Zhou, Rohtiash Chandra
+- **Year**: 2024
+- **Title**: Review of deep learning models for crypto price prediction: implementation and evaluation
+- **Journal/Conference**: arXiv preprint arXiv:2405.11431v2 [cs.LG]
+- **DOI/URL**: arXiv:2405.11431v2
+- **Keywords**: Cryptocurrency, Price prediction, Deep learning, Long short-term memory, Convolutional neural networks, Transformer
+
+## 1. Theoretical foundation
+
+**Key theorems**: [not found]
+
+**Key mathematical definitions**: [not found]
+
+**Key lemmas or propositions**: [not found]
+
+**Relevant mathematical proofs (summary)**: [not found]
+
+## 2. Proposed method / architecture / model
+
+**Name of method/model**: The study evaluates and compares seven deep learning architectures: Recurrent Neural Network (RNN), Long Short-Term Memory (LSTM), Bidirectional LSTM (Bi-LSTM), Gated Recurrent Unit (GRU), 1-Dimensional Convolutional Neural Network (1D-CNN), Temporal Convolutional Network (TCN), and Transformer.
+
+**Core mathematical formulation:**
+
+- **RNN**: $h_t = \sigma(W_{hx} x_t + W_{hh} h_{t-1} + b_h)$ and $y_t = W_{yh} h_t + b_y$
+- **LSTM**:
+  - Forget gate: $f_t = \sigma(W_f \cdot [h_{t-1}, x_t] + b_f)$
+  - Input gate: $i_t = \sigma(W_i \cdot [h_{t-1}, x_t] + b_i)$
+  - Cell state update: $\tilde{C}_t = \tanh(W_c \cdot [h_{t-1}, x_t] + b_c)$
+  - New cell state: $C_t = f_t * C_{t-1} + i_t * \tilde{C}_t$
+  - Output gate: $o_t = \sigma(W_o \cdot [h_{t-1}, x_t] + b_o)$
+  - Hidden state: $h_t = o_t * \tanh(C_t)$
+- **GRU**:
+  - Update gate: $z_t = \sigma(W_z \cdot [h_{t-1}, x_t] + b_z)$
+  - Reset gate: $r_t = \sigma(W_r \cdot [h_{t-1}, x_t] + b_r)$
+  - Candidate hidden state: $\tilde{h}_t = \tanh(W \cdot [r_t * h_{t-1}, x_t] + b)$
+  - Final hidden state: $h_t = (1 - z_t) * h_{t-1} + z_t * \tilde{h}_t$
+- **CNN (1D)**:
+  - Convolution operation: $(f * g)(t) = \sum_{k=1}^K f(k) g(t - k \cdot d)$ (where $d$ is the dilation factor)
+- **Transformer**:
+  - Self-attention: $Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}}) V$
+  - Multi-head attention: $MultiHead(Q, K, V) = Concat(head_1, ..., head_h) W^O$, where $head_i = Attention(Q W_i^Q, K W_i^K, V W_i^V)$
+  - Positional Encoding: $PE_{(pos, 2i)} = \sin(\frac{pos}{10000^{2i/d_{model}}})$ and $PE_{(pos, 2i+1)} = \cos(\frac{pos}{10000^{2i/d_{model}}})$
+
+**Algorithm pseudocode**: [not found]
+
+**Architecture details:**
+
+- The framework implements standard versions of RNN, LSTM, Bi-LSTM, and GRU for sequential modeling.
+- 1D-CNN utilizes causal convolutions to prevent information leakage from future to past.
+- TCN employs dilated causal convolutions with residual blocks to capture long-term dependencies efficiently.
+- Transformer relies entirely on multi-head self-attention mechanisms without recurrence, requiring positional encodings to inject sequence order.
+
+**Innovative components**: The paper provides a comprehensive, head-to-head empirical evaluation of seven distinct DL architectures applied to both univariate and multivariate cryptocurrency forecasting, explicitly partitioning data into "pre-COVID-19" and "COVID-19" periods to assess model robustness under varying market volatility.
+
+## 3. Data
+
+**Dataset name(s)**: Bitcoin (BTC), Ethereum (ETH), Litecoin (LTC), Ripple (XRP).
+
+**Data source**: Yahoo Finance.
+
+**Data size:**
+
+- Overall time period: August 2015 to August 2023.
+- Pre-COVID-19 subset: August 2015 to January 2020.
+- COVID-19 subset: January 2020 to August 2023.
+- Frequency: Daily data.
+- Features: 6 features (Open, High, Low, Close, Adjusted Close, Volume).
+
+**Data preprocessing:**
+
+- Normalization: Min-Max scaling to the range (0, 1) using $X_{nom} = \frac{X - X_{min}}{X_{max} - X_{min}}$.
+- Sequence structuring: A sliding window technique was utilized to format the time series.
+- Look-back window (input sequence length): 60 days.
+- Prediction horizons: 1-day, 3-day, and 7-day ahead.
+
+**Train/validation/test split**: 70% Training, 10% Validation, 20% Testing (chronologically split to prevent look-ahead bias).
+
+**Data augmentation techniques**: [not found]
+
+## 4. Experimental setup
+
+**Baseline models compared against**: The study mutually compares RNN, LSTM, Bi-LSTM, GRU, 1D-CNN, TCN, and Transformer (none is explicitly designated as the sole baseline; they are benchmarked against each other).
+
+**Evaluation metrics:**
+
+- Root Mean Squared Error (RMSE): $RMSE = \sqrt{\frac{1}{n} \sum_{i=1}^n (y_i - \hat{y}_i)^2}$.
+- Mean Absolute Error (MAE): $MAE = \frac{1}{n} \sum_{i=1}^n |y_i - \hat{y}_i|$.
+- Mean Absolute Percentage Error (MAPE): $MAPE = \frac{100\%}{n} \sum_{i=1}^n \left| \frac{y_i - \hat{y}_i}{y_i} \right|$.
+- R-squared ($R^2$): $R^2 = 1 - \frac{\sum_{i=1}^n (y_i - \hat{y}_i)^2}{\sum_{i=1}^n (y_i - \bar{y})^2}$.
+
+**Hyperparameters:**
+
+- Hidden units tested: 32, 64, 128 (best performing were generally 64 or 128 depending on the model/dataset).
+- Batch size: 64.
+- Epochs: 100.
+- Early stopping: Patience set to 10 epochs.
+- Optimizer: Adam.
+- Learning rate: Tested 0.01, 0.001, and 0.0001; 0.001 was selected as optimal.
+- Regularization: Dropout rate of 0.2.
+- Activation functions: Tanh for recurrent layers, ReLU for CNN layers.
+- Loss function: Mean Squared Error (MSE).
+- Transformer parameters: Number of attention heads = 4, Number of encoder layers = 2.
+
+**Hardware/software environment**: Python programming language using Keras and TensorFlow 2.12.0; executed on Kaggle Notebooks equipped with dual Tesla T4 GPUs.
+
+**Number of runs / seeds**: 10 independent runs for each experimental setting to compute mean and standard deviation.
+
+**Statistical tests performed**: [not found]
+
+## 5. Results
+
+**Quantitative results:**
+
+- **Pre-COVID-19 (Univariate, 1-day ahead), Best Models:**
+  - BTC: TCN (RMSE: $0.0210 \pm 0.0003$, MAE: $0.0142 \pm 0.0001$, $R^2$: $0.9702 \pm 0.0004$).
+  - ETH: TCN (RMSE: $0.0381 \pm 0.0004$, MAE: $0.0163 \pm 0.0003$, $R^2$: $0.9575 \pm 0.0010$).
+  - LTC: Bi-LSTM (RMSE: $0.0392 \pm 0.0003$, $R^2$: $0.9328 \pm 0.0011$).
+  - XRP: Bi-LSTM (RMSE: $0.0366 \pm 0.0005$, $R^2$: $0.9403 \pm 0.0014$).
+- **COVID-19 (Univariate, 1-day ahead), Best Models:**
+  - BTC: TCN (RMSE: $0.0249 \pm 0.0001$, MAE: $0.0177 \pm 0.0002$, $R^2$: $0.9855 \pm 0.0001$).
+  - ETH: TCN (RMSE: $0.0270 \pm 0.0002$, MAE: $0.0183 \pm 0.0003$, $R^2$: $0.9846 \pm 0.0002$).
+  - LTC: TCN (RMSE: $0.0354 \pm 0.0002$, MAE: $0.0219 \pm 0.0003$, $R^2$: $0.9443 \pm 0.0005$).
+  - XRP: TCN (RMSE: $0.0315 \pm 0.0001$, MAE: $0.0197 \pm 0.0002$, $R^2$: $0.9634 \pm 0.0003$).
+- **Pre-COVID-19 (Multivariate, 1-day ahead), Best Models:**
+  - BTC: Bi-LSTM (RMSE: $0.0219 \pm 0.0016$, MAE: $0.0146 \pm 0.0012$, $R^2$: $0.9678 \pm 0.0044$).
+  - ETH: TCN (RMSE: $0.0401 \pm 0.0028$, $R^2$: $0.9526 \pm 0.0069$).
+  - LTC: TCN (RMSE: $0.0393 \pm 0.0006$, $R^2$: $0.9323 \pm 0.0016$).
+  - XRP: GRU (RMSE: $0.0375 \pm 0.0020$, $R^2$: $0.9367 \pm 0.0076$).
+- **COVID-19 (Multivariate, 1-day ahead), Best Models:**
+  - BTC: 1D-CNN (RMSE: $0.0246 \pm 0.0013$, MAE: $0.0177 \pm 0.0010$, $R^2$: $0.9859 \pm 0.0016$).
+  - ETH: 1D-CNN (RMSE: $0.0279 \pm 0.0005$, $R^2$: $0.9835 \pm 0.0006$).
+  - LTC: 1D-CNN (RMSE: $0.0355 \pm 0.0005$, $R^2$: $0.9443 \pm 0.0017$).
+  - XRP: 1D-CNN (RMSE: $0.0322 \pm 0.0003$, $R^2$: $0.9616 \pm 0.0009$).
+- **Transformer Performance (Example: Pre-COVID Univariate BTC, 1-day):** Transformer yielded an RMSE of $0.0324 \pm 0.0069$ and $R^2$ of $0.9290 \pm 0.0298$, significantly worse than TCN and showing much higher standard deviation (instability).
+
+**Qualitative results:**
+
+- The Transformer model exhibited the poorest performance and highest instability across all datasets, struggling to capture the volatility of cryptocurrency prices and often forecasting a "flat line" that missed extreme price fluctuations entirely.
+- TCN captured actual trends highly effectively, closely matching extreme peaks and troughs during periods of high volatility.
+- Univariate models generally outperformed multivariate models for 1-day ahead predictions, indicating that auxiliary features like trade volume may introduce noise rather than predictive signal for short horizons.
+- Predictive accuracy degraded severely as forecasting horizons expanded from 1-day to 3-day and 7-day windows due to the accumulation of compounding errors.
+
+**Ablation studies:**
+
+- **Dataset Split**: Partitioned data into Pre-COVID-19 (lower volatility) and COVID-19 (higher volatility) to test model robustness. Found that TCN and 1D-CNN handled the high volatility of the COVID-19 period better than RNN variants.
+- **Feature Input**: Compared Univariate vs. Multivariate inputs. Found that Univariate inputs led to lower error metrics overall for 1-step predictions.
+- **Prediction Horizon**: Compared 1-day, 3-day, and 7-day ahead forecasts. Found significant performance degradation in multi-step forecasting across all models.
+
+**Comparison with baselines:**
+
+- TCN outperformed all RNN, LSTM, GRU, and Transformer variants for 1-day univariate tasks across the board (e.g., lower RMSE and higher $R^2$).
+- 1D-CNN outperformed recurrent models in the multivariate COVID-19 dataset, showcasing superior feature extraction from multiple variables during volatile periods.
+- Transformer was consistently outperformed by all convolutional and recurrent models.
+
+## 6. Direct quotations
+
+- "We evaluate univariate and multivariate approaches for multi-step ahead predicting of cryptocurrencies close-price." (p. 1)
+- "The results demonstrate that the Temporal Convolutional Network (TCN) consistently outperforms other models in the univariate dataset, establishing it as the superior choice." (p. 2)
+- "Our results demonstrate that TCN, 1D-CNN, LSTM, GRU, and Bi-LSTM all exhibit better prediction performance for univariate models when forecasting 1 day ahead." (p. 18)
+- "The Transformer framework... exhibits the poorest performance across all selected evaluation criteria, accompanied by larger standard deviations, highlighting its instability." (p. 19)
+- "Generally, prediction error increases with longer prediction horizons... the models exhibit greater stability in their single-step predictions." (p. 25)
+
+## 7. Authors' conclusions
+
+The authors conclude that convolutional architectures, specifically the Temporal Convolutional Network (TCN) and 1D-CNN, are highly effective for cryptocurrency price prediction. TCN emerged as the superior model for univariate, single-step forecasting because its dilated causal convolutions efficiently capture both local trends and long-term dependencies without suffering from vanishing gradients. Meanwhile, the 1D-CNN proved most robust for multivariate forecasting during periods of extreme market volatility (such as the COVID-19 era). Conversely, the standard Transformer architecture yielded the worst performance and highest instability, struggling to adapt to the noisy and highly volatile nature of financial time series data. Additionally, the study found that univariate models generally outperformed multivariate models for short-term predictions, suggesting that adding multiple market features (like volume) introduces noise rather than signal. Finally, all models suffered significant accuracy degradation as the forecasting horizon extended from 1 to 3 and 7 days.
+
+## 8. Limitations stated by authors
+
+- The study's multivariate analysis relied solely on historical price and volume data, which introduced noise; it did not incorporate external factors such as macroeconomic indices, social media sentiment, or on-chain metrics.
+- Long-term predictions (3-day and 7-day ahead) suffered heavily from compounding errors, making them unreliable for practical trading applications.
+- The poor performance of the Transformer model suggests that the standard self-attention mechanism may not be suitable for noisy financial time series without customized modifications.
+
+## 9. Future work suggested by authors
+
+- Integrating external features, such as social media sentiment analysis, global economic indicators, and blockchain network data (e.g., hash rate) to improve multivariate forecasting accuracy.
+- Exploring hybrid architectures (such as CNN-LSTM) to simultaneously leverage the spatial feature extraction capabilities of CNNs and the temporal sequence memory of LSTMs.
+- Implementing advanced data augmentation and denoising techniques (such as wavelet transforms) to filter out market noise before feeding the data into deep learning models.
+- Investigating specialized Transformer variants explicitly tailored for time series forecasting (such as Informer, Autoformer, or PatchTST) to overcome the limitations observed with the standard Transformer architecture.
+
+---
+**Extraction date**: 2026-05-19
+**PDF source**: arXiv:2405.11431
 
 ---
 
@@ -118,113 +386,353 @@ The authors conclude that advanced machine learning algorithms (ANN, SVM, CNN-LS
 
 ## Metadata
 - **BibTeX key**: omole_enke_2024
-- **Authors**: Oluwadamilare Omole and David Enke
+- **Authors**: Oluwadamilare Omole, David Enke
 - **Year**: 2024
 - **Title**: Deep learning for Bitcoin price direction prediction: models and trading strategies empirically compared
-- **Journal/Publication**: Financial Innovation
+- **Journal/Conference**: Financial Innovation, 10:117
 - **DOI/URL**: https://doi.org/10.1186/s40854-024-00643-1
-- **Keywords from article**: Backtesting, Bitcoin, Cryptocurrency, Deep learning, Feature selection, On-chain data
+- **Keywords**: Backtesting, Bitcoin, Cryptocurrency, Deep learning, Feature selection, On-chain data
 
-## 1. Study objective(s)
-To apply deep learning models to predict Bitcoin price directions and assess the subsequent profitability of trading strategies based on those predictions. Specifically, the study compares the performance of CNN-LSTM, LSTNet, and TCN models against an ARIMA benchmark using on-chain data, applying feature-selection methods (Boruta, GA, and LightGBM) to handle high dimensionality.
+## 1. Theoretical foundation
 
-## 2. Research question / Hypothesis
-What predictive improvements can be achieved by applying feature-selection methods to large on-chain datasets for Bitcoin? How do deep learning models (CNN-LSTM, LSTNet, TCN) comprehensively compare against each other and an ARIMA benchmark for price direction prediction? Finally, how profitable is the best-performing model when evaluated using different algorithmic trading strategies?
+**Key theorems:**
 
-## 3. Methodology
-- **Study design**: Empirical comparative analysis of machine learning/deep learning models for binary classification, followed by financial backtesting of trading strategies.
-- **Sample / corpus**: 87 distinct on-chain metrics plus price data sourced from Glassnode. The data spans from February 6, 2013, to February 18, 2023, comprising 3,665 days of data.
-- **Instruments / materials**: Three deep learning models (CNN-LSTM, LSTNet, TCN) and one statistical benchmark (ARIMA). Three feature selection methods: Boruta, Genetic Algorithm (GA), and LightGBM.
-- **Procedures**:
-  1. Data preprocessing involving listwise deletion for data Missing Completely at Random (MCAR) and regression imputation for data Missing Not at Random (MNAR).
-  2. Formulating the problem as binary classification, encoding '1' for a price increase the next day and '0' for a decrease or no change.
-  3. Splitting data chronologically into 80% training and 20% testing sets without shuffling, followed by standardization.
-  4. Performing feature selection using Boruta, GA, and LightGBM to create three subset datasets, alongside an all-features dataset and a univariate price dataset.
-  5. Tuning hyperparameters via random search (adjusting learning rate, batch size, epoch count, LSTM units, CNN filters, etc.).
-  6. Conducting a parameter study to assess model robustness by varying seed values and rolling window sizes (3, 5, 7, 14, and 30 days).
-  7. Applying Wilcoxon signed-rank and Friedman tests to assess the statistical significance of performance differences.
-  8. Backtesting three trading strategies (buy-and-sell, buy-and-sell with price protection, and an MACD baseline) across long, short, and long/short positions, factoring in a 30% tax rate and 0.5% transaction costs.
-- **Data analysis**: Accuracy, Precision, Recall, F1-score, AUC-ROC, and Matthews correlation coefficient (MCC) for classification evaluation. Rate of Return (ROR), Sharpe ratio, Maximum Drawdown (MDD), Market exposure, and Volatility for backtesting.
+- **Universal Approximation Theorem**: Mentioned conceptually as the basis for deep learning implementations.
 
-## 4. Main results (only facts from the article)
-- The combination of Boruta feature selection and the CNN-LSTM model consistently outperformed all other configurations, achieving an overall maximum accuracy of 82.44%.
-- The ARIMA benchmark combined with Genetic Algorithm (GA) feature selection was the weakest performer, yielding an overall maximum accuracy of just 50.61%.
-- Statistical testing (Wilcoxon signed-rank and Friedman tests) confirmed that the Boruta + CNN-LSTM model was significantly better than the other models.
-- In the backtesting simulation, the "long-and-short" buy-and-sell strategy utilizing the Boruta + CNN-LSTM predictions generated an extraordinary annual return of 6653.75% with a Sharpe ratio of 1.8583 and a manageable Maximum Drawdown (MDD) of -0.0704.
-- Adding "price protection" mechanisms to the trading strategies (to avoid selling at a loss) significantly reduced annual returns (e.g., dropping the long-and-short strategy to 35.53%) because it limited opportunities for profit during market rebounds.
+**Key mathematical definitions:**
 
-## 5. Relevant direct quotations (max 3)
-- "Results indicate that combining Boruta feature selection with the CNN-LSTM model consistently outperforms other combinations, achieving an accuracy of 82.44%." (p. 1)
-- "The long-and-short buy-and-sell investment approach generated an extraordinary annual return of 6654% when informed by higher-accuracy price-direction predictions." (p. 1)
-- "This result underscored the importance of feature selection in enhancing DL model performance..." (p. 21)
+- **Class 1 (Upward Movement)**: Scenario where the price of Bitcoin shows an increase from day $t$ to day $t+1$ ($y_{t+1} > y_t$), encoded as 1.
+- **Class 0 (Downward/Stable Movement)**: Scenario where the Bitcoin price either decreases or stays the same from day $t$ to day $t+1$ ($y_{t+1} \le y_t$), encoded as 0.
 
-## 6. Authors' conclusions
-The authors conclude that implementing appropriate feature-selection methods, specifically Boruta, significantly enhances the performance of deep learning models like CNN-LSTM for predicting short-term Bitcoin price movements using on-chain data. They establish that a highly accurate predictive model (82.44% accuracy) translates into immense financial viability in a controlled backtesting environment, particularly when utilizing a combined long-and-short trading strategy that vastly outperforms traditional MACD momentum trading. The authors suggest that leveraging unique on-chain data with predictive models provides greater price transparency, which could help securities exchanges and regulators approve new offerings like spot Bitcoin ETFs, ultimately fostering greater market efficiency and risk management.
+**Key lemmas or propositions**: [not found]
 
-## 7. Limitations acknowledged by the authors
-- The study exclusively utilized on-chain and price data, ignoring the potential predictive value of sentiment data and technical analysis indicators.
-- The prediction time frame examined was relatively short, meaning the models' effectiveness at capturing long-term trends under varying market conditions remains unexplored.
+**Relevant mathematical proofs (summary)**: [not found]
 
-## 8. Relevance to my thesis (leave empty)
+## 2. Proposed method / architecture / model
 
-## 9. Critical notes / questions raised (leave empty)
+**Name of method/model**: The study evaluates CNN-LSTM (Convolutional Neural Network - Long Short-Term Memory), LSTNet (Long- and Short-Term Time-Series Network), and TCN (Temporal Convolutional Network) combined with feature selection methods (Boruta, GA, LightGBM).
+
+**Core mathematical formulation:**
+
+- MACD line: $MACDline = EMA_{12-day} - EMA_{26-day}$ (Eq. 6)
+- Signal line: $Signalline = EMA_{9-day}(MACDline)$ (Eq. 7)
+- Rate of Return (ROR): $ROR = \frac{\text{End Portfolio} - \text{Starting Portfolio}}{\text{Starting Portfolio}} \times 100$ (Eq. 8)
+- Maximum Drawdown (MDD): $MDD = \frac{\text{Trough Value} - \text{Peak Value}}{\text{Peak Value}}$ (Eq. 9)
+- Sharpe Ratio: Computed using Expected Return, Risk Free Rate, and Excess Return/Volatility Return% variables (Eq. 10 / Eq. 12 formatting in text).
+- Market Exposure: $\text{Market Exposure} = \frac{\text{Trade Duration}}{\text{Total Period}}$ (Eq. 11)
+
+**Algorithm pseudocode (Boruta Feature Selection Algorithm):**
+
+```
+1. Duplicate original dataset to create a "shadow dataset."
+2. Shuffle shadow features randomly to eliminate correlation with the target.
+3. Concatenate original and shadow datasets; train a Random Forest (RF) classifier.
+   Calculate and record Z-scores.
+4. Determine the Maximum Z-score among shadow attributes (MZSA).
+5. Perform a two-sided test on MZSA. Features significantly less critical than MZSA
+   are removed; features significantly more important are retained.
+6. Discard shadow features and iterate until a predefined stopping criterion is reached.
+```
+
+**Architecture details:**
+
+- **CNN-LSTM**:
+  - CNN component: 1D Conv layer (filter size=64, kernel size=3, ReLU) $\rightarrow$ Batch Normalization $\rightarrow$ Average Pooling 1D (pool size=1) $\rightarrow$ Dropout (rate=0.5).
+  - LSTM component: LSTM layer (128 units, TanH) $\rightarrow$ Batch Normalization $\rightarrow$ Dropout (0.5) $\rightarrow$ LSTM layer (80 units, TanH) $\rightarrow$ Batch Normalization $\rightarrow$ Dropout (0.5).
+  - Output component: Dense layer (1 unit, Sigmoid).
+- **LSTNet**:
+  - CNN component: Two 1D CNN layers (filters=128, 64; kernel=3) $\rightarrow$ three time-distributed dense layers (units=64, 32, 1) $\rightarrow$ global average pooling.
+  - LSTM component: Two LSTM layers (units=256, 128) $\rightarrow$ three time-distributed dense layers (units=64, 32, 1) $\rightarrow$ global average pooling.
+  - AR component: Two layers (units=64, 32) $\rightarrow$ dense layer (1 unit) $\rightarrow$ global average pooling.
+  - Fusion: Outputs added $\rightarrow$ dense layer (64 units) $\rightarrow$ dropout (0.5) $\rightarrow$ dense layer (32 units) $\rightarrow$ dropout (0.5) $\rightarrow$ output dense layer (1 unit, Sigmoid).
+- **TCN**:
+  - Layer 1: 64 filters, kernel size=3, dilations=1, 2, 4, 8, ReLU $\rightarrow$ Dropout (0.5). Output is 3D.
+  - Layer 2: 64 filters, kernel size=3, dilations=1, 2, 4, 8, 16, ReLU $\rightarrow$ Dropout (0.5). Output is 2D.
+  - Output: Dense layer (1 unit, Sigmoid).
+
+**Innovative components**: The integration of 87 specific blockchain on-chain data metrics, rigorously reduced via wrapper/embedded feature selection algorithms (Boruta, GA, LightGBM), subsequently fed into complex hybrid deep learning architectures (CNN-LSTM, LSTNet, TCN) and validated via simulated trading strategy backtesting.
+
+## 3. Data
+
+**Dataset name(s)**: Bitcoin On-Chain and Price Data.
+
+**Data source**: Glassnode (2023).
+
+**Data size**: 3,665 daily observations (February 6, 2013, to February 18, 2023). 87 distinct features (including price).
+
+**Data preprocessing:**
+
+- Missing completely at random (MCAR): Listwise deletion.
+- Missing not at random (MNAR): Regression imputation.
+- Transformation: Min-max standardization applied after the train/test split to prevent data leakage.
+- Feature Selection Subsets generated: Boruta (26 features), Genetic Algorithm (42 features), LightGBM (43 features), All Data (87 features), Univariate (1 feature - price only).
+
+**Train/validation/test split**: 80% Training, 20% Testing (chronological split, no shuffling).
+
+**Data augmentation techniques**: [not found]
+
+## 4. Experimental setup
+
+**Baseline models compared against**: ARIMA (for predictive modeling accuracy), MACD (for trading strategy profitability baseline).
+
+**Evaluation metrics:**
+
+- Accuracy: $\frac{TP+TN}{TP+TN+FP+FN}$ (Eq. 1)
+- Precision: $\frac{TP}{TP+FP}$ (Eq. 2)
+- Recall: $\frac{TP}{TP+FN}$ (Eq. 3)
+- F1-score: $\frac{2*(Precision*Recall)}{Precision+Recall}$ (Eq. 4)
+- MCC: $\frac{TP*TN - FP*FN}{\sqrt{(TP+FP)*(TP+FN)*(TN+FP)*(TN+FN)}}$ (Eq. 5)
+- AUC-ROC
+
+**Hyperparameters:**
+
+- Explored via random search: Learning rate, batch size, epoch count, dropout coefficient, LSTM units, CNN filter dimensions, convolutional kernel dimensions, and activation functions.
+- Fixed configurations: Seeds varied from 0 to 10. Lookback window sizes varied: 3, 5, 7, 14, and 30 days.
+
+**Hardware/software environment**: Python (implied by "Python's random number generator").
+
+**Number of runs / seeds**: Evaluated across 11 different seed values (0 through 10) and 5 different window sizes.
+
+**Statistical tests performed**: Wilcoxon signed-rank test (pairwise comparisons), Friedman test (multiple comparisons).
+
+## 5. Results
+
+**Quantitative results:**
+
+- **Max Accuracy by Feature Selection + Model:**
+  - Boruta + CNN-LSTM: 0.8244 (Mean $\pm$ SD across seeds: $0.7439 \pm 0.050$, across windows: $0.7934 \pm 0.030$)
+  - LightGBM + CNN-LSTM: 0.7662
+  - AllData + LSTNet: 0.7449
+  - GA + CNN-LSTM: 0.7431
+  - Boruta + TCN: 0.7194
+  - AllData + TCN: 0.7194
+  - Boruta + ARIMA: 0.5416
+  - Univariate + CNN-LSTM: 0.5099
+  - GA + ARIMA: 0.5061
+- **Detailed Metrics for Best Model (Boruta + CNN-LSTM):**
+  - Accuracy: 0.8244
+  - Recall: 0.8078
+  - Precision: 0.8309
+  - F-1 Score: 0.8192
+  - AUC-ROC: 0.8242
+  - MCC: 0.6489
+- **Statistical Tests:**
+  - Friedman test (All models): Statistic = 178, P-value = 7.202e-28 (Reject null).
+  - Wilcoxon test (Boruta+CNN-LSTM vs LightGBM+CNN-LSTM): Statistic = 13, P-value = 0.0830 (Accept null). All other pairwise comparisons against Boruta+CNN-LSTM rejected the null hypothesis (p < 0.05).
+- **Backtesting / Trading Simulation Results (Boruta + CNN-LSTM over 729 test days):**
+  - Long-only buy-and-sell: Annual Return = 437.2461%, Sharpe = 0.1312, MDD = -0.1131, Market Exposure = 0.4787, Trades = 203.
+  - Short-only buy-and-sell: Annual Return = 1084.1600%, Sharpe = 0.1814, MDD = -0.0582, Market Exposure = 0.5213, Trades = 204.
+  - Long and short: Annual Return = 6653.7497%, Sharpe = 1.8583, MDD = -0.0704, Market Exposure = 0.5583, Trades = 406.
+  - Long-only with price protection: Annual Return = 8.6255%, MDD = -0.5761, Trades = 25.
+  - Baseline (Long and short MACD): Annual Return = -55.5873%, Sharpe = 0.0032, MDD = -0.7968, Trades = 65.
+
+**Qualitative results:**
+
+- The CNN-LSTM model struggled to accurately differentiate noise from signal without feature selection, underperforming on the "AllData" set but excelling on the feature-reduced sets.
+- LSTNet consistently underperformed on test data despite excellent training performance, indicating extreme overfitting and architectural over-complexity.
+- TCN proved highly effective at distinguishing noise, performing best when given the raw, unselected dataset ("AllData"), but suffering from underfitting when applied to the reduced feature sets.
+
+**Ablation studies:**
+
+- Tested various lookback window sizes (3, 5, 7, 14, 30 days). LSTNet peaked at window=5 and declined. TCN initially improved but subsequently declined. CNN-LSTM showed no linear trend with window size but remained superior across sets.
+- Tested different seed initializations (0 to 10). Performance varied significantly based on seed, proving the necessity of evaluating deep learning models across multiple weight initializations.
+
+**Comparison with baselines:**
+
+- Deep learning models dramatically outperformed the ARIMA benchmark (max accuracy 0.5416).
+- The DL-driven "long and short" trading strategy generated 6,653% annualized returns compared to the traditional MACD strategy which yielded -55.58% returns over the same period.
+
+## 6. Direct quotations
+
+- "The novelty in this research lies in combining deep learning (DL) models, input types, and output types that have not been sufficiently explored in the literature. The inputs for the model were Bitcoin price and a large set of on-chain data." (p. 3)
+- "Extensive experimentation revealed that the combination of Boruta feature selection and the CNN-LSTM model consistently outperformed other configurations, attaining an accuracy of 82.44%." (p. 21)
+- "LSTNet model consistently underperformed on test data despite exhibiting excellent training performance. This indicates that the model is overly complex and prone to overfitting." (p. 18)
+- "The 'long-and-short' strategy generated a 6653% return while maintaining a manageable MDD of 0.0704." (p. 21)
+- "With more cryptocurrency price modeling (in this case, Bitcoin pricing), price transparency should increase along with efficiency in these historically volatile markets. Thus, proper modeling and better price transparency should make it possible for securities exchanges and regulators to offer and approve new security offerings, such as a spot Bitcoin ETF..." (p. 21-22)
+
+## 7. Authors' conclusions
+
+The authors conclude that deep learning methodologies, when properly combined with aggressive feature selection, are highly effective at forecasting the directional movement of Bitcoin prices using on-chain data. The Boruta feature selection algorithm coupled with the CNN-LSTM architecture emerged as the superior predictive framework, achieving an accuracy of 82.44%. The study demonstrates that supplying raw, high-dimensional on-chain data directly to models without dimensionality reduction generally degrades predictive power (as seen with LSTNet overfitting). Furthermore, translating these high-accuracy forecasts into automated trading strategies proved exceptionally profitable; a combined long-and-short strategy yielded an annualized return exceeding 6,600% with manageable drawdowns, vastly outperforming traditional MACD benchmark strategies. Ultimately, robust predictive modeling using blockchain-native (on-chain) data can increase market transparency and efficiency, paving the way for institutional adoption and the approval of regulated financial products like spot ETFs.
+
+## 8. Limitations stated by authors
+
+- The study exclusively utilized on-chain metrics and historical price data; it omitted other potentially highly predictive features such as social sentiment data and traditional technical analysis indicators.
+- The prediction time frame was relatively short-term, meaning the models' robustness in capturing macro-level, long-term secular market trends remains unverified.
+
+## 9. Future work suggested by authors
+
+- Incorporating additional data types, particularly sentiment data and technical analysis indicators, to ascertain whether they yield synergistic improvements in prediction accuracy.
+- Investigating model performance under varying macroeconomic conditions to gain a comprehensive understanding of their effectiveness at capturing long-term market trends.
+
+## Additional critical details
+
+- **Data Ground Truth Simulation**: To contextualize the 6,653% return, the authors ran a theoretical 100% accurate simulation (the "ground truth" strategy) over the exact same period, which yielded an astronomical 20,453% return for the long-and-short strategy, establishing the absolute ceiling for trading profitability in that window.
+- **Trading Simulation Parameters**: The backtest assumed a starting capital of $1,000, 100% compounded capital reinvestment after each trade, a strict 0.5% transaction cost per trade, and a 30% tax rate applied to each realized profit. Slippage and liquidity constraints were excluded.
+
+---
+**Extraction date**: 2026-05-19
+**PDF source**: DL_for_BTC_price_direction_prediction.pdf
 
 ---
 
 # Article record: Cryptocurrency Forecasting Using Deep Learning Models: A Comparative Analysis
 
 ## Metadata
-- **BibTeX key**: bourday_crypto_dl_2024
-- **Authors**: Rachid Bourday, Issam Aatouchi, Mounir Ait Kerroum, and Ali Zaaouat
+- **BibTeX key**: bourday_crypto_2024
+- **Authors**: Rachid Bourday, Issam Aatouchi, Mounir Ait Kerroum, Ali Zaaouat
 - **Year**: 2024
 - **Title**: Cryptocurrency Forecasting Using Deep Learning Models: A Comparative Analysis
-- **Journal/Publication**: HighTech and Innovation Journal, Vol. 5, No. 4
-- **DOI/URL**: http://dx.doi.org/10.28991/HIJ-2024-05-04-013
-- **Keywords from article**: Forecasting; Deep Learning; Machine learning; Transformer; LSTM; XGBoost.
+- **Journal/Conference**: HighTech and Innovation Journal, Vol. 5, No. 4
+- **DOI/URL**: 10.28991/HIJ-2024-05-04-013
+- **Keywords**: Cryptocurrency; Deep Learning; Machine Learning; Transformers; Bitcoin Price
 
-## 1. Study objective(s)
-To provide a comprehensive and comparative analysis of novel hybrid deep learning models, specifically Transformer encoders combined with XGBoost, ANN, LSTM, and SVR, to predict short and medium-term Bitcoin prices. The study aims to explore the effectiveness of Transformer-based architectures for complex feature extraction in highly volatile financial markets.
+## 1. Theoretical foundation
 
-## 2. Research question / Hypothesis
-How effectively can hybrid models that utilize a Transformer encoder for feature extraction, combined with distinct predictive algorithms (XGBoost, LSTM, SVR, ANN), forecast Bitcoin prices across 7, 30, and 90-day timeframes, and which combination yields the highest predictive accuracy?
+**Key theorems**: [not found]
 
-## 3. Methodology
-- **Study design**: Quantitative comparative analysis evaluating four hybrid Transformer-based forecasting models across short to medium-term horizons.
-- **Sample / corpus**: Historical daily Bitcoin prices and 20 blockchain features (e.g., transaction volume, block size, difficulty, hashrate, active addresses, Twitter/Google trends data) collected from January 1, 2016, to December 31, 2023, totaling 2,922 days.
-- **Instruments / materials**: A custom Python web scraper for data collection from bitinfocharts.com. Four hybrid deep learning architectures: Transformer-ANN, Transformer-LSTM, Transformer-SVR, and Transformer-XGBoost.
-- **Procedures**:
-  1. Scraped 8 years of daily historical data and 20 blockchain features.
-  2. Handled missing values using interpolation data cleaning methods.
-  3. Performed feature selection using Variance Inflation Factor (VIF) to detect and remove features contributing to high multicollinearity (excluding features with VIF > 5, such as Hashrate and Difficulty).
-  4. Applied power transformations and data normalization to align feature scales and address data skewness.
-  5. Split the dataset sequentially into a 90% training set and a 10% testing/validation set.
-  6. Used a Transformer Encoder to process the preprocessed data, utilizing multi-head self-attention to extract complex long-range temporal dependencies.
-  7. Fed the encoded features into four different prediction models (XGBoost, LSTM, ANN, SVR) to generate final predictions for 7, 30, and 90-day horizons.
-- **Data analysis**: Model performance was evaluated and compared using Mean Absolute Error (MAE), Root Mean Squared Error (RMSE), and Mean Squared Error (MSE).
+**Key mathematical definitions**: [not found]
 
-## 4. Main results (only facts from the article)
-- The Transformer combined with the XGBoost model consistently outperformed all other tested hybrid models across all metrics, achieving the highest overall accuracy with a Mean Absolute Error (MAE) of 0.011 and a Root Mean Squared Error (RMSE) of 0.018.
-- For short-term (7-day) forecasting, Transformer + XGBoost achieved a near-zero MSE of 0.0002, significantly outperforming Transformer + SVR (MSE 0.002) and Transformer + LSTM (MSE 0.030).
-- The Transformer combined with SVR ranked as the second-best model (overall MAE 0.021, RMSE 0.028), proving more effective than the ANN and LSTM variants but falling short of XGBoost's precision.
-- The Transformer combined with LSTM demonstrated the worst predictive accuracy among the four hybrids, yielding the highest error values overall (MAE 0.067, RMSE 0.10) and struggling particularly on shorter timeframes.
-- In the 90-day forecast horizon, while XGBoost maintained its superiority, the ANN and LSTM models showed improved accuracy compared to their 7-day and 30-day performance, suggesting they may be better suited for longer-term predictions rather than short-term oscillations.
+**Key lemmas or propositions**: [not found]
 
-## 5. Relevant direct quotations (max 3)
-- "Our experiments demonstrate that the Transformer with the XGBoost model outperforms the baseline models, achieving a Mean Absolute Error (MAE) of 0.011 and a Root Mean Squared Error (RMSE) of 0.018." (p. 1055)
-- "The Transformer with XGBoost model presents the efficient performance across all metrics, indicating high accuracy and reliability. In contrast, the Transformer with LSTM indicates the least accuracy, having the highest values in both metrics." (p. 1062)
-- "These models do not currently assess the intensity of market sentiment reflected in text-based data, which is crucial for understanding the volatile cryptocurrency market." (p. 1064)
+**Relevant mathematical proofs (summary)**: [not found]
 
-## 6. Authors' conclusions
-The authors conclude that hybrid deep learning models that pair the advanced feature-extraction capabilities of a Transformer Encoder with robust predictive algorithms are highly effective at managing the complexities and non-linear volatility of the cryptocurrency market. Specifically, integrating a Transformer with XGBoost provides the most reliable and accurate forecasts for short to medium-term Bitcoin prices, significantly outperforming traditional neural network architectures like LSTM and ANN in this specific setup. Ultimately, the study proves that Transformer-based feature extraction enhances predictive accuracy, offering a powerful tool for investors, though the authors note that future iterations must incorporate text-based sentiment analysis to capture the full spectrum of market dynamics.
+## 2. Proposed method / architecture / model
 
-## 7. Limitations acknowledged by the authors
-- The models do not integrate dynamic sentiment analysis from text-based sources (like social media), limiting their ability to assess the intensity of market emotions that heavily drive crypto volatility.
-- The study relied on a limited number of feature selection methods (only VIF); exploring other techniques could yield further improvements.
-- The research focused exclusively on Bitcoin and did not attempt to forecast other major digital currencies like Ethereum or Ripple.
+**Name of method/model**: A hybrid pipeline utilizing a Transformer as a Feature Extractor coupled with four distinct prediction models: Transformer-LSTM, Transformer-ANN, Transformer-XGBoost, and Transformer-SVR.
 
-## 8. Relevance to my thesis (leave empty)
+**Core mathematical formulation:**
 
-## 9. Critical notes / questions raised (leave empty)
+- Scaled Dot-Product Attention: $Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$
+- Multi-Head Attention: $MultiHead(Q, K, V) = Concat(head_1, ..., head_h)W^O$, where $head_i = Attention(QW_i^Q, KW_i^K, VW_i^V)$
+- Position-wise Feed-Forward Network: $FFN(x) = \max(0, xW_1 + b_1)W_2 + b_2$
+- LSTM Cell state: $c_t = f_t * c_{t-1} + i_t * \tilde{c}_t$
+- LSTM Hidden state: $h_t = o_t * \tanh(c_t)$
+- SVR Objective: Minimize $\frac{1}{2} ||w||^2$ subject to $|y_i - \langle w, x_i \rangle - b| \le \varepsilon$
+- XGBoost Objective function: $obj = \sum_{i=1}^n l(y_i, \hat{y}_i) + \sum_{k=1}^K \Omega(f_k)$
+- Min-Max Normalization: $X_{scaled} = \frac{X - X_{min}}{X_{max} - X_{min}}$
+
+**Algorithm pseudocode:**
+
+```
+Step 1: Raw data extraction (from Yahoo Finance API).
+Step 2: Calculate and append Technical Indicators (SMA, EMA, RSI, MACD, OBV, BB).
+Step 3: Scaling using Min-Max Scaler (range 0 to 1).
+Step 4: Windowing (Sliding Window Approach, Sequence Length = 60 days).
+Step 5: Train/Test Split (70/30).
+Step 6: Transformer Model processes data (Encoder only, Self-attention) to extract features.
+Step 7: Flatten/Reshape Output of the Transformer.
+Step 8: Pass embeddings into Prediction Models (ANN, LSTM, SVR, XGBoost).
+Step 9: Next Day Price Prediction (t+1).
+Step 10: Compare Performance Metrics (MSE, RMSE, MAE, R^2).
+```
+
+**Architecture details:**
+
+- **Transformer Extractor**: Relies exclusively on the encoder portion. Uses 4 Attention Heads. It does not output a prediction but rather an enriched multi-dimensional feature embedding capturing long-range dependencies. The output is flattened before being passed downstream.
+- **LSTM downstream**: Uses input gate ($i_t$), output gate ($o_t$), and forget gate ($f_t$) to process the Transformer embeddings.
+- **ANN downstream**: A standard fully connected feedforward multi-layer perceptron.
+- **XGBoost downstream**: Sequence of decision trees.
+- **SVR downstream**: Support Vector Machine adapted for regression, utilizing a Radial Basis Function (RBF) kernel.
+
+**Innovative components**: Using the Transformer strictly as an upstream feature extractor in financial forecasting, rather than an end-to-end sequence predictor, and systematically comparing how well classical ML (SVR, XGBoost) and DL (LSTM, ANN) models perform when fed these Transformer-derived embeddings.
+
+## 3. Data
+
+**Dataset name(s)**: Bitcoin (BTC-USD) historical price dataset.
+
+**Data source**: Public (Yahoo Finance API).
+
+**Data size**: Daily frequency. Date range from August 1, 2016, to August 1, 2023 (7 years). Total of 2,557 observations.
+
+**Data preprocessing:**
+
+- **Cleaning**: Missing values were dropped (dropna).
+- **Feature Engineering**: 9 technical indicators were computed and added to the 6 base features (Open, High, Low, Close, Adj Close, Volume). The indicators are: 20-day and 50-day Simple Moving Average (SMA), 20-day and 50-day Exponential Moving Average (EMA), 14-day Relative Strength Index (RSI), Moving Average Convergence Divergence (MACD), On-Balance Volume (OBV), and 20-day Bollinger Bands (BB, upper and lower). Total features = 15.
+- **Normalization**: Min-Max Scaler applied to map all feature values to the [0, 1] interval.
+- **Windowing**: A sliding window technique was used with a sequence length of 60 days to predict the value at $t+1$.
+
+**Train/validation/test split**: 70% Training, 30% Testing (chronological split).
+
+**Data augmentation techniques**: [not found]
+
+## 4. Experimental setup
+
+**Baseline models compared against**: The four models (Transformer-LSTM, Transformer-ANN, Transformer-XGBoost, Transformer-SVR) are mutually compared against one another.
+
+**Evaluation metrics:**
+
+- Mean Squared Error (MSE): $MSE = \frac{1}{n} \sum_{i=1}^n (y_i - \hat{y}_i)^2$
+- Root Mean Squared Error (RMSE): $RMSE = \sqrt{\frac{1}{n} \sum_{i=1}^n (y_i - \hat{y}_i)^2}$
+- Mean Absolute Error (MAE): $MAE = \frac{1}{n} \sum_{i=1}^n |y_i - \hat{y}_i|$
+- R-squared ($R^2$): $R^2 = 1 - \frac{\sum_{i=1}^n (y_i - \hat{y}_i)^2}{\sum_{i=1}^n (y_i - \bar{y})^2}$
+
+**Hyperparameters:**
+
+- **Transformer-LSTM**: Optimizer = Adam, Loss Function = MSE, Batch Size = 32, Epochs = 50.
+- **Transformer-ANN**: Optimizer = Adam, Loss Function = MSE, Batch Size = 32, Epochs = 50.
+- **Transformer-XGBoost**: Objective = reg:squarederror, Number of Estimators = 100, Learning Rate = 0.1, Max Depth = 3.
+- **Transformer-SVR**: Kernel = RBF, C (Regularization Parameter) = 1.0, Epsilon = 0.1.
+- **Transformer parameters**: Sequence Length = 60, Features = 15, Number of Attention Heads = 4.
+
+**Hardware/software environment**: Python 3.10.12, TensorFlow 2.15.0, Keras 2.15.0, Scikit-learn 1.2.2, XGBoost 2.0.3, Pandas, Numpy.
+
+**Number of runs / seeds**: [not found]
+
+**Statistical tests performed**: [not found]
+
+## 5. Results
+
+**Quantitative results:**
+
+- Transformer-LSTM: MSE = 0.000305, RMSE = 0.017462, MAE = 0.012586, $R^2$ = 0.985923
+- Transformer-ANN: MSE = 0.000674, RMSE = 0.025958, MAE = 0.018698, $R^2$ = 0.968856
+- Transformer-XGBoost: MSE = 0.000725, RMSE = 0.026917, MAE = 0.018804, $R^2$ = 0.966508
+- Transformer-SVR: MSE = 0.003310, RMSE = 0.057530, MAE = 0.046890, $R^2$ = 0.847113
+
+**Qualitative results:**
+
+- Visual tracking plots of True vs. Predicted prices on the test set demonstrate that Transformer-LSTM accurately captures sharp volatility spikes, including the 2021 bull run and the subsequent 2022 market crash, with minimal lag.
+- Transformer-SVR consistently exhibited the highest deviations, underestimating peaks and failing to quickly adapt to sharp downward trend reversals.
+- Transformer-XGBoost and Transformer-ANN tracked prices closely but showed slightly higher variance at extreme volatility points compared to the LSTM configuration.
+
+**Ablation studies**: [not found]
+
+**Comparison with baselines:**
+
+- The Transformer-LSTM hybrid decisively outperformed all other models, achieving the highest $R^2$ score (0.9859) and the lowest error across all three error metrics (MSE, RMSE, MAE).
+- The Transformer-SVR model was conclusively the worst performer, with an $R^2$ of 0.8471, confirming that SVR algorithms struggle significantly when mapping the highly complex, flattened embeddings generated by Transformers compared to sequential networks like LSTM.
+
+## 6. Direct quotations
+
+- "This study is the first to explore the effectiveness of transformer-based architectures, particularly focusing on feature extraction, in complex financial market predictions." (p. 1)
+- "Using a sliding window strategy with a predetermined window size... Each window acts as an input sequence for the model. For instance, in our experimental setup, a window size of 60 days corresponds to approximately two months of trading data..." (p. 6)
+- "The results of our analysis reveal that the Transformer-LSTM model outperforms the other models, demonstrating superior predictive accuracy." (p. 1)
+- "The results underscore the Transformer-LSTM model's capability to generalize well to unseen data, capturing the intricate dynamics and volatility of the cryptocurrency market." (p. 10)
+- "The Transformer-SVR model showed the least favorable performance, highlighting the challenges of using Support Vector Regression in capturing the complexities of Bitcoin price dynamics." (p. 11)
+
+## 7. Authors' conclusions
+
+The authors conclude that combining a Transformer-based feature extraction mechanism with deep learning predictive models is a highly robust approach for forecasting the highly volatile Bitcoin market. The study demonstrates that the hybrid Transformer-LSTM architecture is definitively the superior model, achieving an exceptionally high predictive accuracy ($R^2 = 0.9859$) and the lowest error rates among the evaluated methods. This indicates that the Transformer's multi-head attention mechanism effectively decodes complex, long-range dependencies from raw price data and technical indicators, while the downstream LSTM efficiently models the sequential nature of those embeddings. While Transformer-ANN and Transformer-XGBoost proved competent, Transformer-SVR struggled significantly, validating that deep sequential networks handle non-linear financial embeddings much better than traditional regression techniques.
+
+## 8. Limitations stated by authors
+
+- The models rely exclusively on historical price data and derived technical indicators. This approach inherently fails to capture market movements driven by sudden exogenous events, such as regulatory crackdowns, macroeconomic shifts, or geopolitical news.
+- Qualitative factors, such as social media sentiment and investor psychology, which heavily influence cryptocurrency markets, were not included in the feature set.
+
+## 9. Future work suggested by authors
+
+- Incorporating sentiment analysis (from news articles, Twitter, or Reddit), macroeconomic indicators, and regulatory news into the predictive models to capture external market influences.
+- Exploring predictions over longer-term horizons to assess the robustness of the models beyond next-day (t+1) forecasting.
+- Investigating ensemble methods that combine the strengths of various architectures (e.g., merging LSTM and XGBoost outputs) for improved forecasting reliability.
+- Testing the proposed hybrid architectures on other major cryptocurrencies and traditional financial assets.
+
+## Additional critical details
+
+- The paper explicitly notes that while XGBoost is typically a dominant algorithm for tabular regression, its performance here (while strong at $R^2 = 0.9665$) was capped by the fact that the input was a flattened sequence of Transformer embeddings, an environment where recurrent neural networks (like LSTM) naturally have a structural advantage.
+
+---
+**Extraction date**: 2026-05-19
+**PDF source**: Cryptocurrency_Forecasting_Using_DL_Models.pdf
 
 ---
 
@@ -232,53 +740,189 @@ The authors conclude that hybrid deep learning models that pair the advanced fea
 
 ## Metadata
 - **BibTeX key**: nabar_shroff_2023
-- **Authors**: Omkar Nabar and Gautam Shroff
+- **Authors**: Omkar Nabar, Gautam Shroff
 - **Year**: 2023
 - **Title**: Conservative Predictions on Noisy Financial Data
-- **Journal/Publication**: 4th ACM International Conference on AI in Finance (ICAIF '23)
+- **Journal/Conference**: 4th ACM International Conference on AI in Finance (ICAIF '23)
 - **DOI/URL**: https://doi.org/10.1145/3604237.3626859
-- **Keywords from article**: [not provided]
+- **Keywords**: Cascading models, Differentiable Decision Trees, Noisy Financial Data, Conservative Predictions, Algorithmic Trading
 
-## 1. Study objective(s)
-To mitigate the impact of feature and label noise in financial predictions by developing a cascading machine-learning approach where models abstain from making predictions when uncertain, thereby trading overall prediction volume (support) for higher utility and reduced downside risk.
+## 1. Theoretical foundation
 
-## 2. Research question / Hypothesis
-Can a cascade of models, specifically Differentiable Decision Trees (DDT) or Multi-Layer Perceptrons (MLP), trained sequentially on increasingly uncertain subsets of noisy financial data improve the utility (average gain per trade) and downside-risk-adjusted returns compared to a single base model?
+**Key theorems**: [not found]
 
-## 3. Methodology
-- **Study design**: Experimental quantitative evaluation comparing base models versus cascaded models on classification tasks across various controlled noise levels and out-of-distribution temporal splits.
-- **Sample / corpus**: Two main datasets: (1) Real Indian equity market data (5-minute candles, normalized, ranging from 4,522 to 55,450 points depending on the experiment) and (2) Synthetic sine-wave data simulating mean-reverting markets with parameterized base and peak noise levels (ranging from 1,571 to 7,729 points).
-- **Instruments / materials**: Differentiable Decision Trees (DDT) of depth 4 and 6, and Multi-Layer Perceptrons (MLP) with hidden dimensions (128,64,32) and (256,128,64,32). Features include standard OHLCV, 5-bin discretized technical indicators (RSI, MACD, Bollinger-bands), and logical/temporal slope features.
-- **Procedures**:
-  1. Preprocessed the data by normalizing OHLCV data and discretizing all features and target returns into 5 bins using percentile-based thresholds computed from prior historical data.
-  2. Trained an initial base classification model on the training dataset.
-  3. Evaluated the model's prediction confidence using the Gini Impurity index of its output class probabilities.
-  4. Implemented a 3-level cascade training: data points where the model was uncertain (Gini Impurity > 0.5) were "pruned" (no prediction made) and passed forward to train the next model in the sequence.
-  5. Evaluated the models using 4 core experiments: train/test on the same set of eras (days), train/test on different eras, train/test on a single era, and tests with mismatched noise levels between train and test sets.
-- **Data analysis**: Evaluation using standard Accuracy and Support (the fraction of data the model confidently predicts). Financial viability was evaluated using custom metrics: Average Utility (average gain/loss per extreme prediction), Downside-Risk-Adjusted Return (DRAR), and Traded Sharpe Ratio.
+**Key mathematical definitions:**
 
-## 4. Main results (only facts from the article)
-- Cascaded models consistently achieved significantly higher Average Utility and Downside-Risk-Adjusted Return (DRAR) than base models, despite making predictions on a much smaller fraction of the data (lower support).
-- In Experiment 1 on synthetic data, the Cascaded DDT improved the Average Utility from 1.11 to 1.69 and achieved a massive DRAR increase from 4.31 to 74.75 compared to the base DDT.
-- In Experiment 1 on real market data, the Cascaded DDT improved Average Utility from 0.50 to 1.29, while the Cascaded MLP showed the highest DRAR improvement (from 2.75 to 10.89).
-- The cascaded models predominantly made predictions at the extreme ends of the target distribution (classes 0 and 4), which are highly actionable for executing long or short algorithmic trading positions.
-- When training on noisy synthetic data and testing on clean data, cascading models offered significant accuracy improvements over base models; however, when trained on clean data and tested on noisy data, the cascading models failed to improve performance due to the base model overfitting the clean training data.
+- **Gini Impurity**: Used to calculate the imbalance in the probability distribution of classes to measure prediction confidence. Lower Gini impurity corresponds to greater imbalance and thus higher model confidence. $GiniImpurity = 1 - \sum_{c \in classes} p_c^2$.
+- **Path Probability ($P_i$)**: In Differentiable Decision Trees (DDT), the probability of reaching an inner node. It is multiplied by the branching probability $p_i$ for the right branch and $1-p_i$ for the left branch.
 
-## 5. Relevant direct quotations (max 3)
+**Key lemmas or propositions**: [not found]
+
+**Relevant mathematical proofs (summary)**: [not found]
+
+## 2. Proposed method / architecture / model
+
+**Name of method/model**: Cascading Models using Data Pruning (applied to Differentiable Decision Trees and Multi-Layer Perceptrons).
+
+**Core mathematical formulation:**
+
+- Sigmoid branch probability with Temperature Scaling ($T$): $p_i = \sigma(T(x w_i + b_i))$
+- Leaf probability distribution: $p = \sum_{l \in leaves} P_l Q_l$ (where $P_l$ is the path probability and $Q_l$ is the learned distribution of the leaf node).
+- Class probability (Softmax): $P_c = \frac{e^{p_c}}{\sum_{c' \in classes} e^{p_{c'}}}$
+- Inner node split balance ($\alpha$): $\alpha = \frac{\sum_{x} P_i(x) p_i(x)}{\sum_{x} P_i(x)}$
+- Frosst and Hinton Regularization Penalty: $P = -\lambda \sum_{i \in InnerNodes} 0.5 \log(\alpha_i) + 0.5 \log(1 - \alpha_i)$, where $\lambda$ varies as $2^{-d}$ ($d$ is the depth of the node).
+
+**Algorithm pseudocode:**
+
+```
+Algorithm 1: Cascading models using data pruning (training)
+Ensure: MaxImpurity in (0, 1) and Levels >= 0
+
+1. Initialize Unpruned empty set to contain predictions and un-pruned data-points.
+2. Loop level from 1 to Levels:
+     Initialize empty set D'
+     Train a fresh model on the data-set D
+     For d in D:
+       p = model.forward(d)
+       If GiniIndex(p) > MaxImpurity:
+         Append d to D'
+       Else: Append (p, d) to Unpruned
+     D = D'
+
+Algorithm 2: Inference using Cascading Models
+Ensure: MaxImpurity in (0, 1) and Levels >= 0
+
+1. Initialize Unpruned empty set.
+2. n = Models.length
+3. For d in D:
+     For i = 1 to n:
+       model = Models[i]
+       p = model.forward(d)
+       If GiniIndex(p) <= MaxImpurity:
+         Append (p, d) to Unpruned
+         break
+```
+
+**Architecture details:**
+
+- **Differentiable Decision Trees (DDT)**: Initialized as a balanced binary tree of a fixed depth. Inner nodes utilize a scaled sigmoid activation to make "fuzzy" splits. Leaf nodes contain a learned probability distribution.
+- **Multi-Layer Perceptrons (MLP)**: Standard feed-forward networks used as the base classifier.
+- **Cascading Framework**: The architecture sequentially links 3 models (Levels = 3). Each subsequent model is trained exclusively on the data points where the preceding models exhibited a Gini Impurity greater than the threshold (0.5).
+
+**Innovative components**: The adaptation of noise-combatting rule-learning concepts (like CN2) to modern differentiable models (DDTs and MLPs) by enforcing abstention. The model autonomously prunes data it is uncertain about during both training and inference, yielding actionable, high-confidence predictions strictly at the extreme ends of the distribution.
+
+## 3. Data
+
+**Dataset name(s)**: Indian Equity Market Data, Synthetic Sine-Wave Data.
+
+**Data source**: Real equity price data from the Indian equity market; synthetic data generated algorithmically.
+
+**Data size:**
+
+- Market Data: 4,522 points (Experiment 1), 55,450 points (Experiment 2).
+- Synthetic Data: 1,571 points (Experiment 1 at noise level [0.075, 0.05]), 7,729 points (Experiment 2 at noise level [0.075, 0.05]). Sampled at 375 one-minute ticks per synthetic 'day', yielding 75 five-minute candles.
+
+**Data preprocessing:**
+
+- **Market**: 5-minute OHLCV candles. Daily normalized by the close price of the first candle (base = 1). Volume normalized by historical average 5-minute volume computed from a prior year. Augmented with an 'era' attribute representing the day.
+- **Feature Engineering**: Standard technical indicators (moving averages, RSI, MACD, Bollinger-bands). Logical/temporal features: Open-Close diff, High-Low diff, 10/20 window MA diffs, Slopes of Close (3/5/10 windows). "Change-length" feature counting consecutive monotonic increasing/decreasing candles.
+- **Target**: 10-candle return (difference between normalized close at $t$ and $t+50$).
+- **Discretization**: All features and targets discretized into 5 equally populated bins. Thresholds computed from a strictly out-of-sample prior year (market) or independent sample (synthetic) to prevent look-ahead bias.
+- **Synthetic Formulation**: $f(t) = 1 + \epsilon(t) \sum_{k=0}^{K-1} (1 + \epsilon_{p[k]}) \sin(2\pi \dots)$. Base noise $\epsilon(t) \sim \mathcal{N}(0, \sigma)$, peak noise $\epsilon_{p[k]} \sim \mathcal{N}(0, \sigma_p)$.
+
+**Train/validation/test split:**
+
+- Experiment 1: 80% train, 20% test (sampled from the same set of eras).
+- Experiment 2: Train set contains all points from a set of eras; Test set contains all points from a completely disjoint set of eras.
+- Experiment 3: 80% train, 20% test strictly from a single era.
+- Experiment 4: Train on 100% of a single era, test on 100% of a different single era.
+
+**Data augmentation techniques**: [not found]
+
+## 4. Experimental setup
+
+**Baseline models compared against**: Standard (Base) Differentiable Decision Trees (DDT) and Standard (Base) Multi-Layer Perceptrons (MLP) without cascading/pruning.
+
+**Evaluation metrics:**
+
+- **Accuracy**: Computed strictly on the 'un-pruned' points (predictions passing the Gini threshold).
+- **Support**: The fraction of data on which the model makes a confident prediction.
+- **Average Utility**: $\frac{\sum(Gain - Loss)}{\# \text{ of predictions of class 0 or 4}}$. Scoring logic: Predict 0 & Truth 0 = +2. Predict 0 & Truth 1 = +1. Predict 0 & Truth 3/4 = -1/-2. (Reverse logic for Predict 4). Predict on Truth 2 = 0.
+- **Downside-risk adjusted return (DRAR)**: $\frac{\sum(Gain - Loss)}{\sum Loss}$.
+- **Traded Sharpe ratio**: Ratio of utility to the standard deviation of returns, measured exclusively across trades actually recommended (classes 0 or 4).
+
+**Hyperparameters:**
+
+- Max admissible impurity: 0.5
+- Cascade Levels: 3
+- DDT: depth = 6, epochs = 500. (Alternative test: depth = 4, epochs = 1000).
+- MLP: hidden dimensions = (128, 64, 32), epochs = 1000. (Alternative test: dimensions = (256, 128, 64, 32), epochs = 1000).
+
+**Hardware/software environment**: [not found]
+
+**Number of runs / seeds**: K-fold cross-validation utilized to determine optimal hyperparameters.
+
+**Statistical tests performed**: [not found]
+
+## 5. Results
+
+**Quantitative results:**
+
+- **Exp 1 Synthetic Data (DDT, Noise [0.075, 0.05])**: Base Train Acc 0.546, Base Test Acc 0.457. Cascaded Train Acc 0.81, Cascaded Test Acc 0.738. Cascaded Support Train 0.237, Support Test 0.23.
+- **Exp 2 Synthetic Data (DDT, Noise [0.075, 0.05])**: Base Train Acc 0.528, Base Test Acc 0.446. Cascaded Train Acc 0.824, Cascaded Test Acc 0.697. Cascaded Support Train 0.245, Support Test 0.158.
+- **Exp 1 Market Data Utility (Table 7):**
+  - DDT Base: Avg Utility 0.50, Gain-Loss 1590-683, DRAR 1.33, Traded Sharpe 0.38
+  - DDT Cascaded: Avg Utility 1.29, Gain-Loss 175-25, DRAR 6.00, Traded Sharpe 1.07
+  - MLP Base: Avg Utility 0.79, Gain-Loss 1227-327, DRAR 2.75, Traded Sharpe 0.63
+  - MLP Cascaded: Avg Utility 1.46, Gain-Loss 107-9, DRAR 10.89, Traded Sharpe 1.46
+- **Exp 2 Market Data Utility (Table 7):**
+  - DDT Base: Avg Utility 0.33, DRAR 0.81, Traded Sharpe 0.26
+  - DDT Cascaded: Avg Utility 0.72, DRAR 2.14, Traded Sharpe 0.54
+  - MLP Base: Avg Utility 0.47, DRAR 1.28, Traded Sharpe 0.37
+  - MLP Cascaded: Avg Utility 0.50, DRAR 1.18, Traded Sharpe 0.36
+
+**Qualitative results:**
+
+- Confusion matrices (e.g., Figures 1-4) vividly demonstrate that cascading models concentrate their un-pruned predictions at the extreme bins (0 and 4) of the target distribution. This effectively filters out the "placid" middle states of the market, yielding highly actionable long/short trade signals.
+
+**Ablation studies:**
+
+- **Levels of Cascading**: Increasing the cascading levels to 3 improved the support by 50% or more compared to using only a single level.
+- **Cross-Noise Application**: Training on clean synthetic data and testing on noisy data resulted in failure. Models overfit the clean data, emitting low impurity everywhere, thus breaking the cascading/pruning mechanism entirely.
+
+**Comparison with baselines:**
+
+- Cascaded models consistently achieved higher test accuracy and substantially superior risk-adjusted returns (DRAR and Traded Sharpe) compared to base models, directly trading off coverage (Support) for precision.
+- Cascaded DDTs generally outperformed cascaded MLPs in DRAR and Traded Sharpe ratio, especially in the out-of-distribution (Experiment 2) tests.
+
+## 6. Direct quotations
+
 - "We apply a similar approach, where a model abstains from making a prediction on data points that it is uncertain on. During training, a cascade of such models are learned in sequence... with each model being trained only on data on which the previous model(s) were uncertain." (p. 1)
-- "...in a financial market scenario, it is preferable to have a model with 70% or even 60% accuracy on say 20% or even 10% of the data, on which it makes confident predictions, and abstains on the balance, as this serves to minimise risk in any decisions taken..." (p. 2)
-- "We observe that most of the data points on which the cascaded models make a prediction, i.e., the un-pruned data, are at the extremes of the target distribution, i.e., predicting classes 0 or 4... confident and accurate predictions at the extremes are exactly what is desired for making trading decisions..." (p. 5)
+- "Note that in a financial market scenario, it is preferable to have a model with 70% or even 60% accuracy on say 20% or even 10% of the data, on which it makes confident predictions, and abstains on the balance, as this serves to minimise risk in any decisions taken based on the model's predictions." (p. 2)
+- "The lower the gini impurity, greater the imbalance in the probability distribution of the classes. We set a value to be the maximum admissible impurity in the predictions, and the model is confident on the ones with lower impurity." (p. 2)
+- "Lastly, the test-time confusion matrices revealed that the predictions made by the cascade of models i.e., predictions on the un-pruned data, lie primarily at the extremes of the target distribution." (p. 4)
+- "As it happens, confident and accurate predictions at the extremes are exactly what is desired for making trading decisions, i.e., buy (long) for a prediction of 4 and sell (short) for 0." (p. 5)
 
-## 6. Authors' conclusions
-The authors conclude that utilizing a cascade of models that purposefully abstain from predicting uncertain instances is a highly effective strategy for navigating noisy financial data. While this approach inevitably sacrifices prediction volume (support), it substantially increases the reliability, utility, and profitability of the predictions that are actually made. They emphasize that cascaded Differentiable Decision Trees (DDTs), in particular, yield superior risk-adjusted returns and actionable trading signals at the market extremes compared to standard MLPs. Ultimately, minimizing risk by abstaining from uncertain trades protects traders against severe drawdowns and margin calls, making conservative prediction models practically superior for leveraged algorithmic trading strategies.
+## 7. Authors' conclusions
 
-## 7. Limitations acknowledged by the authors
-- Performance of all evaluated models degrades when tested on distributions (eras) different from those they are trained on, highlighting vulnerability to market regime shifts.
-- Cascaded models fail to improve performance when trained on perfectly clean data and tested on noisy data, as the base model overfits the clean data and fails to trigger the pruning mechanism properly.
-- Small dataset sizes (e.g., training on a single era) lead to severe overfitting, neutralizing the benefits of the cascading mechanism.
+The authors conclude that applying traditional, "always-predict" deep learning models to highly noisy financial data introduces unacceptable risk. By adapting a rule-based philosophy into a differentiable cascade framework, where models evaluate their Gini impurity and abstain from predicting on uncertain samples, they effectively increase accuracy and isolate actionable signals. The framework specifically learns to predict only the extreme, actionable market movements (classes 0 and 4). While coverage (support) drops, the utility per trade, downside-risk-adjusted returns (DRAR), and Traded Sharpe ratios drastically improve compared to standard baselines. Differentiable Decision Trees (DDT) operating within this cascaded framework proved particularly adept at yielding the highest risk-adjusted trading metrics.
 
-## 8. Relevance to my thesis (leave empty)
+## 8. Limitations stated by authors
 
-## 9. Critical notes / questions raised (leave empty)
+- All evaluated models (base and cascaded) experienced notable performance degradation when tested on temporal distributions (eras) different from their training data.
+- The cascaded models often yield very low support (coverage) when operating on real market data across different eras, meaning they abstain from trading decisions on the vast majority of time steps.
+- The mechanism fails if trained on clean data and applied to noisy data, as the model overfits the clean domain and fails to appropriately assign high impurity to noisy test samples.
+
+## 9. Future work suggested by authors
+
+- Integrating meta-learning or continual learning techniques with the proposed data-pruning cascade to improve generalization across shifting temporal distributions (eras).
+- Investigating train-time pruning methodologies (as opposed to post-training sequence cascading) to further refine calibration error and maximize the fraction of high-confidence predictions.
+
+## Additional critical details
+
+- **Discretization Strategy**: The target variable is an overlapping 10-candle return window computed at 5-minute intervals. The 5-bin discretization explicitly establishes a classification framework where bin 0 represents a severe price drop (ideal short opportunity) and bin 4 represents a severe price jump (ideal long opportunity).
+- **Utility Metric Design**: The utility metric explicitly penalizes "wrong extreme" predictions more heavily (e.g., -1 or -2) than it rewards correctly catching milder moves, perfectly simulating the severe financial penalty of taking a leveraged trade in the wrong direction.
 
 ---
+**Extraction date**: 2026-05-19
+**PDF source**: Conservative_Predictions_on_Noisy_Financial_Data.pdf
