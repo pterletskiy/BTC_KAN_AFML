@@ -578,7 +578,7 @@ The authors conclude that deep learning methodologies, when properly combined wi
 # Article record: Cryptocurrency Forecasting Using Deep Learning Models: A Comparative Analysis
 
 ## Metadata
-- **BibTeX key**: bourday_crypto_2024
+- **BibTeX key**: bourday_crypto_dl_2024
 - **Authors**: Rachid Bourday, Issam Aatouchi, Mounir Ait Kerroum, Ali Zaaouat
 - **Year**: 2024
 - **Title**: Cryptocurrency Forecasting Using Deep Learning Models: A Comparative Analysis

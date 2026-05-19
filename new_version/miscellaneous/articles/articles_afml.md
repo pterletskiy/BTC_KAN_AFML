@@ -526,7 +526,7 @@ The authors conclude that implementing Supervised Autoencoder (SAE) models, augm
 # Article record: Enhanced Genetic-Algorithm-Driven Triple Barrier Labeling Method and Machine Learning Approach for Pair Trading Strategy in Cryptocurrency Markets
 
 ## Metadata
-- **BibTeX key**: fu_enhanced_2024
+- **BibTeX key**: fu_et_al_2024
 - **Authors**: Ning Fu, Mingu Kang, Joongi Hong, Suntae Kim
 - **Year**: 2024
 - **Title**: Enhanced Genetic-Algorithm-Driven Triple Barrier Labeling Method and Machine Learning Approach for Pair Trading Strategy in Cryptocurrency Markets
