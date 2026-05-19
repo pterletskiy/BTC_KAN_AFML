@@ -926,3 +926,154 @@ The authors conclude that applying traditional, "always-predict" deep learning m
 ---
 **Extraction date**: 2026-05-19
 **PDF source**: Conservative_Predictions_on_Noisy_Financial_Data.pdf
+
+---
+
+# Article record: Analysis of Macro Factors Influencing Cryptocurrency Price Fluctuations
+
+## Metadata
+- **BibTeX key**: song_macro_2025
+- **Authors**: Yangxi Song
+- **Year**: 2025
+- **Title**: Analysis of Macro Factors Influencing Cryptocurrency Price Fluctuations
+- **Journal/Conference**: Proceedings of ICFTBA 2025 Symposium: Data-Driven Decision Making in Business and Economics
+- **DOI/URL**: 10.54254/2754-1169/2025.BL28702
+- **Keywords**: cryptocurrency, macroeconomic indicators, Pearson correlation coefficient, ARIMA model prediction
+
+## 1. Theoretical foundation
+
+**Key theorems**: [not found]
+
+**Key mathematical definitions:**
+
+- **Pearson Correlation Coefficient**: Evaluates the linear relationship between two continuous variables. The correlation coefficient $r$ ranges from -1 to 1. The formulation is: $r = \frac{\sum (X_i - \bar{X})(Y_i - \bar{Y})}{\sqrt{\sum (X_i - \bar{X})^2 \sum (Y_i - \bar{Y})^2}}$
+- **Autoregressive Integrated Moving Average (ARIMA) Model**: A time-series prediction method structured around an autoregressive term ($p$), a differencing degree ($d$), and a moving average term ($q$). It estimates future data points by analyzing historical data patterns and errors.
+
+**Key lemmas or propositions**: [not found]
+
+**Relevant mathematical proofs (summary)**: [not found]
+
+## 2. Proposed method / architecture / model
+
+**Name of method/model**: Pearson Correlation Analysis integrated with an Autoregressive Integrated Moving Average (ARIMA) forecasting model.
+
+**Core mathematical formulation:**
+
+- **Pearson Correlation ($r$)**: $r = \frac{\sum (X_i - \bar{X})(Y_i - \bar{Y})}{\sqrt{\sum (X_i - \bar{X})^2 \sum (Y_i - \bar{Y})^2}}$
+
+**Algorithm pseudocode**: [not found]
+
+**Architecture details:**
+
+- The ARIMA model is characterized by three core parameters: $(p, d, q)$.
+- First-order differencing ($d=1$) was applied to achieve sequence stationarity prior to modeling.
+- Three specific parameter combinations were tested: ARIMA(2,1,0), ARIMA(1,1,1), and ARIMA(0,1,2).
+
+**Innovative components**: The study explores the sequential extraction of macroeconomic factors (M2, CPI, PPI, DXY) using Pearson correlation analysis as a filtering step before applying a traditional linear time-series model (ARIMA) to predict highly volatile cryptocurrency prices.
+
+## 3. Data
+
+**Dataset name(s)**: Bitcoin Closing Prices, M2 Money Supply, Consumer Price Index (CPI), Producer Price Index (PPI), US Dollar Index (DXY).
+
+**Data source**: Publicly sourced. Cryptocurrency prices were retrieved from CoinGecko. Macroeconomic data were retrieved from the Federal Reserve Bank of St. Louis (FRED).
+
+**Data size**: The data spans a 7-year period from March 2017 to March 2024. The frequency is monthly, resulting in exactly 85 data points.
+
+**Data preprocessing:**
+
+- Target variables and predictive features were chronologically aligned by month.
+- Time-series data underwent stationarity checks. Because the raw data was non-stationary, first-order differencing was applied before ARIMA modeling.
+
+**Train/validation/test split**: The text references splitting the data into a "training set" and a "test set" for evaluation, but exact partition sizes or ratios were not explicitly stated.
+
+**Data augmentation techniques**: [not found]
+
+## 4. Experimental setup
+
+**Baseline models compared against**: No external algorithms were used as baselines. Internal model comparisons were conducted between three distinct ARIMA configurations: ARIMA(2,1,0), ARIMA(1,1,1), and ARIMA(0,1,2).
+
+**Evaluation metrics:**
+
+- R-squared ($R^2$)
+- Mean Absolute Error (MAE)
+- Root Mean Squared Error (RMSE)
+- **Akaike Information Criterion (AIC)**: Used for model selection; lower values indicate better models.
+- **Bayesian Information Criterion (BIC)**: Used for model selection; imposes a heavier penalty for model complexity.
+- **Ljung-Box $Q$-statistic**: Evaluates whether model residuals resemble white noise (lack of autocorrelation).
+
+**Hyperparameters:**
+
+- Differencing degree ($d$): 1
+- Evaluated AR ($p$) and MA ($q$) ranges: $p \in \{0, 1, 2\}$, $q \in \{0, 1, 2\}$.
+
+**Hardware/software environment**: [not found]
+
+**Number of runs / seeds**: [not found]
+
+**Statistical tests performed:**
+
+- Pearson correlation significance test (p-values derived for $r$).
+- Ljung-Box test for residual autocorrelation.
+
+## 5. Results
+
+**Quantitative results:**
+
+- **Pearson Correlation with Bitcoin Price:**
+  - M2 Money Supply: $r = 0.812$ ($p < 0.01$)
+  - Consumer Price Index (CPI): $r = 0.771$ ($p < 0.01$)
+  - Producer Price Index (PPI): $r = 0.589$ ($p < 0.01$)
+  - US Dollar Index (DXY): $r = 0.222$ ($p = 0.04$)
+- **ARIMA Model Evaluation Metrics (Table 2):**
+  - ARIMA(2,1,0): $R^2$: 0.941, MAE: 3848.455, RMSE: 6223.771, AIC: 1740.098, BIC: 1747.362, Ljung-Box $Q(18)$: 18.232 ($p=0.440$).
+  - ARIMA(1,1,1): $R^2$: 0.941, MAE: 3843.518, RMSE: 6204.606, AIC: 1739.584, BIC: 1746.848, Ljung-Box $Q(18)$: 17.513 ($p=0.488$).
+  - ARIMA(0,1,2): $R^2$: 0.941, MAE: 3844.757, RMSE: 6207.240, AIC: 1739.654, BIC: 1746.918, Ljung-Box $Q(18)$: 17.842 ($p=0.466$).
+- **ARIMA(1,1,1) Parameter Estimates (Table 3):**
+  - Constant: 494.394 ($t=0.551$, $p=0.582$)
+  - AR(1) coefficient: -0.428 ($t=-1.026$, $p=0.305$)
+  - MA(1) coefficient: 0.560 ($t=1.458$, $p=0.145$)
+
+**Qualitative results:**
+
+- Ljung-Box tests for all three ARIMA models yielded p-values greater than 0.05, demonstrating that the residual errors approximate white noise and confirming that the models adequately captured the linear information in the data.
+- Time-series plot visualizations (Figures 1-4) confirmed similar overarching historical trends between Bitcoin and the selected macro variables, particularly the M2 supply.
+- When forecasting out-of-sample, the ARIMA model's prediction curve showed a profound divergence from the actual testing values, capturing almost none of the sharp price spikes characteristic of Bitcoin.
+
+**Ablation studies**: [not found]
+
+**Comparison with baselines:**
+
+- ARIMA(1,1,1) was selected as the optimal model structure strictly because it achieved the minimum AIC (1739.584) and BIC (1746.848) among the candidates.
+- Despite being the "best" linear fit, the model suffered from an exceptionally high RMSE (6204.606), demonstrating a near-total failure to accurately forecast extreme cryptocurrency fluctuations.
+
+## 6. Direct quotations
+
+- "The prediction performance of the ARIMA model is poor, and the research method still needs improvement. The purpose of this study is to quantify macro monetary policy, reflect the impact of cryptocurrency price fluctuations, and construct a more stable asset framework." (p. 1)
+- "The increase in the M2 money supply provides more liquidity to the market, and investors hold sufficient funds... the total amount of Bitcoin is capped at 21 million, determining its scarcity. A large amount of fiat currency will result in investors chasing scarce assets with more currency, leading to the rise of cryptocurrency." (p. 4)
+- "Through comparison, the AIC and BIC values of the ARIMA (1, 1, 1) model are relatively minimal, while the variation of the $R^2$ values are minor. Consequently, ARIMA (1, 1, 1) was selected as the final evaluation model." (p. 5)
+- "Based on actual values, the model error is quite significant, and the fluctuation curve does not align well, indicating poor predictive performance of the model." (p. 6)
+- "The ARIMA model is suitable for linear analysis. However, given the high volatility of Bitcoin, analyzing it strictly within a linear framework is inappropriate, resulting in significant predictive deviations in the ARIMA model." (p. 6)
+
+## 7. Authors' conclusions
+
+The author concludes that macroeconomic policies and indicators play a critical role in shaping cryptocurrency prices. Specifically, the M2 money supply exerts a highly significant positive correlation with Bitcoin prices, primarily due to fiat currency dilution increasing the demand for scarce, deflationary assets. The CPI and PPI also display strong positive correlations, whereas the US dollar index exhibits a comparatively weak correlation. However, despite identifying these strong statistical relationships, the study concludes that traditional linear time-series models, such as ARIMA, are fundamentally ill-equipped to forecast cryptocurrency markets. The extreme non-linear volatility of Bitcoin caused the ARIMA model to suffer massive predictive deviations and high error rates. Ultimately, researchers and investors must abandon strictly linear frameworks in favor of advanced, non-linear algorithms when building asset allocation and risk management models for cryptocurrencies.
+
+## 8. Limitations stated by authors
+
+- The utilization of monthly data over a restricted 7-year timeframe resulted in a small sample size (only 85 observations), which significantly reduced the statistical rigor and significance of the model's predictions.
+- The methodologies employed (Pearson correlation and ARIMA) are strictly linear analytical techniques. They inherently fail to capture the complex, non-linear, and highly volatile behavior that characterizes cryptocurrency assets.
+- Cryptocurrency prices are subjected to diverse external shocks beyond the four macroeconomic indicators analyzed, including geopolitical conflicts, regulatory changes, and institutional events (e.g., exchange bankruptcies), none of which were captured by the model.
+
+## 9. Future work suggested by authors
+
+- Expanding the predictive framework by incorporating a broader array of variables and adopting higher-frequency data (such as daily or minute-level intervals) to substantially increase the sample size and characterization accuracy.
+- Directly integrating specific market events, black swan occurrences, and evolving regulatory policy shifts into future predictive models.
+- Utilizing advanced, non-linear deep learning architectures, such as Artificial Neural Networks (ANN) or Long Short-Term Memory (LSTM) networks, to successfully model the erratic volatility of the cryptocurrency market.
+
+## Additional critical details
+
+- **ARIMA Sub-Parameter Insignificance**: When analyzing the optimal ARIMA(1,1,1) model, none of the specific coefficient estimates (Constant, AR(1), or MA(1)) were statistically significant at a standard $\alpha = 0.05$ level (all p-values were $>0.10$). This further reinforces the author's conclusion that the linear parameters failed to capture meaningful predictive signals for Bitcoin.
+
+---
+**Extraction date**: 2026-05-19
+**PDF source**: 10.54254/2754-1169/2025.BL28702
