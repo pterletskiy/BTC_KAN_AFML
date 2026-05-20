@@ -509,13 +509,14 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - **Multi-model design (novel relative to single-model MDA).**
   - MDA computed independently with Random Forest (500 trees, balanced class weights, captures nonlinear interactions).
   - MDA computed independently with Logistic Regression (balanced, captures linear effects).
-  - Final MDA = `mean(MDA_RF, MDA_LR)` per feature.
+  - **Per-model z-scoring before averaging.** RF and LR produce MDA scores on different absolute scales (RF's permutation drops F1 by approximately 0.005 to 0.05 per feature; LR's drops can be an order of magnitude smaller). Naive averaging of `(MDA_RF + MDA_LR) / 2` would let RF magnitudes dominate, effectively recovering an RF-only ranking. The implementation z-scores each model's MDA vector across features before averaging, so both models contribute symmetrically to the final ranking on a rank-normalised basis.
+  - Final MDA = `mean(zscore(MDA_RF), zscore(MDA_LR))` per feature.
   - Rationale: prevents bias toward any single model architecture; SFI in weak-signal regimes returns near-uniform scores; RF-only inflates tree-friendly features.
 - **Inner CV.** Purged 3-fold on the training set (same `t1`-based overlap conditions as outer CPCV).
-- **Selection rule.** Keep features with averaged MDA > 0; cap at `MDA_TOP_K_FRAC = 0.30` (approximately 22 of 73); minimum floor of 5 features.
-- **TOP_K_FRAC tightening rationale (advisor-reviewed).** The cap was tightened from an earlier 0.40 to 0.30 in the locked configuration after a high-PBO run with the looser setting. Across the earlier-run CPCV folds, only approximately 6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. Tightening to 0.30 forces approximately 22 features through the bottleneck and aligns the selection cap with the empirical stability finding. The trade-off is that one or two folds may select fewer features than they would have at 0.40, but those folds were also the ones contributing the most rank variance to PBO, so the tightening attacks the right problem. An even tighter 0.25 cap (approximately 18 features) was tested in an interim configuration; 0.30 was retained as the final value because it preserves enough feature diversity in the inner Optuna step without re-introducing the long tail.
+- **Selection rule.** Keep features with averaged z-MDA > 0; cap at `MDA_TOP_K_FRAC = 0.20` (approximately 14 to 15 of 73); minimum floor of 5 features.
+- **TOP_K_FRAC trail (advisor-reviewed).** The cap was tightened from common defaults of 0.40 to 0.50 in successive rounds of methodology development. The first tightening from 0.40 to 0.30 came after a high-PBO run on the earlier 66-feature pool revealed that only approximately 6 features cleared 50% selection frequency in the stability bar chart, indicating that the long tail of the MDA-ranked feature set was contributing variance rather than signal. The May 2026 expansion of the feature pool from 66 to 73 columns (the 14-day macro return variants and the AR_LAGS extension from 6 to 10) was an advisor-driven structural change to the feature set; the cap was re-evaluated at the same time using absolute-feature-count arithmetic. At the locked 73-feature pool, `0.20 × 73 ≈ 14 to 15` features restores the absolute count to roughly the original working point of `0.30 × 66 ≈ 20`. The 0.20 cap is the locked working configuration. **Methodology rationale for the second tightening.** With approximately 600 events in the model-training partition after the 70/15/15 three-way split (Section 3.9), the KAN and LSTM parameter counts at `width1=6`, `hidden=16` already approach 1 sample per parameter at 15 features; expanding to 20+ features deepens overparameterisation in the two most-watched neural models, which is why a tighter rather than looser cap was chosen. Sensitivity sweeps over `{0.10, 0.15, 0.20, 0.25, 0.30}` can be appended as an appendix without modifying the source.
 - **AR Logistic exception.** Bypasses MDA entirely; receives pre-MDA matrix and selects 10 lag columns by name.
-- Typical result: approximately 22 features selected per fold from 73 candidates (down from approximately 26 to 30 under the previous 0.40 cap; up from approximately 18 under the interim 0.25 cap).
+- Typical result: approximately 14 to 15 features selected per fold from 73 candidates (down from approximately 22 under the previous 0.30 cap on the same 73-feature pool).
 
 ### 3.7 Models [T-R4: one construct per paragraph; six models, four families]
 
@@ -535,13 +536,13 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - `class_weight='balanced'` + AFML `sample_weight` (dual weighting).
 - Tuned per split: `C` (log-uniform [1e-4, 1e2]), `penalty` ∈ {l1, l2}.
 - Solver auto-selected: `liblinear` for L1, `lbfgs` for L2.
-- 5 seeds, 30 trials per split.
+- 5 seeds, 40 trials per split.
 
 #### 3.7.3 Random Forest
 
 - 500-tree ensemble, `class_weight='balanced_subsample'`, `n_jobs=-1`.
 - Tuned per split: `n_estimators` ∈ [100, 250] step 50 (capped from an earlier 300 ceiling; trees in a noisy regime do not benefit from more than 250), `max_depth` ∈ [2, 6] (tightened from earlier [3, 15]; depth 6 has 64 leaves which is plenty for approximately 851-sample training folds, and shallower forests vote in tighter agreement, reducing the disagreement that surfaces as path-Sharpe variance), `min_samples_leaf` ∈ [15, 40] (raised from earlier [1, 30]; a floor of 15 forces each leaf to represent at least 1.8% of the training fold, preventing leaves that fit just a handful of high-volatility events), `max_features` ∈ {sqrt, log2}.
-- 5 seeds, 30 trials per split.
+- 5 seeds, 40 trials per split.
 - **Cite:** `breiman_2001`.
 
 #### 3.7.4 XGBoost
@@ -550,7 +551,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - Objective `binary:logistic`; `scale_pos_weight` from class balance.
 - Tuned per split: `max_depth` ∈ [1, 3] (tightened from earlier [2, 6]; XGBoost's sequential boosting compounds depth nonlinearly across rounds, so depth 3 across 50 boosting rounds already produces substantial nonlinear capacity, and depth 6 in this regime memorises residuals), `learning_rate` log-uniform [0.01, 0.3] (floor at 0.01; below this, training takes forever and effectively underfits), `min_child_weight` ∈ [5, 30] (floor raised from 1 to align with RF's leaf-size discipline; with approximately 851 train samples a `min_child_weight=1` permits trees to split off single-event leaves), `subsample` and `colsample_bytree` ∈ [0.6, 1.0], `gamma` log-uniform [1e-8, 1.0], `reg_alpha`, `reg_lambda` log-uniform [1e-8, 10.0].
 - **Calibration set dual role.** Calibration set acts as eval set for early stopping AND as Platt-fit data. Acknowledged as a mild dependency: only ensemble size affected, no individual tree decisions.
-- 5 seeds, 30 trials per split.
+- 5 seeds, 40 trials per split.
 - **Cite:** `chen_guestrin_2016`.
 
 #### 3.7.5 LSTM
@@ -564,7 +565,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - **Training stack.** AdamW (lr tuned, `weight_decay=1e-4`), CrossEntropyLoss with class weights and AFML sample weights, label smoothing 0.1, gradient clipping (max norm 1.0), cosine annealing warm restarts (`T_0=25`, `T_mult=2`), batch size 64, max 100 epochs, early stopping patience 15, best-state restoration.
 - **Tuning consistency.** `LSTMClassifier.__init__` reads module-level constants at call time (not as default args), so tuning overrides actually reach the model. Tuning runs at epochs=50, patience=7; production refits at epochs=100, patience=15. This is the only axis where tuning and production diverge; documented as a deliberate compute-vs-fidelity trade-off.
 - Tuned per split: `hidden_size` ∈ [16, 32] step 16, `num_layers` fixed at 1 (no longer searched; tightened from earlier [1, 2] then [1, 3]; two- and three-layer LSTMs on 1,168 events are deep-overfit territory and the additional layer added variance to path-Sharpes without improving accuracy. Hardcoding to 1 frees Optuna trials for finer exploration of dropout and learning_rate), `dropout` ∈ [0.1, 0.5] (floor raised from 0.0), `lr` log-uniform [1e-4, 5e-2].
-- 5 seeds, 30 trials per split.
+- 5 seeds, 40 trials per split.
 - **Cite:** `hochreiter_schmidhuber_1997`, `loshchilov_adamw_2019`.
 
 #### 3.7.6 KAN
@@ -579,7 +580,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 - **No SWA, no entropy regularization.** SWA conflicted with early stopping; entropy regularization was redundant with `label_smoothing=0.1`. Removed for coherence.
 - **Dual-library strategy.** efficient-kan for all 28 CPCV splits (fast, stable, standard PyTorch). PyKAN re-trained independently for symbolic extraction (Section 3.12), where only PyKAN exposes `prune()`, `suggest_symbolic()`, `fix_symbolic()`, `symbolic_formula()`. Both share the B-spline basis, tanh normalization, and now the single-hidden-layer topology.
 - Tuned per split: `width1` ∈ [2, 6] (tightened from earlier [3, 12] then [3, 16]; the cap is set at 6 to keep the symbolic formula extracted in Phase 3 humanly readable, since each surviving width1 unit becomes one additive term plus interactions in the closed-form expression), `width2` fixed at 0 (no longer searched), `lr` log-uniform [5e-4, 5e-2], `weight_decay` log-uniform [1e-5, 5e-3], `grid` ∈ {3, 5} (dropped grid=8 to prevent memorization).
-- 5 seeds, 30 trials per split.
+- 5 seeds, 40 trials per split.
 - **Cite:** `liu_kan_2024`.
 
 #### 3.7.7 Shared neural design
@@ -595,18 +596,18 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 | Model | Family | Architecture | Fixed params | Tuned params | Seeds | Trials | Role |
 |-------|--------|--------------|--------------|--------------|-------|--------|------|
 | AR Logistic | Econometric | LR on lags [1,2,3,7,14,30] | C=1.0, L2, max_iter=1000 | (none) | 5 | 0 | Pure momentum (Q1, Q2) |
-| Logistic Regression | Linear ML | LR on selected features | max_iter=1000 | C, penalty | 5 | 30 | Linear baseline (Q3) |
-| Random Forest | Ensemble | balanced_subsample | n_jobs=-1 | n_estimators ≤ 250, max_depth ∈ [2, 6], min_samples_leaf ∈ [15, 40], max_features | 5 | 30 | Nonlinear ensemble (Q3) |
-| XGBoost | Ensemble | 500 trees + early stop@20 | binary:logistic | max_depth ∈ [1, 3], lr, min_child_weight ∈ [5, 30], subsample, etc. (8) | 5 | 30 | Gradient boosting (Q3) |
-| LSTM | Neural | window=14, last-hidden pooling, num_layers=1 | T_0=25, batch=64 | hidden ∈ {16, 32}, dropout ∈ [0.1, 0.5], lr | 5 | 30 | Temporal dependencies (Q3) |
-| KAN | Neural | [n, width1, 2], single hidden layer, k=3 | width2=0, T_0=30, label_smooth=0.1 | width1 ∈ [2, 6], grid ∈ {3, 5}, lr, weight_decay | 5 | 30 | Interpretable architecture (Q3, Q4) |
+| Logistic Regression | Linear ML | LR on selected features | max_iter=1000 | C, penalty | 5 | 40 | Linear baseline (Q3) |
+| Random Forest | Ensemble | balanced_subsample | n_jobs=-1 | n_estimators ≤ 250, max_depth ∈ [2, 6], min_samples_leaf ∈ [15, 40], max_features | 5 | 40 | Nonlinear ensemble (Q3) |
+| XGBoost | Ensemble | 500 trees + early stop@20 | binary:logistic | max_depth ∈ [1, 3], lr, min_child_weight ∈ [5, 30], subsample, etc. (8) | 5 | 40 | Gradient boosting (Q3) |
+| LSTM | Neural | window=14, last-hidden pooling, num_layers=1 | T_0=25, batch=64 | hidden ∈ {16, 32}, dropout ∈ [0.1, 0.5], lr | 5 | 40 | Temporal dependencies (Q3) |
+| KAN | Neural | [n, width1, 2], single hidden layer, k=3 | width2=0, T_0=30, label_smooth=0.1 | width1 ∈ [2, 6], grid ∈ {3, 5}, lr, weight_decay | 5 | 40 | Interpretable architecture (Q3, Q4) |
 
 ### 3.8 Hyperparameter Tuning
 
 - **Architecture.** Nested per-split Optuna study inside each CPCV training fold. AFML Ch. 7 compliant: outer CPCV provides unbiased test folds; inner tuning operates entirely within the training fold. Test fold never seen during tuning.
 - **Inner CV.** Purged 3-fold (`N_INNER_FOLDS=3`), 10-observation embargo around inner-fold boundaries (matches TBL `num_days=10`).
 - **Optuna config.** TPE sampler, `seed=42`. MedianPruner with `n_startup_trials=5` (classical) or 3 (neural), `n_warmup_steps=1`. Pruner kills trials whose intermediate log loss falls below the median of completed trials.
-- **Trial budget.** `n_trials=30` per tuned model per split, applied uniformly across LR, RF, XGBoost, LSTM, and KAN. The notebook passes a single `n_trials=30` parameter so every tuned model competes on the same budget; AR Logistic is not tuned. The wider module defaults (`N_TRIALS_CLASSICAL=60`, `N_TRIALS_NEURAL=40`) are reserved for sensitivity experiments outside the headline run.
+- **Trial budget.** `n_trials=40` per tuned model per split, applied uniformly across LR, RF, XGBoost, LSTM, and KAN. The notebook passes a single `n_trials=40` parameter so every tuned model competes on the same budget; AR Logistic is not tuned. The module-level defaults (`N_TRIALS_CLASSICAL=60`, `N_TRIALS_NEURAL=40`) are reserved for sensitivity experiments outside the headline run; the locked run overrides both to 40 via the pipeline parameter.
 - **Per-split tuned params application.** `_apply_tuned_params` writes the best params to module-level constants (e.g., `kan_model.KAN_HIDDEN`) before the model training loop for that split. `_reset_module_defaults` snapshots pristine values on first invocation and restores them on subsequent runs to prevent contamination across calls.
 - **DSR/PBO validity.** `n_trials` in DSR counts the number of compared models (6), NOT the Optuna trials per split. Optuna trials happen inside the training fold and do not affect test-fold Sharpe estimates.
 - **Cite:** `akiba_optuna_2019`, `lopez_de_prado_2018` Ch. 7.
@@ -615,7 +616,8 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 
 > **Opening claim (T-R3).** "Bet sizing depends on calibrated probabilities; miscalibrated probabilities produce systematically wrong position sizes."
 
-- **Calibration set.** 80/20 chronological split of the training fold; calibrator fitted on the held-out 20% (approximately 170 obs at N=8, with model-training set approximately 680 obs after the split). Never touches test data.
+- **Calibration set (70/15/15 three-way chronological split of the training fold).** Within each outer training fold the data is split chronologically into 70% model-train, 15% validation, and 15% calibration. The validation partition feeds the model's `X_val` / `y_val` for early stopping and best-state tracking; the calibration partition is held entirely separate and feeds Platt or vector scaling. At N=8 the locked configuration places approximately 600 events in the model-training partition and approximately 129 events each in the validation and calibration partitions. None of these partitions touches the outer test fold.
+- **Why 70/15/15 rather than 80/20 or 80/10/10.** The split was widened from an earlier 80/10/10 after a calibration audit revealed all six models systematically under-predicting P(Up) by 4 to 7 percentage points; with approximately 750 events per outer training fold, 10% (approximately 75 events) was insufficient for both the vector-scaling fit (`T`, `b[1]` estimated on approximately 75 binary labels) AND the LSTM and KAN early-stopping signal. The 80/20 split that preceded both used a single 20% subset for both purposes, which introduced subtle leakage between the model's stopping decision and the calibration data; the three-way split removes that dual-use coupling. The current 15% partitions raise both roles to approximately 129 events at the cost of approximately 75 fewer model-training events per fold (approximately 600 vs approximately 688 under 80/10/10).
 - **Two methods, auto-selected by model type.**
 
 | Method | Models | Input | Mechanism |
@@ -624,6 +626,8 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
 | Vector scaling (Guo et al. 2017, §4.2) | LSTM, KAN | 2D logits | Fit `T` and per-class bias `b` minimizing NLL of `softmax((logits + b) / T)` via L-BFGS-B with `T ∈ [0.05, 20]`, `b_c ∈ [-5, 5]` |
 
 - **Why vector scaling rather than temperature scaling [T-R15: write for reviewers, preempt the obvious objection].** A pre-final calibration audit revealed that LSTM and KAN systematically under-predicted P(y=1) by 10 to 23 percentage points, while the empirical base rate of class 1 was approximately 0.55. Pure temperature scaling preserves the argmax of raw logits by construction, so a single `T` cannot shift "lean class 0" to "lean class 1". The bias propagated through bet sizing as systematic short bets in upward-drifting regimes, contributing to a negative path Sharpe in the early KAN equity curves. Vector scaling adds a per-class bias `b` that lifts the directional constraint (Guo et al. 2017 recommends this as the natural extension when temperature scaling alone is insufficient). The substitution was made before the final evaluation pass: a correction of methodological inadequacy, not test-set-informed model selection.
+- **Weighted vs unweighted calibration (audited, decision: unweighted).** Both `fit_platt_scaling` and `fit_vector_scaling` accept an optional `sample_weight` argument that would weight the per-sample NLL by AFML sample weights before averaging. The argument is supported in the calibrator API but intentionally not triggered from `pipeline.py`. The rationale is empirical: an audit run on the full six-model pool with weighted Platt + weighted vector scaling enabled showed the weighted variant pushing every model's calibration miss further from the empirical base rate (3 of 6 flagged → 5 of 6 flagged under weighted; calibration deltas grew on every single model relative to the unweighted baseline), and median Sharpes compressed across the cross-section. The mechanism is that AFML weights over-represent the high-weight subset (rare events with little overlapping label structure) whose class balance differs from the population base rate; weighting the calibrator's loss against that subset's distribution tilts the calibrated probability away from the empirical class frequency on the full data. The unweighted path remains the locked configuration. The weighted code paths are kept available for future experiments without re-implementation cost; a comment block above the `calibrator.fit(...)` call site in `pipeline.py` documents the audit evidence so the next reader does not reintroduce the regression.
+- **LSTM logits sliced before calibration.** LSTM produces logits only for windows where all 14 lookback timesteps are non-NaN; the first approximately 14 events of any partition are window-incomplete and would produce NaN logits. The pipeline slices `raw_logits` to `valid_idx` BEFORE passing them to the calibrator. An earlier ordering calibrated on the full unsliced logits and sliced afterward, producing a fitted calibrator whose temperature reflected the NaN-padded positions rather than the valid windows; the bug manifested as `T` consistently hitting the lower bound on LSTM folds and was caught during a calibration audit.
 - **Calibration set dual role disclosure.** The 20% subset serves as both early-stopping monitor (XGBoost) and Platt/vector input. Each calibration method fits at most three parameters; early stopping affects only ensemble size, not individual tree decisions. Splitting the small cal set further would degrade both purposes.
 - **Cite:** `platt_1999`, `guo_temperature_2017`.
 
@@ -636,7 +640,7 @@ This is a **bullet-point content outline**, not draft prose. Each subsection lis
   2. `preprocess_fold()` (FFD → scale → MDA select).
   3. Re-align `y, w, t1` after FFD may drop rows.
   4. Keep `X_tr_full` for AR Logistic alongside `X_tr_sel` for the others.
-  5. Chronological 80/20 train/cal split.
+  5. Chronological 70/15/15 train/val/cal split (Section 3.9).
   6. If `tune=True`: nested Optuna on `X_tr_sel`, apply best params to module constants.
   7. For each `(model, seed)`: create model, route correct X, fit, calibrate, predict on test.
   8. Store keyed by `(model_name, split_idx, seed)`.
@@ -862,7 +866,7 @@ DSR       = Φ((SR_observed - E[max SR]) / SR_std)
 | HP tuning on full data | nested Optuna inside training fold (3-fold purged) | `tuning.py` |
 | Overlapping TBL labels | three-condition purging | `cv.py` |
 | Serial correlation across CV boundary | embargo after test boundary | `cv.py` |
-| Calibration on test data | held-out 20% of training fold, never test | `calibration.py` |
+| Calibration on test data | held-out 15% calibration partition of training fold, never test | `calibration.py` |
 | XGB early-stop + cal shared cell | acknowledged; only ensemble size affected | `pipeline.py` |
 | On-chain look-ahead | CoinMetrics shifted by 1 day | `external_features.py` |
 | CUSUM threshold on full data | minor approximation; acknowledged, negligible impact | `labeling.py` |
@@ -1117,7 +1121,7 @@ P(up | x) = 1 / (1 + exp(-decision(x)))
 
 ### 5.4 Limitations (six honest, from defense L1 to L5 plus new L6)
 
-- **L1. Computational power.** Currently 5 seeds across all 6 models (uniform, producing **840 = 28 × 6 × 5 prediction entries**, up from 504 in the v5 3-seed configuration). 30 Optuna trials per model per fold, KAN width capped at 6. The 5-seed configuration represents a substantial compute commitment: roughly 1.67× the per-experiment runtime of the 3-seed configuration on top of the N=8 / 28-split infrastructure. With more compute: even more seeds, more trials, wider HP ranges, larger N for finer CPCV resolution.
+- **L1. Computational power.** Currently 5 seeds across all 6 models (uniform, producing **840 = 28 × 6 × 5 prediction entries**, up from 504 in the v5 3-seed configuration). 40 Optuna trials per tuned model per fold, KAN width capped at 6. The 5-seed configuration represents a substantial compute commitment: roughly 1.67× the per-experiment runtime of the 3-seed configuration on top of the N=8 / 28-split infrastructure. With more compute: even more seeds, more trials, wider HP ranges, larger N for finer CPCV resolution.
 - **L2. Daily OHLCV only.** Discards intraday microstructure. Pipeline is timeframe-agnostic; hourly extension would multiply event count and unlock microstructure features.
 - **L3. Symbolic extraction is fold-specific and configuration-specific.** The locked formula is the result of running the extraction on split 27 only with `n_top_features=3`. Per-fold extraction (28 formulas, one per CPCV split) would let the analysis count which features and primitives recur (structural signal vs. one-off noise). The cross-run variation observed to date is substantial: surviving feature sets have rotated `{exchange_supply_pct, atr, sadf, oil_ret_30}` → `{eth_btc_ratio, bb_width, skewness, log_returns_lag1, natgas_ret_30}` → `{eth_btc_ratio, log_returns_lag6, natgas_ret_30}` across the three distinct feature-set configurations, with only `eth_btc_ratio` recurring across all three. The v5→v6 transition does *not* change the surviving feature set or the formula coefficients (PyKAN fixed-seed retraining is invariant under the outer N_SEEDS), so v6's surviving set is identical to v5's. The primitive set has rotated even more (see Section 5.3). Per-fold extraction is the highest-leverage methodological extension available to the project: it would let the analysis report "X features recurred in N of 28 folds" instead of "X features recurred in the deployment fold only", which is structurally a much stronger claim.
 - **L4. KAN width cap is binding for interpretability.** The `width1 ≤ 6` cap is set so the extracted symbolic formula stays humanly readable. The current run's pruned architecture `[[3, 0], [3, 0], [2, 0]]` uses width1 = 3 and width2 = 3, producing 15 active edges and a four-outer-term decision function that fits one printed page in the thesis. The previous run's architecture `[[5, 0], [2, 0], [2, 0]]` used width1 = 5 and width2 = 2 with 14 edges and a different four-outer-term structure. A larger width1 cap would let the model fit more complex patterns but would also produce a formula too long to interpret. This is an explicit interpretability-vs-capacity trade-off, not a generic constraint imposed by sample size or compute. The recurrence of the four-outer-term structure across configurations suggests the cap is not binding for the discovery of the structure itself, only for the readability of the resulting formula.

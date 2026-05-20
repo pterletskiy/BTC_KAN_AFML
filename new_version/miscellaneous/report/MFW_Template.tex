@@ -34,7 +34,7 @@
 \setcitestyle{maxcitenames=2}
 
 % Margins (3cm all sides per ISEG guidelines)
-\usepackage[top=3cm, bottom=3cm, left=3cm, right=3cm]{geometry}
+\usepackage[top=3cm, bottom=3cm, left=2.9cm, right=2.9cm]{geometry}
 
 % Change margins command
 \def\changemargin#1#2{\list{}{\rightmargin#2\leftmargin#1}\item[]}
@@ -117,8 +117,14 @@
 
 % Graphics
 \usepackage{graphicx}
+\graphicspath{{figures/}}
 \usepackage{float}
 \usepackage{subcaption}
+\usepackage{chngcntr}
+\counterwithin{figure}{section}
+\counterwithin{table}{section}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning}
 
 % Code listings (for algorithm pseudocode)
 \usepackage{algorithm}
@@ -129,7 +135,7 @@
 \makeglossaries
 
 % ── Acronyms ──────────────────────────────────────────────────────────
-% AFML & Methodology
+% AFML \& Methodology
 \newacronym{afml}{AFML}{Advances in Financial Machine Learning}
 \newacronym{tbl}{TBL}{Triple Barrier Labeling}
 \newacronym{cusum}{CUSUM}{Cumulative Sum}
@@ -137,12 +143,9 @@
 \newacronym{cpcv}{CPCV}{Combinatorial Purged Cross-Validation}
 \newacronym{dsr}{DSR}{Deflated Sharpe Ratio}
 \newacronym{pbo}{PBO}{Probability of Backtest Overfitting}
-\newacronym{auc}{AUC}{Area Under the Curve}
-\newacronym{isoos}{IS/OOS}{In-Sample / Out-of-Sample}
 \newacronym{mda}{MDA}{Mean Decrease Accuracy}
-% ML & Models
-\newacronym{ml}{ML}{Machine Learning}
-\newacronym{dl}{DL}{Deep Learning}
+
+% Models
 \newacronym{kan}{KAN}{Kolmogorov-Arnold Network}
 \newacronym{lstm}{LSTM}{Long Short-Term Memory}
 \newacronym{rf}{RF}{Random Forest}
@@ -150,6 +153,7 @@
 \newacronym{lr}{LR}{Logistic Regression}
 \newacronym{ar}{AR}{Autoregressive}
 \newacronym{mlp}{MLP}{Multi-Layer Perceptron}
+
 % Technical
 \newacronym{btc}{BTC}{Bitcoin}
 \newacronym{ohlcv}{OHLCV}{Open-High-Low-Close-Volume}
@@ -165,7 +169,8 @@
 \newacronym{vix}{VIX}{CBOE Volatility Index}
 \newacronym{mvrv}{MVRV}{Market Value to Realized Value}
 \newacronym{sadf}{SADF}{Supremum Augmented Dickey-Fuller}
-% Academic & Financial
+
+% Financial
 \newacronym{mfw}{MFW}{Master's Final Work}
 \newacronym{jel}{JEL}{Journal of Economic Literature}
 \newacronym{emh}{EMH}{Efficient Market Hypothesis}
@@ -374,7 +379,7 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 \pagenumbering{arabic}
 
 \begin{center}
-\textsc{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK BY PETR TERLETSKIY}
+\textsc{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK BY PETR TERLETSKIY}\\
 \end{center}
 
 
@@ -383,22 +388,27 @@ First, I wish to thank Professor João Afonso Bastos for his encouragement and g
 % ==================================================================
 \section{Introduction}\label{sec:introduction}
 
-This thesis applies a Kolmogorov-Arnold Network (KAN) to Bitcoin (BTC) price direction prediction within the full Advances in Financial Machine Learning (AFML) framework of \citet{lopez_de_prado_2018}. On the data side, the framework uses Cumulative Sum (CUSUM) event sampling, triple-barrier labeling (TBL), fractional differencing (FFD), and sample weighting. On the evaluation side, it uses Combinatorial Purged Cross-Validation (CPCV), the Deflated Sharpe Ratio (DSR), the Probability of Backtest Overfitting (PBO), and pairwise DeLong Area Under the Curve (AUC) tests. The KAN is benchmarked against five baselines: Autoregressive (AR) Logistic, Logistic Regression (LR), Random Forest (RF), Extreme Gradient Boosting (XGBoost), and Long Short-Term Memory (LSTM). All six models run under identical CPCV splits with $N=8$ groups, $k=2$ test groups per split, 28 splits, and 7 backtest paths. The locked configuration uses 5 seeds across all six models, producing 840 prediction entries. The novel deliverable is a closed-form symbolic decision function for the probability of an upward move, $P(\textup{Up})$, extracted from the trained KAN.
+% Target: max 20\% of textual part (~7 pages for 35-page MFW).
+% Cochrane: "Start with your central contribution."
+% Thatcher R1: "First 1-2 sentences state a clear, field-relevant claim."
+% No subsection number for the opening paragraphs.
 
-Under leakage-free evaluation with multiple-testing correction, no model achieves $\textup{DSR} \geq 0.95$. The top DSR among trained models is 0.2470 (KAN). Buy-and-hold posts a higher median Sharpe (2.2722) than every trained model, though it is excluded from the DSR computation because it does not enter the selection pool. PBO sits in the adversarial regime at 0.657. The in-sample best model underperforms the out-of-sample median in 23 of the 35 IS/OOS partitions, so model selection across this six-model cross-section is actively misleading in nearly two of three sub-path partitions. Of the 7 bootstrap 95\% confidence intervals on the median Sharpe, 6 cross zero. Only buy-and-hold's interval, $(1.8903, 2.4685)$, stays strictly positive. The KAN interval is $(-0.4677, 1.1607)$. Leave-one-out PBO identifies Random Forest as the anchor model ($\Delta = 0.000$). Every other model's exclusion reduces PBO, with Logistic Regression the largest destabiliser ($\Delta = -0.286$, returning the cross-section to the moderate-overfitting band). Two of the 15 pairwise DeLong AUC tests reach $\alpha = 0.05$: AR Logistic versus XGBoost ($p = 0.0427$) and Random Forest versus XGBoost ($p = 0.0318$), both with XGBoost on the lower-AUC side.
+This thesis applies a Kolmogorov-Arnold Network (KAN) to Bitcoin (BTC) price direction prediction within the full Advances in Financial Machine Learning (AFML) framework of \citet{lopez_de_prado_2018}, which comprises Cumulative Sum (CUSUM) event sampling, triple-barrier labeling (TBL), fractional differencing (FFD), sample weighting, Combinatorial Purged Cross-Validation (CPCV), the Deflated Sharpe Ratio (DSR), the Probability of Backtest Overfitting (PBO), and pairwise DeLong Area Under the Curve (AUC) tests. The KAN is benchmarked against five baselines, Autoregressive (AR) Logistic, Logistic Regression (LR), Random Forest (RF), Extreme Gradient Boosting (XGBoost), and Long Short-Term Memory (LSTM), under identical CPCV splits with $N=8$ groups, $k=2$ test groups per split, 28 splits, and 7 backtest paths; the locked configuration runs 5 seeds across all six models, producing 840 prediction entries. The novel deliverable is a closed-form symbolic decision function for the probability of an upward move, $P(\textup{Up})$, extracted from the trained KAN.
 
-The symbolic extraction pipeline succeeds. All 15 edges symbolify cleanly, giving a 100\% symbolification rate. Three features survive: \texttt{eth\_btc\_ratio}, \texttt{log\_returns\_lag6}, and \texttt{natgas\_ret\_30}. Post-symbolic validation accuracy is 51.85\%, a 5.18 percentage-point gain over the pre-symbolic 46.67\%. However, both numbers sit well below the 56.85\% majority baseline and close to the 50\% baseline. The closed-form expression combines six primitives, $\sin$, $\cos$, $\tanh$, $x^2$, $x^3$, and $x^4$, all everywhere differentiable on the standardised feature support. The PyKAN model itself fails its Phase-1 dynamic accuracy gate ($\max(0.53,\,\textup{base\_rate} + 0.01) = 0.5693$) at validation accuracy 0.4815, and the pre-prune gate also fails. The closed-form formula therefore faithfully captures a model that did not extract directional signal on the deployment fold.
+Under leakage-free evaluation with multiple-testing correction, no model achieves $\textup{DSR} \geq 0.95$. The top DSR among trained models is 0.2470 (KAN), and buy-and-hold posts a higher median Sharpe (2.2722) than every trained model, though it is excluded from the DSR computation because it does not enter the selection pool. PBO sits in the adversarial regime at 0.657: the in-sample best model underperforms the out-of-sample median in 23 of the 35 IS/OOS partitions, so model selection across this six-model cross-section is actively misleading in nearly two of three sub-path partitions. Of the 7 bootstrap 95\% confidence intervals on the median Sharpe, 6 cross zero. Only buy-and-hold's interval, $(1.8903, 2.4685)$, stays strictly positive; the KAN interval is $(-0.4677, 1.1607)$. Leave-one-out PBO identifies Random Forest as the PBO-anchor ($\Delta = 0.000$): every other model's exclusion reduces PBO, with Logistic Regression the largest destabiliser ($\Delta = -0.286$, returning the cross-section to the moderate-overfitting band). Two of the 15 pairwise DeLong AUC tests reach $\alpha = 0.05$: AR Logistic versus XGBoost ($p = 0.0427$) and Random Forest versus XGBoost ($p = 0.0318$), both with XGBoost on the lower-AUC side.
+
+The symbolic extraction pipeline succeeds with 100\% symbolification rate (15 of 15 edges, no skips) on three surviving features: \texttt{eth\_btc\_ratio}, \texttt{log\_returns\_lag6}, and \texttt{natgas\_ret\_30}. Post-symbolic validation accuracy is 51.85\%, a 5.18 percentage-point gain over the pre-symbolic 46.67\%, but both numbers sit well below the 56.85\% majority baseline. The closed-form expression combines six primitives, $\sin$, $\cos$, $\tanh$, $x^2$, $x^3$, and $x^4$, and is everywhere differentiable on the standardised feature support. The PyKAN model nonetheless fails its Phase-1 dynamic accuracy gate ($\max(0.53,\,\textup{base\_rate} + 0.01) = 0.5693$) at validation accuracy 0.4815, and the pre-prune gate fails as well, so the symbolic representation faithfully captures a model that did not extract directional signal on the deployment fold.
 
 
 \subsection{Research Context and Motivation}\label{subsec:context}
 
 % Why BTC
 
-Bitcoin was presented to the world on October 31, 2008 by Satoshi Nakamoto. Since its first transaction on January 12, 2009, BTC has produced one of the highest cumulative returns of any major asset, and it gave birth to the cryptocurrency asset class. It is today the largest cryptocurrency by market capitalization. Unlike traditional asset classes, BTC trades 365 days a year, 24/7 on a transparent and publicly auditable blockchain, exposing on-chain activity that has no equivalent in equity or fixed-income markets.
+Bitcoin (BTC) was presented to the world on October 31, 2008 by Satoshi Nakamoto. Since its first transaction on January 12, 2009, BTC has produced one of the highest cumulative returns of any major asset, and it gave birth to the cryptocurrency asset class. It is today the largest cryptocurrency by market capitalization. Unlike traditional asset classes, BTC trades 365 days a year, 24/7 on a transparent and publicly auditable blockchain, exposing on-chain activity that has no equivalent in equity or fixed-income markets.
 
 % Why KANs
 
-Machine Learning (ML) adoption in financial markets has grown exponentially. Unlike classical econometric methods that impose functional forms a priori, ML models are capable of inferring structure directly from the data, which suits the non-linear behaviour of asset returns. However, most ML models, and Neural Networks in particular, operate as black boxes whose internal logic cannot be directly interpreted. Liu et al.\ \citeyearpar{liu_kan_2024} propose KANs, a Multi-Layer Perceptron (MLP) alternative whose edges carry learnable B-splines that can be distilled into closed-form symbolic functions, offering interpretability that conventional Deep Learning (DL) architectures do not provide. To the author's knowledge, no prior work applies KANs to BTC price direction prediction or extracts symbolic formulas from a classification KAN under the AFML framework \citep{lopez_de_prado_2018}. This gap defines the four research questions of this thesis.
+Machine Learning (ML) adoption in financial markets has grown exponentially. Unlike classical econometric methods that impose functional forms a priori, ML models are capable of inferring structure directly from the data, which suits the non-linear behaviour of asset returns. However, most ML models, and Neural Networks in particular, operate as black boxes whose internal logic cannot be directly interpreted. Liu et al.\ \citeyearpar{liu_kan_2024} propose Kolmogorov-Arnold Networks (KANs), a Multi-Layer Perceptron (MLP) alternative whose edges carry learnable B-splines that can be distilled into closed-form symbolic functions, offering interpretability that conventional Deep Learning (DL) architectures do not provide. To the author's knowledge, no prior work applies KANs to BTC price direction prediction or extracts symbolic formulas from a classification KAN under the Advances in Financial Machine Learning (AFML) framework \citep{lopez_de_prado_2018}. This gap defines the four research questions of this thesis.
 
 
 \subsection{Problems and Research Questions}\label{subsec:objectives}
@@ -407,49 +417,50 @@ Machine Learning (ML) adoption in financial markets has grown exponentially. Unl
 
 \textbf{Q1.} Many recent BTC ML studies report daily-direction accuracies of 85 to 95 percent \citep{omole_enke_2024}. These results come from traditional ML pipelines, which rely on fixed-horizon labels, overlapping label spans, and train-test splits that do not purge concurrent observations or apply an embargo across fold boundaries. Under these conditions, training labels can carry information about test-period prices and the high reported accuracies may be inflated by an unknown margin.
 
-This thesis asks whether BTC price direction remains predictable once labels and features stop leaking the future and overlapping observations are weighted properly. It evaluates the claim against three tests on a six-model cross-section: the DSR, the PBO, and pairwise DeLong AUC comparisons.
+This thesis asks whether BTC price direction remains predictable once labels and features stop leaking the future and overlapping observations are weighted properly. It evaluates the claim against three tests on a six-model cross-section: the Deflated Sharpe Ratio (DSR), the Probability of Backtest Overfitting (PBO), and pairwise DeLong Area Under the Curve (AUC) comparisons.
 
 % Q2
 
 \textbf{Q2.} Most cryptocurrency ML studies rely on one or two feature families, typically technical indicators or price histories fed into neural networks and other ML models \citep{bourday_crypto_dl_2024}. There is no consensus on whether macroeconomic, crypto-macro, or on-chain features add information beyond price-derived inputs. Without a uniform evaluation across families, the question of which families actually carry signal remains unanswered.
 
-This thesis asks which feature families carry signal under a leakage-free evaluation, and whether on-chain features deliver the "free lunch" over price-derived inputs. It answers both by recording per-family selection frequencies from multi-model permutation importance across the 28 CPCV folds, covering technical, mathematical, macroeconomic, crypto-macro, on-chain, and autoregressive lag inputs.
+This thesis asks which feature families carry signal under a leakage-free evaluation, and whether on-chain features deliver the "free lunch" over price-derived inputs. It answers both by recording per-family selection frequencies from multi-model permutation importance across the 28 Combinatorial Purged Cross-Validation (CPCV) folds, covering technical, mathematical, macroeconomic, crypto-macro, on-chain, and autoregressive lag inputs.
 
 % Q3
 
 \textbf{Q3.} KANs have been applied to VIX forecasting \citep{cho_lee_kim_2025}, stock prediction \citep{oad_kasper_2025}, and cryptocurrency regression \citep{gao_decokan_2025}, but never to BTC direction classification. KANs' position relative to econometric, linear, tree-based, and deep-learning baselines is unknown. Whether the predictive strengths reported in other financial time-series tasks carry over to BTC direction under a uniform protocol is therefore untested.
 
-This thesis asks where the KAN sits in a six-model cross-section evaluated under identical CPCV splits, features, sample weights, and metrics. The five baselines span four families: econometric (AR Logistic), linear ML (LR), tree-based (RF, XGBoost), and recurrent deep learning (LSTM).
+This thesis asks where the KAN sits in a six-model cross-section evaluated under identical CPCV splits, features, sample weights, and metrics. The five baselines span four families: econometric (AR Logistic), linear ML (Logistic Regression), tree-based (Random Forest, Extreme Gradient Boosting), and recurrent deep learning (Long Short-Term Memory).
 
 % Q4
 
 \textbf{Q4.} Existing KAN symbolic-extraction work in finance targets regression problems on relatively predictable series, such as VIX forecasting \citep{cho_lee_kim_2025}, stock prediction \citep{oad_kasper_2025}, and cryptocurrency price modelling \citep{gao_decokan_2025}. No published work, to the author's knowledge, has extracted a closed-form classification formula from a CPCV-trained KAN in a weak-signal regime. Whether this pipeline carries over from regression on predictable series to classification under leakage-free evaluation is therefore untested.
 
-This thesis asks whether a human-readable mathematical expression for the probability of an upward BTC price move, $P(\textup{Up})$, can be extracted from a CPCV-trained KAN while preserving most of its predictive accuracy. It evaluates this by running PyKAN's four-step train-prune-symbolify-tune pipeline on the last CPCV fold and comparing pre- and post-symbolic validation accuracy.
+This thesis asks whether a human-readable mathematical expression for the probability of an upward BTC price move (P(Up)) can be extracted from a CPCV-trained KAN while preserving most of its predictive accuracy. It evaluates this by running PyKAN's four-step train-prune-symbolify-tune pipeline on the last CPCV fold and comparing pre- and post-symbolic validation accuracy.
 
 
 \subsection{Contributions}\label{subsec:contributions}
 
-% C1
+%C1
 
-\textbf{C1.} This thesis applies the complete AFML stack to BTC direction prediction. Data preparation uses CUSUM event sampling, triple-barrier labeling, fractional differencing, and sample weights that combine uniqueness, return attribution, and time decay. Evaluation uses CPCV with purging and embargo, the DSR, the PBO, and pairwise DeLong AUC tests. Every leakage and multiple-testing correction is implemented in a single reproducible workflow.
+\textbf{C1.} This thesis applies the complete AFML stack to BTC direction prediction: CUSUM event sampling, triple-barrier labeling, sample weights combining uniqueness, return attribution, and time decay, fractional differencing, Combinatorial Purged Cross-Validation with purging and embargo, and the Deflated Sharpe Ratio, Probability of Backtest Overfitting, and DeLong AUC tests. The pipeline implements every leakage and multiple-testing correction in a single reproducible workflow.
 
 % C2
 
-\textbf{C2.} This thesis assembles a 73-feature universe spanning four families: 25 technical, 9 statistical (AFML Part 4), 29 external (20 macroeconomic, 1 crypto-macro, and 8 on-chain from CoinMetrics), and 10 autoregressive lag features. All 73 features compete in multi-model permutation importance selection across the 28 CPCV folds. No family is privileged a priori.
+\textbf{C2.} This thesis assembles a 73-feature universe spanning four families: 25 technical, 9 statistical (AFML Part 4), 29 external (20 macroeconomic, 1 crypto-macro, 8 on-chain from CoinMetrics), and 10 autoregressive lag features. All 73 features compete in multi-model permutation importance selection across the 28 CPCV folds, with no family privileged a priori.
 
 % C3
 
-\textbf{C3.} This thesis benchmarks a KAN against five baselines: AR Logistic, LR, RF, XGBoost, and LSTM. All six models run under identical CPCV splits, identical features, identical sample weights, and identical metrics. Pairwise DeLong AUC tests determine which differences across the six-model cross-section are statistically significant.
+\textbf{C3.} This thesis benchmarks a KAN against five baselines (AR Logistic, Logistic Regression, Random Forest, Extreme Gradient Boosting, Long Short-Term Memory) under identical CPCV splits, identical features, identical sample weights, and identical metrics. Pairwise DeLong AUC tests determine which differences across the six-model cross-section are statistically significant.
 
 % C4
 
-\textbf{C4.} This thesis extracts a human-readable mathematical expression for $P(\textup{Up})$ from the trained KAN, using PyKAN's prune-and-symbolify pipeline. To the author's knowledge, this is the first closed-form classification formula derived from a CPCV-trained KAN in a weak-signal regime. It is the primary novel contribution of this work.
+\textbf{C4.} This thesis extracts a human-readable mathematical expression for P(Up) from the trained KAN via PyKAN's prune-and-symbolify pipeline. To the author's knowledge, this is the first closed-form classification formula derived from a CPCV-trained KAN in a weak-signal regime, and the primary novel contribution of this work.
 
 
-\subsection{Thesis Outline}\label{subsec:structure}
+\subsection{Document Structure}\label{subsec:structure}
 
 Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML methodology. Section 3 details the data and the full empirical pipeline. Section 4 reports the results, Section 5 discusses them, Section 6 concludes, and Section 7 outlines directions for future work.
+
 
 
 % ==================================================================
@@ -851,377 +862,209 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 \newpage
 \section{Methodology}\label{sec:methodology}
 
-% Target: methodology + results + discussion together >= 70\% of textual
-% part. Document the pipeline so a fellow graduate student can reproduce
-% every number (Cochrane).
-%
-% Cochrane principle for this chapter: nothing before the main result
-% that the reader does not need to understand the main result. Present
-% sequentially; keep math to the minimum needed for results to be
-% interpretable.
-%
-% T-R5: thread constructs (event, label, observation, fold, path)
-% consistently throughout.
-%
-% Pipeline at a glance (Phase / Purpose / Output):
-%   Phase I  (Pre-CPCV)    : Raw OHLCV to labelled events  -> (X, y, w, t1)
-%   Phase II (CPCV pipeline): Per-fold training + prediction -> calibrated
-%                              test-fold probabilities
-%   Phase III (Post-CPCV)  : Evaluation + interpretability -> model
-%                              comparison + symbolic formula
+The methodology unfolds in three sequential phases. Phase I, the pre-CPCV stage, transforms the raw 4,208 daily OHLCV bars into a smaller set of aligned observations. It covers data acquisition (Section 3.1), event filtering and triple-barrier labelling (Section 3.2), AFML sample weighting (Section 3.3), feature engineering (Section 3.4), and the alignment step that produces the final tuple of feature matrix $X$, labels $y$, weights $w$, and barrier-touch timestamps $t_1$. 
+
+Phase II runs the CPCV pipeline. It assembles the per-split training and test folds (Section 3.5), applies per-fold preprocessing (Section 3.6), trains the six benchmark models with nested hyperparameter tuning (Sections 3.7 and 3.8), calibrates the predicted probabilities (Section 3.9), and produces a test-fold prediction stream for each model across all 28 splits (Section 3.10). 
+
+Phase III applies the post-CPCV evaluation and interpretability layer. It assembles the seven backtest paths, computes the deflated Sharpe ratio and the probability of backtest overfitting, runs pairwise DeLong AUC tests (Section 3.11), and extracts the closed-form symbolic decision function from the trained KAN (Section 3.12). 
+
+The full pipeline is shown as a diagram in \phantomsection\label{ref:pipeline_call}\autoref{fig:pipeline_diagram}.
 
 
 \subsection{Data}\label{subsec:data}
 
-% Cochrane: do not write extensive descriptions of well-known datasets.
-% Keep this section to about one page.
-%
-% Topics:
-%   - Source: BTC-USD daily OHLCV from yfinance.
-%   - Range: 2014-11-01 to 2026-05-01 (~4,200 daily bars).
-%
-% ── CUSUM start-date truncation ───────────────────────────────────
-%
-%   - The raw OHLCV series begins on 2014-11-01 to provide the 252-day
-%     lookback the longest-warmup features require (Hurst at 252,
-%     EMA 50/200 ratio at 200, SADF).
-%   - The CUSUM event filter is then truncated to start on 2015-08-08,
-%     the date of Ethereum's Frontier launch and the first day with
-%     valid ETH/USD price data needed for the eth\_btc\_ratio feature.
-%   - Events that fired before this date are dropped. The CUSUM
-%     accumulators themselves are computed on the full raw series, so
-%     events that survive truncation reflect the dynamic state of the
-%     cumulative drift over the entire pre-event history.
-%   - Empirically, the mean daily volatility over the truncated window
-%     matches the full-series mean to four decimal places, confirming
-%     the EWMA was fully converged by the truncation date.
-%
-% ── Why this buffer-and-truncate design ───────────────────────────
-%
-%   - First, every engineered feature must have completed its warmup
-%     window before the first labelled event so that no fold sees a
-%     partial-feature observation.
-%   - Second, eth\_btc\_ratio cannot be computed before ETH started
-%     trading; without truncation, early CPCV folds under N=8 produce
-%     fully-NaN test partitions.
-%   - Truncating CUSUM to start at the ETH availability date solves both
-%     problems simultaneously.
-%
-% ── Validation pipeline ──────────────────────────────────────────
-%
-%   - Empty downloads raise.
-%   - MultiIndex columns flattened.
-%   - Duplicate dates raise.
-%   - Calendar gaps <= 3 days forward-filled, gaps > 3 days raise.
-%   - OHLCV consistency checks; NaN Close drops the row.
-%
-% ── Calendar ─────────────────────────────────────────────────────
-%
-%   - All rolling windows use the BTC trading calendar (7-day week,
-%     30-day month, 90-day quarter, 180-day semester, 365-day year).
-%   - BTC trades 24/7.
-%
-% ── External sources (overview, detailed in 3.4) ─────────────────
-%
-%   - Macro (yfinance, FRED).
-%   - Crypto-macro (CoinMetrics with yfinance fallback).
-%   - On-chain (CoinMetrics Community API).
-%
-% ── Anti-leakage ────────────────────────────────────────────────
-%
-%   - Externals aligned via merge\_asof(direction='backward').
-%   - CoinMetrics shifted by 1 day (end-of-day reporting convention).
-%
-% ── Figure suggestion ────────────────────────────────────────────
-%
-%   - BTC-USD log price 2014 to 2026 with CPCV group boundaries
-%     overlaid; vertical line marking the 2015-08-08 CUSUM truncation
-%     date.
+The base instrument is Bitcoin priced in US dollars (BTC-USD). Daily Open-High-Low-Close-Volume (OHLCV) bars are retrieved from Yahoo Finance, spanning 2014-11-01 to 2026-05-09 (4,208 daily bars). The start date is chosen to satisfy the longest-warmup feature in the engineered set, the 50/200 exponential moving average ratio at 200 days. Every shorter-warmup feature inherits a clean starting point as a consequence.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{btc_usd_close_price.png}
+\caption{BTC-USD daily closing price from 2014-11-01 to 2026-05-09.}
+\label{fig:btc_usd_close_price}
+\end{figure}
+
+The download is validated before entering the labelling pipeline. Empty responses, duplicate dates, and OHLCV inconsistencies abort the pipeline with an explicit error rather than producing silent failures. Calendar gaps of three days or fewer are forward-filled to preserve the daily sampling rate. Longer gaps abort the pipeline as well. Any row with a missing close is dropped.
+
+All rolling windows operate on the BTC trading calendar of 7-day weeks, 30-day months, 90-day quarters, 180-day semesters, and 365-day years. Unlike equity markets, BTC trades 24/7, so the calendar contains no weekend or holiday gaps. The 365-day convention flows downstream into the Sharpe-ratio annualisation in Section 3.11.2 and into the DSR reference distribution.
+
+Three external data sources extend the feature set beyond price and volume. They are described in detail in Section 3.4 and summarised here only by source. Macroeconomic series (yield curves, the CBOE Volatility Index (VIX), commodity prices, the dollar index) come from Yahoo Finance and the Federal Reserve Economic Data (FRED) database. The crypto-macro ETH/BTC ratio comes from the CoinMetrics Community API with Yahoo Finance as a fallback. The eight on-chain features (active addresses, transaction count, hash rate, MVRV, net exchange flow, fee per transaction, exchange supply fraction, and native-unit issuance) come from the CoinMetrics Community API.
+
+Two anti-leakage measures are applied at this stage. All external series are aligned onto BTC's calendar by a backward-looking join. For each BTC trading day, the alignment uses only the most-recent external observation timestamped at or before that day, and never a future value. CoinMetrics observations are then shifted by one trading day to respect the end-of-day reporting convention of the CoinMetrics Community API. A metric timestamped at $t$ is only published at the close of $t$, and therefore enters the feature matrix at $t+1$.
 
 \subsection{Labelling}\label{subsec:labeling}
 
-% T-R5: introduces the event / label / observation thread. Define the
-% constructs in order of appearance:
-%   - "event"       = CUSUM-triggered timestamp.
-%   - "label"       = TBL output.
-%   - "observation" = aligned final sample.
+The labelling pipeline transforms the 4,208 daily bars into a smaller set of binary-labelled observations through three sequential constructs that recur throughout the rest of the methodology. An \textit{event} is a CUSUM-triggered timestamp at which the cumulative drift in log returns crosses a volatility-scaled threshold (Section 3.2.2). A \textit{label} is the triple-barrier output assigned to each event, encoding which of three barriers was touched first (Section 3.2.3). An \textit{observation} is the final aligned sample at an event timestamp, combining the label, the engineered features, the AFML sample weight, and the barrier-touch timestamp $t_1$ used for downstream purging.
 
 
 \subsubsection{Daily volatility}\label{subsubsec:vol}
 
-% Topics:
-%   - EWMA std of log returns, span = 50 (vs. AFML default 100 for
-%     equities).
-%   - Justification: BTC's faster regime transitions (halving cycles,
-%     regulatory shocks).
-%   - Two roles downstream: target width for TBL barriers; CUSUM
-%     threshold calibration.
-%
-% Cite: \cite{lopez_de_prado_2018}, Snippet 3.1.
+The daily volatility series is computed first because two later steps depend on it. It is estimated as the exponentially weighted moving average (EWMA) standard deviation of log returns, with span 50 \citep[Snippet 3.1]{lopez_de_prado_2018}. The half-life of an EWMA with span 50 is approximately 17 days, giving the estimator a memory of roughly two trading weeks \phantomsection\label{ref:ewma_call}(\autoref{fig:ewma_vol}).
 
+The span is shortened from the AFML default of 100 days for equities to 50 days for BTC. Two empirical features of the asset motivate the change. BTC undergoes faster regime transitions than equities, driven by the four-year halving cycle and by regulatory shocks that compress volatility responses into days rather than months. A span of 100 days would smooth those transitions out and underestimate volatility during regime shifts. A span of 50 days tracks them more responsively, at the cost of marginally higher estimator variance.
+
+Two downstream uses depend on this series. First, the CUSUM threshold in Section 3.2.2 is calibrated as a multiple of the mean daily volatility, so that the event filter fires at a roughly constant signal-to-noise ratio across the sample. Second, the triple-barrier widths in Section 3.2.3 are scaled by the daily volatility at each event, so that upper and lower barriers expand and contract with the prevailing regime rather than sitting at a fixed return percentage. The volatility series therefore appears twice in the labelling pipeline, once as a calibration constant and once as a width parameter.
 
 \subsubsection{CUSUM event filter}\label{subsubsec:cusum}
 
-% Topics:
-%   - Symmetric CUSUM accumulators s\_pos, s\_neg computed on the full
-%     raw return series from 2014-11-01 onward.
-%   - Threshold: h = 1.0 x mean(daily\_vol).
-%   - Justification for 1.0x (tightened from 1.5x): empirical sweep
-%     showed 0.5x too noisy, 3.0x too sparse; 1.0x yields workable
-%     event count with balanced classes.
-%   - Truncation: after CUSUM fires its candidate events on the full
-%     series, the event index is truncated to start on
-%     CUSUM\_START\_DATE = 2015-08-08 (Section 3.1). The accumulators
-%     continue to reflect the dynamic state of the cumulative drift over
-%     the entire pre-event history; only the event-firing window is
-%     restricted to the data-availability frontier of eth\_btc\_ratio.
-%   - Locked-run figures: 1,352 candidate events fire on the full series,
-%     82 fall before the truncation date and are dropped, leaving 1,270
-%     events that enter triple-barrier labelling.
-%   - The post-truncation event series reduces 4,208 daily bars to 1,270
-%     informative events; after triple-barrier labelling and rare-label
-%     removal (Section 3.2.4) this becomes 1,168 binary-labelled
-%     observations.
-%
-% Figure suggestion: CUSUM accumulators alongside BTC price with event
-% markers; the 2015-08-08 truncation boundary marked.
+The CUSUM filter selects the timestamps at which the cumulative drift in log returns crosses a volatility-scaled threshold. The bars at these timestamps are retained for triple-barrier labelling. Everything between events is discarded. Two accumulators are maintained in parallel, one for upward drift and one for downward drift. The upward accumulator $S^+_t$ adds positive returns at each new bar and floors at zero. The downward accumulator $S^-_t$ adds negative returns and ceils at zero. When either crosses its threshold $h$, an event fires at that timestamp and the offending accumulator resets to zero. The implementation follows AFML Snippet 2.4 \citep{lopez_de_prado_2018}.
+
+The threshold is set to $h = 1.0 \times \overline{\sigma}$, where $\overline{\sigma}$ is the mean of the daily volatility series from Section 3.2.1 over the labelling window. The choice was tightened from the AFML default of $1.5 \times \overline{\sigma}$ after an empirical sweep over the range $\{0.5, 1.0, 1.5, 2.0, 3.0\}$. A multiplier of $0.5$ produces too many events and reduces the average information content per event. A multiplier of $3.0$ produces too few, leaving long stretches of the sample without any event. A multiplier of $1.0$ yields a workable event count with approximately balanced classes after triple-barrier labelling. The mechanism is illustrated over a three-month window in early 2026 \phantomsection\label{ref:cusum_call}(\autoref{fig:cusum_window}).
+
+The accumulators are computed on the full raw return series from 2014-11-01 onwards, but the event-firing window is truncated to start on 2015-08-08. The truncation reflects two constraints. The 50/200 exponential moving average ratio needs 200 calendar days of price history to populate (Section 3.1), so the earliest a fully-populated feature vector can exist is May 2015. The ETH/USD price series, which feeds the ETH/BTC ratio feature, only begins on 2015-08-08 with the Ethereum Frontier launch. The truncation date is the later of the two constraints and therefore satisfies both. The accumulators themselves run on the full pre-2015-08-08 history, so the events that survive truncation reflect the genuine state of the cumulative drift at the time they fire, not a reset on 2015-08-08.
+
+The locked-run figures follow from these choices. On the full series, the CUSUM filter fires 1,352 candidate events. Truncation drops the 82 candidates that fire before 2015-08-08, leaving 1,270 events that enter the triple-barrier labelling step in Section 3.2.3. Rare-label removal drops a further 102 events whose labels collapse to class zero under the minimum-return threshold, giving the final 1,168 binary-labelled observations. The pipeline therefore compresses 4,208 daily bars to 1,168 observations, a ratio of roughly 28\%.
 
 
 \subsubsection{Triple barrier labelling}\label{subsubsec:tbl}
 
-% Topics:
-%   - pt\_sl = (1.5, 1.5) symmetric (no directional bias).
-%   - num\_days = 10 (~ two trading weeks).
-%   - min\_return = 0.02 (collapses small vertical-barrier returns into
-%     class 0 for later removal).
-%   - Output: DataFrame bins[ret, bin, t1] where t1 is the barrier-touch
-%     timestamp (critical for downstream purging).
-%   - Observed mean holding period 5.0 days (median 4 days); vertical
-%     barrier hit on 19.7\% of events (horizontal barriers close
-%     approximately 80\% before time barrier). Locked-run figures.
-%
-% Figure suggestion: triple-barrier visualization for two or three
-% representative events.
+The triple-barrier method assigns a label to each CUSUM event by simulating a path-dependent trading position opened at the event timestamp and closed at the first of three barriers it touches. The upper horizontal barrier represents the profit-taking level. The lower horizontal barrier represents the stop-loss level. The vertical barrier represents the maximum holding period. The label is $+1$ if the upper barrier is hit first, $-1$ if the lower barrier is hit first, and the sign of the realised return at expiry if the vertical barrier is reached. The implementation follows AFML Snippet 3.2 \citep{lopez_de_prado_2018}.
 
+The horizontal barriers are placed at $\pm 1.5 \times \sigma_t$ around the entry price, where $\sigma_t$ is the daily volatility series from Section 3.2.1 evaluated at the event timestamp. The symmetric profit-take and stop-loss multipliers reflect the absence of a directional bias in the labelling step. The prediction problem itself remains directional and is delegated to the models in Section 3.7. The vertical barrier is set 10 calendar days after the event, which is approximately two trading weeks on the BTC calendar. Vertical-barrier expiries whose absolute return falls below a minimum threshold of 0.02 are assigned a transitional label of zero, which is removed in the rare-label step described below.
 
-\subsubsection{Rare label removal}\label{subsubsec:rare}
+The output of the triple-barrier method is a table indexed by event timestamp, with three columns. The realised return $ret$ records the price change between entry and exit. The label $bin \in \{-1, 0, +1\}$ records which barrier was touched first, modulated by the minimum-return threshold for vertical-barrier hits. The barrier-touch timestamp $t_1$ records the calendar day on which the position closed and is used for the purging and embargo steps of the cross-validation framework in Section 3.5.1. Three representative events, one for each barrier type, are shown in \autoref{fig:tbl_examples}.
 
-% Topics:
-%   - min\_pct = 0.085 (raised from default 0.05 to aggressively remove
-%     residual class-0 events).
-%   - Combined with symmetric pt\_sl and min\_return = 0.02, class 0 is
-%     eliminated -> binary labels {-1, +1}.
-%   - Final aligned event count: 1,168 events after the 2015-08-08 CUSUM
-%     truncation and the rare-class drop. Locked-run class balance:
-%     \{+1: 664, -1: 504\} = 56.85\% Up / 43.15\% Down.
-%   - Locked-run event-count chain: CUSUM fires 1,352 candidate events
-%     on the full series; 82 fall before 2015-08-08 and are dropped by
-%     the truncation, leaving 1,270 events that enter triple-barrier
-%     labelling; rare-label removal drops 102 class-0 events (vertical-
-%     barrier ties below the 0.02 minimum return threshold), giving the
-%     final 1,168.
-%   - The previous configuration (raw data from September 2014, no CUSUM
-%     truncation) produced 1,245 events.
-%
-% Table suggestion: label distribution before and after rare-label
-% removal. Self-contained caption.
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{tbl_examples.png}
+\caption{Triple-barrier labelling on three representative events at $pt\_sl = (1.5, 1.5)$ and $num\_days = 10$. Left: profit-take hit at nine days. Middle: stop-loss hit at ten days. Right: vertical-barrier expiry at ten days.}
+\label{fig:tbl_examples}
+\end{figure}
+
+The empirical distribution of barrier hits validates the parameter choices. The mean holding period is 5.0 days against a maximum of 10, with a median of 4 days. Only 19.7\% of events expire at the vertical barrier, which means the horizontal barriers close approximately 80\% of positions before the time-out. The 5-day mean holding period also keeps the average barrier-touch timestamp clear of the next CUSUM event, which limits the magnitude of the AFML uniqueness correction applied in Section 3.3.
+
+The residual class-zero events are then dropped in a rare-class removal step. The step drops any class whose fraction in the post-labelling dataset falls below a minimum threshold. The threshold is set to 0.085, raised from the AFML default of 0.05 to deliberately drop class zero. The 102 vertical-barrier ties between the 0.02 minimum return and zero represent 8.0\% of the post-truncation event count, which falls just below the 0.085 threshold and so triggers the drop. The pipeline therefore delivers a strict binary classification problem $bin \in \{-1, +1\}$, with no neutral-return events to manage downstream.
+
+The locked-run figures complete the chain from Section 3.2.2. The 1,270 events that survive the CUSUM truncation enter triple-barrier labelling. The minimum-return threshold collapses 102 of them into class zero, which the rare-label step then drops, leaving 1,168 final binary-labelled observations. The class balance settles at 56.85\% Up against 43.15\% Down (\phantomsection\label{ref:label_dist_call}\autoref{fig:label_distribution}), which is close enough to balanced for stratified loss functions to behave well without additional class weighting.
 
 
 \subsection{Sample Weights}\label{subsec:weights}
 
-% Opening claim (T-R3): "Overlapping labels create redundancy that
-% biases training; AFML's four-step weighting scheme corrects for it."
-%
-% Steps:
-%   - Step 1. Concurrent label count (Snippet 4.1).
-%       For each bar t, count active labels c\_t = |{i : t0\_i <= t <= t1\_i}|.
-%   - Step 2. Average uniqueness (Snippet 4.2).
-%       u\_bar\_i = mean(1 / c\_t) over [t0\_i, t1\_i]. Uniqueness near
-%       1.0 -> highly informative; near 0 -> redundant.
-%   - Step 3. Return-attribution weights (Snippet 4.10).
-%       w\_i = |ret\_i| * u\_bar\_i, normalised to sum(w) = len(w)
-%       (sklearn-compatible).
-%   - Step 4. Time decay (Snippet 4.11).
-%       Linear decay with time\_decay\_factor = 0.4 (oldest sample
-%       weighted at 40\% of newest). Re-normalise.
-%   - Step 5. Outlier capping.
-%       Clip at weight\_cap\_quantile = 0.99.
-%
-% Integration:
-%   - sklearn models: sample\_weight parameter in .fit().
-%   - PyTorch models: per-sample multiplier in CrossEntropyLoss as
-%     L = mean(w\_i * CE(logits\_i, y\_i)).
-%
-% Figure suggestion: sample weights over time, annotated with notable
-% BTC events (March 2020 COVID, 2021 ATH, 2022 FTX collapse).
-%
-% Cite: \cite{lopez_de_prado_2018}, Chapter 4.
+The triple-barrier labelling of the previous section produces overlapping observations. The 10-day vertical barrier means a position opened at event $i$ remains open through the days that may host subsequent CUSUM events, so two consecutive events sharing part of their barrier windows are partially redundant. Training on overlapping observations without correction overweights densely-clustered events and biases the gradient estimate towards the most active periods of the market. AFML proposes a four-step sample-weighting scheme that addresses both this redundancy and the asymmetric information content across events \citep[Chapter 4]{lopez_de_prado_2018}. A fifth step, outlier capping, is added to control the tail of the weight distribution.
+
+The first step counts the number of overlapping label spans at each calendar day. For each bar $t$, the concurrent label count $c_t$ records how many event positions remain open on day $t$ (Snippet 4.1). 
+
+The second step turns this count into a per-event uniqueness score. The average uniqueness $\bar{u}_i$ of event $i$ is the mean of $1/c_t$ over the days inside its barrier window (Snippet 4.2). An event whose span is shared with no others has $\bar{u}_i = 1$ and contributes the full weight of its information. An event whose span is fully shared with two others has $\bar{u}_i \approx 1/3$ and is correspondingly downweighted in the gradient.
+
+The third step scales uniqueness by absolute return. The return-attribution weight $w_i = \bar{u}_i \times |ret_i|$ rewards events with large realised moves, since these carry more directional information than near-zero returns (Snippet 4.10). The weights are then normalised so that their sum equals the number of events, which keeps the standard fitting interface stable across different sample sizes. 
+
+The fourth step applies a linear time decay. Old events are downweighted by a factor that decreases linearly from one at the most recent event to 0.4 at the oldest, with the slope set so that the average decay is unity (Snippet 4.11). The time-decay factor of 0.4 is chosen to honour the regime non-stationarity of BTC without discarding the historical record entirely. The asset has matured substantially over the labelling window, evolving from a primarily retail-driven market in the mid-2010s into one with structural institutional participation by the early 2020s. Recent observations therefore carry more information about current price dynamics than equally-aged observations from earlier periods. The 0.4 floor still allows pre-institutional behaviour to inform the models without giving it equal weight. The two multiplicative scalings combine into a per-event weight $w_i = \bar{u}_i \times |ret_i| \times d_i$, where $d_i$ is the decay factor at event $i$.
+
+The fifth step caps extreme weights at the 99th percentile of the post-decay distribution. The cap is necessary because the multiplicative chain can produce a heavy upper tail. Events that combine a large absolute return, high uniqueness, and a recent timestamp accumulate weights several times the mean, and a handful of these can dominate the empirical risk minimisation of an entire fold. The 99th percentile of the empirical distribution sits at approximately 2.862 in the locked run, and 12 events hit the cap. 
+
+Notable instances include the COVID-19 crash on 2020-03-08 (return $-38.7\%$), the FTX collapse on 2022-11-04 (return $-12.3\%$), and the early-2019 rally on 2019-03-29 (return $+19.1\%$). The weight distribution and its evolution over time are shown in \phantomsection\label{ref:weights_call}\autoref{fig:sample_weights}, and the full list of capped events appears in \autoref{tab:capped_events}.
+
+The final per-event weight vector enters each model's training procedure through the standard weight-aware fitting interface. The ML classifiers (LR, RF, XGBoost) accept the vector through the sample-weight argument of their fit methods. The DL models (LSTM, KAN) apply the weights as per-sample multipliers inside the cross-entropy loss, so that the gradient at observation $i$ is scaled by $w_i$ before averaging across the batch. Both routes produce an empirical risk that respects the AFML-corrected information content of each observation.
 
 
 \subsection{Feature Engineering}\label{subsec:features}
 
-% T-R4: one construct per paragraph; group, do not enumerate. Detailed
-% per-feature table goes to Appendix E.
-%
-% Universe (73 features in four groups, all eligible for MDA selection;
-% AR Logistic restricts itself to the 10 lag columns by name from the
-% pre-MDA matrix):
-%   - Technical (TA)               : 25  (OHLCV)
-%   - Mathematical (AFML Part 4)   :  9  (returns / log-prices)
-%   - External: macro              : 20  (yfinance, FRED)
-%   - External: crypto-macro       :  1  (CoinMetrics + yfinance fallback)
-%   - External: on-chain           :  8  (CoinMetrics)
-%   - Lag (autoregressive)         : 10  (log returns)
-%   - Total                        : 73
+The feature engineering layer turns the 4,208 OHLCV bars and the external data sources of Section 3.1 into 73 numerical features per event timestamp. The features fall into four families. Twenty-five technical indicators encode the standard chartist and quantitative signals from the BTC OHLCV series (Section 3.4.1). Nine mathematical features apply AFML Part 4 transformations of returns and log prices (Section 3.4.2). Twenty-nine external features encode macroeconomic conditions, the cryptoasset cross-section, and on-chain activity, drawn from twenty macroeconomic series, one cross-asset ratio, and eight on-chain measures (Section 3.4.3). Ten lagged log-return features encode the autoregressive structure of BTC's own returns (Section 3.4.4). All 73 features are eligible candidates for the multi-model Mean Decrease Accuracy (MDA) selection procedure of Section 3.6, with the single exception that the Autoregressive Logistic baseline restricts its input to the 10 lag columns regardless of MDA results. The full per-feature catalogue, including formulas and lookback windows, sits in \autoref{app:features}.
 
 
 \subsubsection{Technical analysis features (25)}\label{subsubsec:ta}
 
-% Group by function:
-%   - Returns and volatility (8): log\_returns, realised vol
-%     (annualised x sqrt(365)), Garman-Klass (1980), Yang-Zhang (2000),
-%     ATR (EWMA, span=14, log-transformed), Bollinger Band width,
-%     vol\_term\_7\_30 (7-day vs. 30-day realised vol ratio),
-%     vol\_term\_30\_90 (30-day vs. 90-day realised vol ratio).
-%   - Momentum and trend (9): RSI(14, Wilder), MACD/MACD-signal/
-%     MACD-hist (12/26/9), roc\_14 (top BTC predictor in
-%     mate\_confluence\_2024), Stoch \%K/\%D, Williams \%R, CCI(14).
-%   - Volume (3): OBV (sign-preserving log-transformed), Chaikin
-%     oscillator (3/10), MFI(14).
-%   - Distribution shape (2): rolling skew/kurt (window=21).
-%   - Trend ratios (3): EMA ratios 20/50, 50/200; VWMA ratio 20/50.
-%
-% Window convention: 21-day rolling for shape features; standard TA
-% periods kept for named indicators (RSI=14, MACD=12/26/9). No
-% optimisation of indicator periods (avoids another layer of overfitting
-% risk).
-%
-% Cite: \cite{garman_klass_1980}, \cite{yang_zhang_2000},
-% \cite{mate_confluence_2024}.
+The 25 technical indicators fall into five functional categories. The largest is the returns-and-volatility group of eight features, anchored on daily log returns and including two range-based volatility estimators that improve on close-to-close estimates by using intraday extremes \citep{garman_klass_1980, yang_zhang_2000}, an EWMA-smoothed Average True Range, Bollinger Band width, and two volatility-term-structure ratios comparing 7-day to 30-day and 30-day to 90-day realised volatilities. The second-largest is the momentum-and-trend group of nine features, anchored on Wilder's Relative Strength Index and the MACD triplet, and including the 14-day rate of change identified as the top BTC predictor in \citet{mate_confluence_2024}, the Stochastic oscillator pair, Williams \%R, and the Commodity Channel Index. The remaining eight features split across three smaller groups. Three volume-based indicators cover On-Balance Volume (sign-preserving log-transformed), the Chaikin oscillator, and the Money Flow Index. Two distribution-shape features capture 21-day rolling skewness and kurtosis. Three trend ratios capture the relative position of short and long moving averages, namely the 20/50 and 50/200 exponential moving average ratios and the 20/50 volume-weighted moving average ratio.
+
+Indicator periods are kept at their canonical values (RSI = 14, MACD = 12/26/9, CCI = 14, MFI = 14) rather than optimised over the labelling window. The rolling skewness and rolling kurtosis use a 21-day window matching one calendar month on the BTC calendar. Optimising any of these periods within the same dataset that trains the models would introduce another layer of overfitting risk, and the canonical values reflect decades of use across multiple asset classes. The 25 indicators are summarised in \autoref{tab:ta_features}.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcp{8cm}}
+\toprule
+Category & Count & Representative indicators \\
+\midrule
+Returns and volatility & 8 & log returns, GK vol, YZ vol, ATR, BB width, vol term structure \\
+Momentum and trend & 9 & RSI, MACD triplet, ROC, Stoch \%K/\%D, Williams \%R, CCI \\
+Volume & 3 & OBV, Chaikin oscillator, MFI \\
+Distribution shape & 2 & rolling skewness, rolling kurtosis \\
+Trend ratios & 3 & EMA 20/50, EMA 50/200, VWMA 20/50 \\
+\bottomrule
+\end{tabular}
+\caption{Technical indicators grouped by functional category. Full per-indicator formulas and lookback windows are catalogued in \autoref{app:features}.}
+\label{tab:ta_features}
+\end{table}
 
 
 \subsubsection{Mathematical features (9, AFML Part 4)}\label{subsubsec:math}
 
-% Topics:
-%   - Information-theoretic (3): Shannon entropy (window=30), Lempel-Ziv
-%     complexity (window=90), negentropy (window=30; difference between
-%     the maximum-entropy Gaussian benchmark and the empirical Shannon
-%     entropy of returns, so positive values flag departures from
-%     Gaussianity).
-%   - Random walk tests (2): Hurst (window=180, R/S at sub-windows
-%     [10, 21, 42, 63]); variance ratio Lo-MacKinlay 1988 (window=90,
-%     lag=7).
-%   - Normality test (1): Jarque-Bera (window=90).
-%   - Structural breaks (3): SADF (min sub-length=90, lags=1), SMT
-%     polynomial-1, SMT exponential.
-%   - Cached to cache/math\_features.parquet (O(n^2) for SADF and SMT).
-%
-% Cite: \cite{lopez_de_prado_2018} Part 4, \cite{lo_mackinlay_1988}.
+The nine mathematical features come from AFML Part 4 \citep{lopez_de_prado_2018} and capture distributional and structural properties of BTC's returns and log prices. Three features measure information content. Shannon entropy on a 30-day rolling window captures disorder, Lempel-Ziv complexity on a 90-day window captures compressibility, and negentropy on a 30-day window measures the gap between the maximum-entropy Gaussian benchmark and the empirical entropy of returns, so that positive values flag departures from Gaussianity. Low entropy and low Lempel-Ziv complexity together signal structured return behaviour, where prediction models find more learnable signal than under random noise.
+
+Two features test the random-walk null. The Hurst exponent uses rescaled-range analysis on 180-day windows with sub-windows of 14, 30, 60, and 90 days, where values above 0.5 indicate persistence and values below indicate mean reversion. The variance ratio of \citet{lo_mackinlay_1988} uses 90-day windows with a 7-day lag, with departures from unity rejecting the random-walk null. Persistent regimes are typically easier to forecast because directional momentum carries information across consecutive bars, and rejection of the null implies multi-period returns carry exploitable autocorrelation.
+
+The remaining four features cover normality and structural-break diagnostics. The Jarque-Bera statistic on 90-day windows tests skewness and excess kurtosis against the Gaussian null, flagging fat-tailed or skewed return episodes that violate the assumptions of common parametric models. The Supremum Augmented Dickey-Fuller (SADF) statistic identifies the most explosive sub-period within each rolling window, and the Sub- and Super-Martingale Tests (SMT) fit polynomial-1 and exponential trends to test the cumulative log-return series against a martingale null. SADF flags bubble and crash dynamics, while SMT rejection signals deterministic drift the random-walk null misses. \autoref{tab:math_features} summarises the family.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcp{8cm}}
+\toprule
+Category & Count & Features (rolling window in days) \\
+\midrule
+Information-theoretic & 3 & Shannon entropy (30), Lempel-Ziv complexity (90), negentropy (30) \\
+Random-walk tests & 2 & Hurst exponent (180), variance ratio (90, lag 7) \\
+Normality & 1 & Jarque-Bera (90) \\
+Structural breaks & 3 & SADF (min 90, lag 1), SMT polynomial-1, SMT exponential \\
+\bottomrule
+\end{tabular}
+\caption{Mathematical features grouped by functional category. Full per-feature formulas and rationale are in \autoref{app:features}.}
+\label{tab:math_features}
+\end{table}
 
 
 \subsubsection{External features (29)}\label{subsubsec:external}
 
-% Topics:
-%   - Macro (20):
-%       dxy\_roc\_30, us2y (FRED DGS2 with T10Y2Y fallback), us10y
-%       (^TNX), yield\_curve\_2y10y, yield\_curve\_10y30y, vix, plus
-%       30-day and 14-day return windows on each of seven commodity /
-%       index series: sp500\_ret\_30 / sp500\_ret\_14, nasdaq\_ret\_30 /
-%       nasdaq\_ret\_14, gold\_ret\_30 / gold\_ret\_14, silver\_ret\_30 /
-%       silver\_ret\_14, copper\_ret\_30 / copper\_ret\_14, oil\_ret\_30 /
-%       oil\_ret\_14, natgas\_ret\_30 / natgas\_ret\_14. The 14-day
-%       variants were added to give the MDA selection step access to a
-%       faster horizon on each commodity / index, since the previous
-%       30-day-only configuration left no shorter macro horizon in the
-%       MDA pool.
-%
-%   - Crypto-macro (1): eth\_btc\_ratio.
-%       Computed as ETH\_close / BTC\_close aligned via merge\_asof.
-%       ETH source priority: CoinMetrics Community API as the primary
-%       source, trying three metrics in order (ReferenceRateUSD ->
-%       PriceUSD -> derived CapMrktCurUSD / SplyCur); the first metric
-%       returning more than 100 rows is used. yfinance ETH-USD is the
-%       final fallback. This change replaces an earlier yfinance-only
-%       implementation whose ETH-USD history began only in November 2017
-%       and produced a 27\% NaN rate over the external dataframe with
-%       entire-test-partition NaN in early CPCV folds under N=8. With
-%       the CoinMetrics PriceUSD source, ETH coverage extends back to
-%       2015-08-08 and the residual NaN rate falls to 7.7\%, all of
-%       which sits in the November 2014 to August 2015 pre-ETH-trading
-%       window and is fully truncated out by the CUSUM start-date filter
-%       (Section 3.2.2). The earlier btc\_dominance column was removed
-%       because the CoinGecko endpoint returns BTC market cap (not
-%       bounded [0, 100] dominance) and the proxy fallback was a price-
-%       correlated approximation that the methodology could not cleanly
-%       defend.
-%
-%   - On-chain (8):
-%       active\_addr\_roc\_14, tx\_count\_roc\_14, hashrate\_roc\_30,
-%       mvrv (level), net\_exchange\_flow, fee\_per\_tx,
-%       exchange\_supply\_pct, issuance\_ntv. CoinMetrics Community API,
-%       shifted by 1 day.
-%
-%   - Anti-leakage: all external series merged onto BTC's calendar via
-%     merge\_asof(direction='backward'). Cache invalidates on column-set
-%     change (not just date range).
+The 29 external features extend the BTC-only input space into the broader financial and on-chain context. Twenty macroeconomic features come from Yahoo Finance and the Federal Reserve Economic Data (FRED) database. Six features cover the rates and volatility backdrop, namely the 30-day rate of change of the dollar index, the 2-year and 10-year Treasury yields, the 2-year-to-10-year and 10-year-to-30-year yield-curve slopes, and the CBOE Volatility Index (VIX). The remaining fourteen features cover seven commodity and equity-index series, namely the S\&P 500, Nasdaq, gold, silver, copper, oil, and natural gas, each at a 30-day and a 14-day return window. The 14-day variants were added so that the multi-model MDA selection step of Section 3.6 has access to a faster macro horizon on each asset, since the previous 30-day-only configuration would otherwise leave no shorter horizon in the candidate pool.
+
+One crypto cross-asset feature, the ETH-to-BTC price ratio, captures the largest cryptoasset's relative pricing. The ratio is computed by aligning daily ETH-USD prices onto BTC's trading calendar with a backward-looking join and dividing by BTC-USD. ETH prices come from the CoinMetrics Community API as the primary feed, with Yahoo Finance as a fallback. The CoinMetrics-primary configuration extends ETH coverage back to 2015-08-08, the Ethereum Frontier launch date, and limits the residual missing-value rate to 7.7\%, all of which sits in the November 2014 to August 2015 pre-ETH-trading window that the CUSUM start-date filter of Section 3.2.2 truncates out. An earlier BTC-dominance feature was removed when the available data source was found to return BTC market capitalisation rather than the bounded dominance percentage, and the proxy fallback could not be cleanly defended on methodological grounds.
+
+Eight on-chain features capture the operational state of the Bitcoin network from the CoinMetrics Community API. Three features encode network activity through the 14-day rate of change of daily active addresses, the 14-day rate of change of transaction count, and the 30-day rate of change of network hash rate. Five further features encode balance-sheet and supply dynamics through the Market-Value-to-Realised-Value (MVRV) ratio, the net exchange flow, the average fee per transaction, the fraction of supply held on exchanges, and the daily native-unit issuance. All external series enter the feature matrix through the backward-looking join described in Section 3.1, and the CoinMetrics observations are additionally shifted forward by one trading day to respect the Community API's end-of-day reporting convention. \autoref{tab:external_features} summarises the family.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcp{8cm}}
+\toprule
+Sub-group & Count & Features \\
+\midrule
+Macro: rates and volatility & 6 & DXY 30-day ROC, US 2Y yield, US 10Y yield, 2Y-10Y slope, 10Y-30Y slope, VIX \\
+Macro: commodities and indices & 14 & S\&P 500, Nasdaq, gold, silver, copper, oil, natural gas (30-day and 14-day returns each) \\
+Crypto-macro & 1 & ETH/BTC ratio \\
+On-chain: network activity & 3 & active addresses ROC 14, tx count ROC 14, hash rate ROC 30 \\
+On-chain: balance sheet and supply & 5 & MVRV, net exchange flow, fee per tx, exchange supply \%, issuance \\
+\bottomrule
+\end{tabular}
+\caption{External features grouped by source and functional category. Macro features are drawn from Yahoo Finance and FRED, and crypto-macro and on-chain features from CoinMetrics. Full per-feature definitions are in \autoref{app:features}.}
+\label{tab:external_features}
+\end{table}
 
 
 \subsubsection{Lag features (10)}\label{subsubsec:lags}
 
-% Topics:
-%   - AR\_LAGS = [1, 2, 3, 4, 5, 6, 7, 14, 21, 30], column prefix
-%     log\_returns\_lag.
-%   - The locked configuration adds four lags (4, 5, 6, 21) to the
-%     previous six-lag set [1, 2, 3, 7, 14, 30]. The expansion fills the
-%     gap between lag 3 and lag 7 with the missing trading-week pattern
-%     and adds the three-week mark (lag 21) so AR Logistic has a full
-%     near-term lag spectrum without the previous gap structure.
-%   - Lag features compete with engineered features in MDA (advisor-
-%     driven change to remove information asymmetry between AR Logistic
-%     and the other models).
-%   - AR Logistic still selects the 10 lag columns by name from
-%     X\_tr\_full, regardless of MDA's choices.
+Ten lagged log-return features encode the autoregressive structure of BTC's own returns. The lag set is $\{1, 2, 3, 4, 5, 6, 7, 14, 21, 30\}$ days, which covers a contiguous near-term spectrum out to one week and adds the two-week, three-week, and four-week milestones. The contiguous one-to-seven coverage avoids the discontinuity between lag 3 and lag 7 that an earlier sparser configuration carried, and the three-week mark at lag 21 closes the gap between the two- and four-week scales. Lag features participate in the multi-model MDA selection step of Section 3.6 on equal footing with the other 63 engineered features. This removes the information asymmetry that would otherwise arise between the Autoregressive Logistic baseline, which has natural access to lag features by construction, and the other models, which would otherwise not see lag information in their candidate pool. The Autoregressive Logistic baseline itself still selects all ten lag columns from the pre-MDA matrix by name, regardless of which features survive the MDA cut for the other models.
 
 
 \subsubsection{Alignment and NaN handling}\label{subsubsec:alignment}
 
-% Three steps close out Phase 1: log transforms on a small set of
-% unbounded features, NaN handling policy, and the final index
-% alignment that produces (X, y, w, t1).
-%
-% ── Log transforms ────────────────────────────────────────────────
-%
-% Topics:
-%   - atr: log(|x| + 1e-8).
-%   - obv: sign(x) * log(|x| + 1).
-%   - All other features are bounded or dimensionless.
-%
-% ── NaN handling across Phase 1 ───────────────────────────────────
-%
-% Topics:
-%   - Phase 1 produces NaN values from rolling-window warmup and external
-%     -data calendar gaps. Phase 1 does not drop or impute them.
-%   - Alignment hard-asserts no entirely-NaN columns and fully populated
-%     t1. Soft-warns on partial-NaN columns.
-%   - Per-fold NaN resolution happens inside the CPCV loop
-%     (Section 3.6.1).
-%
-% ── Alignment ────────────────────────────────────────────────────
-%
-% Topics:
-%   - align\_for\_cv(features, bins, weights) -> (X, y, w, t1) via
-%     index intersection.
-%   - Hard assertions: non-empty intersection; no duplicate dates;
-%     monotone index; identical lengths; no all-NaN columns.
-%   - Validation: t1 fully populated; weights > 0; labels in {-1, 0, +1};
-%     X/y/w/t1 share indices.
-%   - Output: (1168 x 73) X, (1168) y, (1168) w, (1168) t1. Locked-run
-%     class balance: \{+1: 664, -1: 504\} = 56.85\% Up / 43.15\% Down.
-%
-% Table suggestion: alignment summary (daily bars -> CUSUM events ->
-% labelled events -> aligned size). Self-contained caption.
+Two features receive a log transform before alignment. The Average True Range is replaced by its natural logarithm to compress its heavy upper tail without losing the absolute level. The On-Balance Volume is replaced by a sign-preserving log transform that brings its unbounded positive and negative cumulative excursions onto a comparable scale. All other features in the four families are either bounded or dimensionless and require no transformation.
 
+The feature engineering layer produces rolling-window outputs with NaN values from two sources. Rolling-window warmup creates NaN values at the start of the sample where the longest-lookback features lack enough history to compute a valid value. External-data calendar gaps create NaN values where a macro or on-chain series has not yet been published at a BTC trading day. Phase I does not drop or impute these values. The alignment step that closes Phase I hard-asserts that no feature column is entirely NaN and that the barrier-touch timestamp $t_1$ is fully populated, while partial-NaN columns trigger a soft warning and pass through. Per-fold NaN imputation is deferred to inside the CPCV loop and is described in Section 3.6.1, so that the imputation policy can use only training-fold information without leaking test-fold means or medians.
+
+The alignment step itself intersects the indices of the feature matrix, the label vector, the sample weights, and the barrier-touch timestamps to produce the four-tuple $(X, y, w, t_1)$. Several hard assertions guard the integrity of the output. The intersected index must be non-empty, free of duplicate dates, and monotonically increasing in time. The four arrays must share lengths and indices. The barrier-touch timestamps must be fully populated, the weights must be strictly positive, and the labels must lie in $\{-1, 0, +1\}$. The locked-run output is a $1{,}168 \times 73$ feature matrix paired with a 1,168-dimensional binary label vector $y \in \{-1, +1\}$, a 1,168-dimensional positive weight vector $w$, and a 1,168-dimensional barrier-touch timestamp vector $t_1$. The full sample-size chain from raw OHLCV to the aligned event dataset is given in \autoref{tab:alignment_summary}.
+
+Phase I therefore closes with the aligned $(X, y, w, t_1)$ dataset, a chronologically-ordered set of 1,168 CUSUM-selected, binary-labelled observations ready for the cross-validation pipeline of Section 3.5.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lr}
+\toprule
+Stage & Count \\
+\midrule
+Daily OHLCV bars (2014-11-01 to 2026-05-09) & 4,208 \\
+CUSUM events after 2015-08-08 truncation & 1,270 \\
+Binary-labelled events after rare-class removal & 1,168 \\
+Aligned dataset $(X, y, w, t_1)$ & 1,168 \\
+\bottomrule
+\end{tabular}
+\caption{Sample-size chain from raw OHLCV to the aligned event dataset. CUSUM filtering drops 2,938 daily bars, rare-class removal drops 102 vertical-barrier ties below the 0.02 minimum-return threshold, and alignment introduces no further row drops in the locked run.}
+\label{tab:alignment_summary}
+\end{table}
 
 \subsection{Cross-Validation Framework}\label{subsec:cpcv}
 
@@ -1391,7 +1234,16 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     class weights, captures nonlinear interactions).
 %   - MDA computed independently with Logistic Regression (balanced,
 %     captures linear effects).
-%   - Final MDA = mean(MDA\_RF, MDA\_LR) per feature.
+%   - Per-model z-scoring before averaging. RF and LR produce MDA scores
+%     on different absolute scales (RF's permutation drops F1 by
+%     approximately 0.005 to 0.05 per feature; LR's drops can be an
+%     order of magnitude smaller). Naive averaging of (MDA\_RF +
+%     MDA\_LR) / 2 would let RF magnitudes dominate, effectively
+%     recovering an RF-only ranking. The implementation z-scores each
+%     model's MDA vector across features before averaging, so both
+%     models contribute symmetrically to the final ranking on a
+%     rank-normalised basis.
+%   - Final MDA = mean(zscore(MDA\_RF), zscore(MDA\_LR)) per feature.
 %   - Rationale: prevents bias toward any single model architecture; SFI
 %     in weak-signal regimes returns near-uniform scores; RF-only
 %     inflates tree-friendly features.
@@ -1399,35 +1251,44 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %   Inner CV: purged 3-fold on the training set (same t1-based overlap
 %   conditions as outer CPCV).
 %
-%   Selection rule: keep features with averaged MDA > 0; cap at
-%   MDA\_TOP\_K\_FRAC = 0.30 (approximately 22 of 73); minimum floor of
-%   5 features.
+%   Selection rule: keep features with averaged z-MDA > 0; cap at
+%   MDA\_TOP\_K\_FRAC = 0.20 (approximately 14 to 15 of 73); minimum
+%   floor of 5 features.
 %
-%   TOP\_K\_FRAC tightening rationale (advisor-reviewed):
-%   - The cap was tightened from an earlier 0.40 to 0.30 in the locked
-%     configuration after a high-PBO run with the looser setting.
-%   - Across the earlier-run CPCV folds, only approximately 6 features
-%     cleared 50\% selection frequency in the stability bar chart,
-%     indicating that the long tail of the MDA-ranked feature set was
-%     contributing variance rather than signal.
-%   - Tightening to 0.30 forces approximately 22 features through the
-%     bottleneck and aligns the selection cap with the empirical
-%     stability finding.
-%   - Trade-off: one or two folds may select fewer features than they
-%     would have at 0.40, but those folds were also the ones contributing
-%     the most rank variance to PBO, so the tightening attacks the right
-%     problem.
-%   - An even tighter 0.25 cap (approximately 18 features) was tested in
-%     an interim configuration; 0.30 was retained as the final value
-%     because it preserves enough feature diversity in the inner Optuna
-%     step without re-introducing the long tail.
+%   TOP\_K\_FRAC trail (advisor-reviewed):
+%   - The cap was tightened from common defaults of 0.40 to 0.50 in
+%     successive rounds of methodology development.
+%   - The first tightening from 0.40 to 0.30 came after a high-PBO run
+%     on the earlier 66-feature pool revealed that only approximately
+%     6 features cleared 50\% selection frequency in the stability bar
+%     chart, indicating that the long tail of the MDA-ranked feature
+%     set was contributing variance rather than signal.
+%   - The May 2026 expansion of the feature pool from 66 to 73 columns
+%     (the 14-day macro return variants and the AR\_LAGS extension from
+%     6 to 10) was an advisor-driven structural change to the feature
+%     set; the cap was re-evaluated at the same time using absolute-
+%     feature-count arithmetic. At the locked 73-feature pool,
+%     0.20 x 73 ~= 14 to 15 features restores the absolute count to
+%     roughly the original working point of 0.30 x 66 ~= 20.
+%   - The 0.20 cap is the locked working configuration.
+%
+%   Methodology rationale for the second tightening (0.30 to 0.20):
+%   - With approximately 600 events in the model-training partition
+%     after the 70/15/15 three-way split (Section 3.9), the KAN and
+%     LSTM parameter counts at width1=6, hidden=16 already approach
+%     1 sample per parameter at 15 features.
+%   - Expanding to 20+ features deepens overparameterisation in the
+%     two most-watched neural models, which is why a tighter rather
+%     than looser cap was chosen.
+%   - Sensitivity sweeps over \{0.10, 0.15, 0.20, 0.25, 0.30\} can be
+%     appended as an appendix without modifying the source.
 %
 %   AR Logistic exception: bypasses MDA entirely; receives pre-MDA
 %   matrix and selects 10 lag columns by name.
 %
-%   Typical result: approximately 22 features selected per fold from 73
-%   candidates (down from approximately 26 to 30 under the previous 0.40
-%   cap; up from approximately 18 under the interim 0.25 cap).
+%   Typical result: approximately 14 to 15 features selected per fold
+%   from 73 candidates (down from approximately 22 under the previous
+%   0.30 cap on the same 73-feature pool).
 %
 % Cite: \cite{lopez_de_prado_2018}, Chapter 8 (Section 8.4).
 
@@ -1480,7 +1341,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %   - class\_weight='balanced' + AFML sample\_weight (dual weighting).
 %   - Tuned per split: C (log-uniform [1e-4, 1e2]), penalty in {l1, l2}.
 %   - Solver auto-selected: liblinear for L1, lbfgs for L2.
-%   - 5 seeds, 30 trials per split.
+%   - 5 seeds, 40 trials per split.
 
 
 \subsubsection{Random Forest}\label{subsubsec:rf}
@@ -1497,7 +1358,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     [1, 30]; a floor of 15 forces each leaf to represent at least
 %     1.8\% of the training fold, preventing leaves that fit just a
 %     handful of high-volatility events); max\_features in {sqrt, log2}.
-%   - 5 seeds, 30 trials per split.
+%   - 5 seeds, 40 trials per split.
 %
 % Cite: \cite{breiman_2001}.
 
@@ -1526,7 +1387,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     dependency: only ensemble size affected, no individual tree
 %     decisions.
 %
-%   - 5 seeds, 30 trials per split.
+%   - 5 seeds, 40 trials per split.
 %
 % Cite: \cite{chen_guestrin_2016}.
 
@@ -1569,7 +1430,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     without improving accuracy. Hardcoding to 1 frees Optuna trials for
 %     finer exploration of dropout and learning\_rate); dropout in
 %     [0.1, 0.5] (floor raised from 0.0); lr log-uniform [1e-4, 5e-2].
-%   - 5 seeds, 30 trials per split (was 2 seeds in the previous run; the locked configuration now uses 5 seeds uniformly across neural and classical models).
+%   - 5 seeds, 40 trials per split (was 2 seeds in the previous run; the locked configuration now uses 5 seeds uniformly across neural and classical models).
 %
 % Cite: \cite{hochreiter_schmidhuber_1997}, \cite{loshchilov_adamw_2019}.
 
@@ -1626,7 +1487,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     lr log-uniform [5e-4, 5e-2]; weight\_decay log-uniform
 %     [1e-5, 5e-3]; grid in {3, 5} (dropped grid=8 to prevent
 %     memorisation).
-%   - 5 seeds, 30 trials per split (was 2 seeds in the previous run; uniform 5-seed configuration across all six models in the locked v6 run).
+%   - 5 seeds, 40 trials per split (was 2 seeds in the previous run; uniform 5-seed configuration across all six models in the locked v6 run).
 %
 % Cite: \cite{liu_kan_2024}.
 
@@ -1668,11 +1529,11 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 % Rows (use locked-run tuning ranges, NOT the old [3,12] / [1,3] /
 % [3,15]):
 %   AR Logistic           | Econometric | LR on lags [1,2,3,4,5,6,7,14,21,30]   | C=1.0, L2, max\_iter=1000   | (none)                                                                                              | 5 | 0  | Pure momentum (Q1, Q2)
-%   Logistic Regression   | Linear ML   | LR on selected features                | max\_iter=1000              | C, penalty                                                                                          | 5 | 30 | Linear baseline (Q3)
-%   Random Forest         | Ensemble    | balanced\_subsample                    | n\_jobs=-1                  | n\_estimators <= 250, max\_depth in [2, 6], min\_samples\_leaf in [15, 40], max\_features            | 5 | 30 | Nonlinear ensemble (Q3)
-%   XGBoost               | Ensemble    | 500 trees + early stop@20              | binary:logistic             | max\_depth in [1, 3], lr, min\_child\_weight in [5, 30], subsample, etc. (8)                        | 5 | 30 | Gradient boosting (Q3)
-%   LSTM                  | Neural      | window=14, last-hidden, num\_layers=1 | T\_0=25, batch=64           | hidden in {16, 32}, dropout in [0.1, 0.5], lr                                                       | 5 | 30 | Temporal dependencies (Q3)
-%   KAN                   | Neural      | [n, width1, 2], single hidden, k=3     | width2=0, T\_0=30, ls=0.1   | width1 in [2, 6], grid in {3, 5}, lr, weight\_decay                                                 | 5 | 30 | Interpretable architecture (Q3, Q4)
+%   Logistic Regression   | Linear ML   | LR on selected features                | max\_iter=1000              | C, penalty                                                                                          | 5 | 40 | Linear baseline (Q3)
+%   Random Forest         | Ensemble    | balanced\_subsample                    | n\_jobs=-1                  | n\_estimators <= 250, max\_depth in [2, 6], min\_samples\_leaf in [15, 40], max\_features            | 5 | 40 | Nonlinear ensemble (Q3)
+%   XGBoost               | Ensemble    | 500 trees + early stop@20              | binary:logistic             | max\_depth in [1, 3], lr, min\_child\_weight in [5, 30], subsample, etc. (8)                        | 5 | 40 | Gradient boosting (Q3)
+%   LSTM                  | Neural      | window=14, last-hidden, num\_layers=1 | T\_0=25, batch=64           | hidden in {16, 32}, dropout in [0.1, 0.5], lr                                                       | 5 | 40 | Temporal dependencies (Q3)
+%   KAN                   | Neural      | [n, width1, 2], single hidden, k=3     | width2=0, T\_0=30, ls=0.1   | width1 in [2, 6], grid in {3, 5}, lr, weight\_decay                                                 | 5 | 40 | Interpretable architecture (Q3, Q4)
 
 
 \subsection{Hyperparameter Tuning}\label{subsec:tuning}
@@ -1696,12 +1557,13 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     trials, freeing compute for promising configurations.
 %
 %   - Trial budget:
-%     n\_trials=30 per tuned model per split, applied uniformly across
+%     n\_trials=40 per tuned model per split, applied uniformly across
 %     LR, RF, XGBoost, LSTM, and KAN. The notebook passes a single
-%     n\_trials=30 parameter so every tuned model competes on the same
-%     budget; AR Logistic is not tuned. The wider module defaults
+%     n\_trials=40 parameter so every tuned model competes on the same
+%     budget; AR Logistic is not tuned. The module-level defaults
 %     (N\_TRIALS\_CLASSICAL=60, N\_TRIALS\_NEURAL=40) are reserved for
-%     sensitivity experiments outside the headline run.
+%     sensitivity experiments outside the headline run; the locked run
+%     overrides both to 40 via the pipeline parameter.
 %
 %   - Per-split tuned-params application mechanism:
 %     \_apply\_tuned\_params writes the best params to module-level
@@ -1725,10 +1587,31 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 % sizes."
 %
 % Topics:
-%   - Calibration set: 80/20 chronological split of the training fold;
-%     calibrator fitted on the held-out 20\% (approximately 170 obs at
-%     N=8, with model-training set approximately 680 obs after the
-%     split). Never touches test data.
+%   - Calibration set (70/15/15 three-way chronological split of the
+%     training fold): within each outer training fold the data is split
+%     chronologically into 70\% model-train, 15\% validation, and 15\%
+%     calibration. The validation partition feeds the model's X\_val /
+%     y\_val for early stopping and best-state tracking; the calibration
+%     partition is held entirely separate and feeds Platt or vector
+%     scaling. At N=8 the locked configuration places approximately
+%     600 events in the model-training partition and approximately 129
+%     events each in the validation and calibration partitions. None of
+%     these partitions touches the outer test fold.
+%
+%   - Why 70/15/15 rather than 80/20 or 80/10/10: the split was widened
+%     from an earlier 80/10/10 after a calibration audit revealed all
+%     six models systematically under-predicting P(Up) by 4 to 7
+%     percentage points; with approximately 750 events per outer
+%     training fold, 10\% (approximately 75 events) was insufficient
+%     for both the vector-scaling fit (T, b[1] estimated on
+%     approximately 75 binary labels) AND the LSTM/KAN early-stopping
+%     signal. The 80/20 split that preceded both used a single 20\%
+%     subset for both purposes, which introduced subtle leakage between
+%     the model's stopping decision and the calibration data; the
+%     three-way split removes that dual-use coupling. The current 15\%
+%     partitions raise both roles to approximately 129 events at the
+%     cost of approximately 75 fewer model-training events per fold
+%     (approximately 600 vs approximately 688 under 80/10/10).
 %
 % Two methods, auto-selected by model type:
 %   - Platt scaling (Platt 1999): AR Logistic, LR, RF, XGBoost. Input:
@@ -1757,12 +1640,42 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     correction of methodological inadequacy, not test-set-informed
 %     model selection.
 %
-% Calibration set dual role disclosure:
-%   - The 20\% subset serves as both early-stopping monitor (XGBoost)
-%     and Platt/vector input.
-%   - Each calibration method fits at most three parameters; early
-%     stopping affects only ensemble size, not individual tree decisions.
-%   - Splitting the small cal set further would degrade both purposes.
+% Weighted vs unweighted calibration (audited, decision: unweighted):
+%   - Both fit\_platt\_scaling and fit\_vector\_scaling accept an
+%     optional sample\_weight argument that would weight the per-sample
+%     NLL by AFML sample weights before averaging. The argument is
+%     supported in the calibrator API but intentionally not triggered
+%     from pipeline.py.
+%   - The rationale is empirical: an audit run on the full six-model
+%     pool with weighted Platt + weighted vector scaling enabled showed
+%     the weighted variant pushing every model's calibration miss
+%     further from the empirical base rate (3 of 6 flagged -> 5 of 6
+%     flagged under weighted; calibration deltas grew on every single
+%     model relative to the unweighted baseline), and median Sharpes
+%     compressed across the cross-section.
+%   - Mechanism: AFML weights over-represent the high-weight subset
+%     (rare events with little overlapping label structure) whose class
+%     balance differs from the population base rate; weighting the
+%     calibrator's loss against that subset's distribution tilts the
+%     calibrated probability away from the empirical class frequency on
+%     the full data.
+%   - The unweighted path remains the locked configuration. The
+%     weighted code paths are kept available for future experiments
+%     without re-implementation cost; a comment block above the
+%     calibrator.fit(...) call site in pipeline.py documents the audit
+%     evidence so the next reader does not reintroduce the regression.
+%
+% LSTM logits sliced before calibration:
+%   - LSTM produces logits only for windows where all 14 lookback
+%     timesteps are non-NaN; the first approximately 14 events of any
+%     partition are window-incomplete and would produce NaN logits.
+%   - The pipeline slices raw\_logits to valid\_idx BEFORE passing them
+%     to the calibrator. An earlier ordering calibrated on the full
+%     unsliced logits and sliced afterward, producing a fitted
+%     calibrator whose temperature reflected the NaN-padded positions
+%     rather than the valid windows; the bug manifested as T
+%     consistently hitting the lower bound on LSTM folds and was caught
+%     during a calibration audit.
 %
 % Calibration audit (origin of the vector-scaling choice): a binned
 % predicted-vs-empirical diagnostic, computed on pooled CPCV test-fold
@@ -1788,7 +1701,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %   3. Re-align y, w, t1 after FFD may drop rows.
 %   4. Keep X\_tr\_full for AR Logistic alongside X\_tr\_sel for the
 %      others.
-%   5. Chronological 80/20 train/cal split.
+%   5. Chronological 70/15/15 train/val/cal split (Section 3.9).
 %   6. If tune=True: nested Optuna on X\_tr\_sel, apply best params to
 %      module constants.
 %   7. For each (model, seed): create model, route correct X, fit,
@@ -3664,7 +3577,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 % Topics:
 %   - L1. Computational power. Currently 5 seeds across all 6 models
 %     (uniform, producing 840 = 28 x 6 x 5 prediction entries; up
-%     from 3 seeds / 504 entries in the previous run), 30 Optuna
+%     from 3 seeds / 504 entries in the previous run), 40 Optuna
 %     trials per tuned model per fold, KAN width capped at 6. With
 %     more compute: more seeds, more trials, wider HP ranges.
 %     The N=8 / 28-split configuration alone roughly doubles the
@@ -3886,7 +3799,6 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %     reading buy-and-hold's dominance over every trained model as a
 %     result rather than a failure."
 
-
 % =============================================
 % BIBLIOGRAPHY
 % =============================================
@@ -3910,9 +3822,224 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 \section{Appendices}\label{sec:appendices}
 
 \subsection{Pipeline Architecture Diagram}\label{app:pipeline}
-% Full pipeline flowchart: data -> labelling -> weights -> features
-% -> alignment -> CPCV -> preprocessing -> models -> evaluation
-% -> symbolic.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=4mm,
+    every node/.style={font=\small},
+    process/.style={rectangle, draw, rounded corners=2pt, minimum width=10cm, minimum height=0.65cm, align=center},
+    data/.style={rectangle, draw, very thick, minimum width=10cm, minimum height=0.65cm, align=center, fill=gray!12},
+    phase/.style={font=\footnotesize\bfseries, align=center, minimum width=10cm},
+    arrow/.style={-Latex, thick}
+]
+
+\node[phase] (p1) {Phase I: Pre-CPCV (Sections 3.1 to 3.4)};
+\node[data, below=of p1] (a) {Raw OHLCV, 4,208 daily bars};
+\node[process, below=of a] (b) {CUSUM event filter and triple-barrier labelling};
+\node[process, below=of b] (c) {AFML sample weights};
+\node[process, below=of c] (d) {Feature engineering (73 features)};
+\node[data, below=of d] (e) {Aligned observations $(X, y, w, t_1)$, $n = 1{,}168$};
+
+\node[phase, below=8mm of e] (p2) {Phase II: CPCV Pipeline (Sections 3.5 to 3.10)};
+\node[process, below=of p2] (f) {CPCV setup: $N{=}8$, $k{=}2$, 28 splits, 7 paths};
+\node[process, below=of f] (g) {Per-fold preprocessing (FFD, scaling, multi-model MDA)};
+\node[process, below=of g] (h) {Hyperparameter tuning (Optuna TPE, 40 trials per split)};
+\node[process, below=of h] (i) {Model training: 6 models $\times$ 5 seeds $\times$ 28 splits};
+\node[process, below=of i] (j) {Calibration (Platt or vector scaling, 70/15/15 split)};
+\node[data, below=of j] (k) {Test-fold predictions, 840 entries};
+
+\node[phase, below=8mm of k] (p3) {Phase III: Post-CPCV (Sections 3.11 to 3.12)};
+\node[process, below=of p3] (l) {Path stitching: 7 backtest paths};
+\node[process, below=of l] (m) {Statistical evaluation (DSR, PBO, DeLong) and symbolic extraction};
+\node[data, below=of m] (n) {Model comparison and closed-form $P(\textup{Up})$ formula};
+
+\foreach \src/\dst in {a/b, b/c, c/d, d/e, e/p2, p2/f, f/g, g/h, h/i, i/j, j/k, k/p3, p3/l, l/m, m/n} {
+    \draw[arrow] (\src) -- (\dst);
+}
+
+\end{tikzpicture}
+\caption{End-to-end methodology pipeline. Light-bordered boxes are processing steps, dark-bordered shaded boxes are data states. \hyperref[ref:pipeline_call]{$\hookleftarrow$}}
+\label{fig:pipeline_diagram}
+\end{figure}
+
+\subsection{Labelling Diagnostics}\label{app:labelling_diagnostics}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{ewma_vol.png}
+\caption{EWMA daily volatility of BTC-USD log returns with span 50, annualised by $\sqrt{365}$. \hyperref[ref:ewma_call]{$\hookleftarrow$}}
+\label{fig:ewma_vol}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{cusum_filter_example.png}
+\caption{CUSUM event filter applied to BTC daily log returns over a three-month window. \hyperref[ref:cusum_call]{$\hookleftarrow$}}
+\label{fig:cusum_window}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{label_distribution.png}
+\caption{Class distribution of the 1,168 binary-labelled observations after rare-class removal. \hyperref[ref:label_dist_call]{$\hookleftarrow$}}
+\label{fig:label_distribution}
+\end{figure}
+
+\subsection{Weighting Diagnostics}\label{app:weighting_diagnostics}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{sample_weights.png}
+\caption{Sample weight diagnostics. Left: distribution of per-event weights after the AFML four-step scheme and 99th-percentile capping. Right: weights over time. \hyperref[ref:weights_call]{$\hookleftarrow$}}
+\label{fig:sample_weights}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Date & Weight & Label & Return & Holding (days) \\
+\midrule
+2018-11-14 & 2.862 & $-1$ & $-0.151$ & 5 \\
+2019-03-29 & 2.862 & $+1$ & $+0.191$ & 4 \\
+2020-03-08 & 2.862 & $-1$ & $-0.387$ & 4 \\
+2021-02-03 & 2.862 & $+1$ & $+0.233$ & 5 \\
+2022-09-06 & 2.862 & $+1$ & $+0.135$ & 3 \\
+2022-11-04 & 2.862 & $-1$ & $-0.123$ & 4 \\
+2023-02-09 & 2.862 & $+1$ & $+0.114$ & 6 \\
+2023-03-13 & 2.862 & $+1$ & $+0.133$ & 4 \\
+2023-10-20 & 2.862 & $+1$ & $+0.115$ & 3 \\
+2025-02-26 & 2.862 & $+1$ & $+0.117$ & 4 \\
+2025-10-05 & 2.862 & $-1$ & $-0.083$ & 5 \\
+2026-02-03 & 2.862 & $-1$ & $-0.171$ & 2 \\
+\bottomrule
+\end{tabular}
+\caption{Events at or above the 99th-percentile weight cap (2.862). \hyperref[ref:weights_call]{$\hookleftarrow$}}
+\label{tab:capped_events}
+\end{table}
+
+\subsection{Full Feature List}\label{app:features}
+
+\begin{longtable}{p{3.5cm}p{7cm}p{2.5cm}}
+\caption{Full feature list (73 features) grouped by family.}
+\label{tab:full_features} \\
+
+\toprule
+Feature & Description & Parameters \\
+\midrule
+\endfirsthead
+
+\multicolumn{3}{c}{\tablename\ \thetable{} -- continued from previous page} \\
+\toprule
+Feature & Description & Parameters \\
+\midrule
+\endhead
+
+\midrule
+\multicolumn{3}{r}{\textit{Continued on next page}} \\
+\endfoot
+
+\bottomrule
+\endlastfoot
+
+\multicolumn{3}{l}{\textbf{Technical Analysis (25), from BTC OHLCV}} \\
+\midrule
+Daily log returns & Log of close-to-close return & --- \\
+Realised volatility & Rolling standard deviation of log returns, annualised by $\sqrt{365}$ & 21-day window \\
+Garman-Klass volatility & Range-based volatility using OHLC \citep{garman_klass_1980} & 21-day window \\
+Yang-Zhang volatility & Range-based volatility with overnight correction \citep{yang_zhang_2000} & 21-day window \\
+ATR (log) & Average True Range, EWMA-smoothed, log-transformed & span 14 \\
+Bollinger Band width & $(upper - lower) / middle$ on closing price & 20-day, $2\sigma$ \\
+Volatility term 7/30 & 7-day over 30-day realised volatility ratio & 7d / 30d \\
+Volatility term 30/90 & 30-day over 90-day realised volatility ratio & 30d / 90d \\
+RSI & Relative Strength Index with Wilder smoothing & 14-day \\
+MACD line & $EMA(12) - EMA(26)$ of close & 12, 26 \\
+MACD signal & $EMA(9)$ of MACD line & 9 \\
+MACD histogram & MACD line minus MACD signal & derived \\
+ROC 14 & 14-day rate of change of close & 14-day \\
+Stochastic \%K & Stochastic oscillator on close & 14-day \\
+Stochastic \%D & 3-period SMA of \%K & 3 \\
+Williams \%R & Williams percent-range oscillator & 14-day \\
+CCI & Commodity Channel Index & 14-day \\
+OBV (log) & On-Balance Volume, sign-preserving log transform & cumulative \\
+Chaikin oscillator & $EMA(3) - EMA(10)$ of accumulation/distribution line & 3, 10 \\
+MFI & Money Flow Index & 14-day \\
+Rolling skewness & Rolling skewness of daily log returns & 21-day window \\
+Rolling kurtosis & Rolling kurtosis of daily log returns & 21-day window \\
+EMA ratio 20/50 & 20-day EMA over 50-day EMA & 20 / 50 \\
+EMA ratio 50/200 & 50-day EMA over 200-day EMA & 50 / 200 \\
+VWMA ratio 20/50 & 20-day volume-weighted MA over 50-day VWMA & 20 / 50 \\
+
+\midrule
+\multicolumn{3}{l}{\textbf{Mathematical (9), from BTC log returns and log prices (AFML Part 4)}} \\
+\midrule
+Shannon entropy & Rolling entropy of discretised log returns & 30-day window \\
+Lempel-Ziv complexity & Compressibility of binarised return sequence & 90-day window \\
+Negentropy & Gap between Gaussian maximum-entropy and empirical entropy & 30-day window \\
+Hurst exponent & Rescaled-range analysis with sub-windows 14, 30, 60, 90 days & 180-day window \\
+Variance ratio & Lo-MacKinlay variance-ratio test \citep{lo_mackinlay_1988} & 90-day, lag 7 \\
+Jarque-Bera & Joint test of skewness and excess kurtosis & 90-day window \\
+SADF & Supremum Augmented Dickey-Fuller statistic & min sub-length 90, lag 1 \\
+SMT polynomial-1 & Sub/Super-Martingale Test with degree-1 polynomial trend & rolling \\
+SMT exponential & Sub/Super-Martingale Test with exponential trend & rolling \\
+
+\midrule
+\multicolumn{3}{l}{\textbf{External: Macro (20), from Yahoo Finance and FRED}} \\
+\midrule
+DXY ROC 30 & 30-day rate of change of US Dollar Index & 30-day \\
+US 2Y yield & 2-year US Treasury yield (FRED DGS2, T10Y2Y fallback) & level \\
+US 10Y yield & 10-year US Treasury yield (Yahoo \textasciicircum TNX) & level \\
+2Y-10Y slope & 10Y yield minus 2Y yield & level \\
+10Y-30Y slope & 30Y yield minus 10Y yield & level \\
+VIX & CBOE Volatility Index & level \\
+S\&P 500 ret 30 & 30-day return of S\&P 500 index & 30-day \\
+S\&P 500 ret 14 & 14-day return of S\&P 500 index & 14-day \\
+Nasdaq ret 30 & 30-day return of Nasdaq Composite & 30-day \\
+Nasdaq ret 14 & 14-day return of Nasdaq Composite & 14-day \\
+Gold ret 30 & 30-day return of gold spot & 30-day \\
+Gold ret 14 & 14-day return of gold spot & 14-day \\
+Silver ret 30 & 30-day return of silver spot & 30-day \\
+Silver ret 14 & 14-day return of silver spot & 14-day \\
+Copper ret 30 & 30-day return of copper futures & 30-day \\
+Copper ret 14 & 14-day return of copper futures & 14-day \\
+Oil ret 30 & 30-day return of WTI crude oil & 30-day \\
+Oil ret 14 & 14-day return of WTI crude oil & 14-day \\
+Natgas ret 30 & 30-day return of natural gas & 30-day \\
+Natgas ret 14 & 14-day return of natural gas & 14-day \\
+
+\midrule
+\multicolumn{3}{l}{\textbf{External: Crypto cross-sectional (1), from CoinMetrics with Yahoo Finance fallback}} \\
+\midrule
+ETH/BTC ratio & Daily ETH-USD over BTC-USD price ratio & level \\
+
+\midrule
+\multicolumn{3}{l}{\textbf{External: On-chain (8), from CoinMetrics, shifted by one trading day}} \\
+\midrule
+Active addresses ROC 14 & 14-day rate of change of daily active addresses & 14-day \\
+Tx count ROC 14 & 14-day rate of change of transaction count & 14-day \\
+Hash rate ROC 30 & 30-day rate of change of network hash rate & 30-day \\
+MVRV & Market-Value-to-Realised-Value ratio & level \\
+Net exchange flow & Net daily flow of coins to or from exchanges & level \\
+Fee per tx & Average daily fee per transaction & level \\
+Exchange supply \% & Fraction of supply held on exchange-attributed addresses & level \\
+Issuance & Daily native-unit issuance of newly mined coins & level \\
+
+\midrule
+\multicolumn{3}{l}{\textbf{Lag (10), from BTC log returns}} \\
+\midrule
+Log returns lag 1 & 1-day lag of daily log returns & 1-day \\
+Log returns lag 2 & 2-day lag of daily log returns & 2-day \\
+Log returns lag 3 & 3-day lag of daily log returns & 3-day \\
+Log returns lag 4 & 4-day lag of daily log returns & 4-day \\
+Log returns lag 5 & 5-day lag of daily log returns & 5-day \\
+Log returns lag 6 & 6-day lag of daily log returns & 6-day \\
+Log returns lag 7 & 7-day lag of daily log returns & 7-day \\
+Log returns lag 14 & 14-day lag of daily log returns & 14-day \\
+Log returns lag 21 & 21-day lag of daily log returns & 21-day \\
+Log returns lag 30 & 30-day lag of daily log returns & 30-day \\
+
+\end{longtable}
 
 \subsection{CPCV Split Details}\label{app:cpcv_splits}
 % Group boundaries, train/test timelines for all 28 splits, leakage
@@ -3923,9 +4050,6 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 
 \subsection{Per-Split Classification Reports}\label{app:split_reports}
 % 28 splits x 6 models.
-
-\subsection{Full Feature List}\label{app:features}
-% Complete table of 73 features with descriptions, sources, parameters.
 
 \subsection{Symbolic Extraction Detailed Output}\label{app:symbolic}
 % Full PyKAN training logs, edge-by-edge R^2, pruned diagrams,
@@ -3944,7 +4068,7 @@ Section 2 reviews the literature on KANs, ML for BTC prediction, and the AFML me
 %   HP tuning on full data                | nested Optuna inside training fold (3-fold purged)                   | tuning.py
 %   Overlapping TBL labels                | three-condition purging                                              | cv.py
 %   Serial correlation across CV boundary | embargo after test boundary                                          | cv.py
-%   Calibration on test data              | held-out 20\% of training fold, never test                           | calibration.py
+%   Calibration on test data              | held-out 15\% calibration partition of training fold, never test     | calibration.py
 %   XGB early-stop + cal shared cell      | acknowledged; only ensemble size affected                            | pipeline.py
 %   On-chain look-ahead                   | CoinMetrics shifted by 1 day                                         | external\_features.py
 %   CUSUM threshold on full data          | minor approximation; acknowledged, negligible impact                 | labeling.py
