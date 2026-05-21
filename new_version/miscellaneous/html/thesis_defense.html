@@ -2586,13 +2586,13 @@
   </div>
   <h2 class="slide-title">Honest limitations, and the future-work direction each one frames</h2>
   <div class="slide-body">
-    <div class="item-grid" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="item-grid" style="grid-template-columns: repeat(2, 1fr); gap: 16px;">
 
       <div class="item-card">
         <span class="item-tag" style="color: var(--rose);">L1</span>
         <h3 class="item-title">Daily resolution discards microstructure</h3>
         <div class="item-body">
-          <p>Daily bars match the macro feature horizon but skip intraday signal. <strong>Next step:</strong> hourly extension unlocks order-flow features.</p>
+          <p>The created features (macro, on-chain) were only available at daily timestamps; no 1h or 4h source exists for them, so daily bars were the only common horizon. Intraday signal is therefore skipped. <strong>Next step:</strong> hourly extension once intraday feeds become available, unlocking order-flow features.</p>
         </div>
       </div>
 
@@ -2600,28 +2600,12 @@
         <span class="item-tag" style="color: var(--rose);">L2</span>
         <h3 class="item-title">Sample size capped by daily CUSUM events</h3>
         <div class="item-body">
-          <p>1,168 events is small by ML standards and drives the wide CIs. <strong>Next step:</strong> hourly resolution pushes the count past 10,000 and tightens every CI.</p>
+          <p>1,168 events is small by ML standards and drives the wide CIs. <strong>Next step:</strong> hourly resolution would push the count past 10,000 and tighten every CI.</p>
         </div>
       </div>
 
       <div class="item-card">
         <span class="item-tag" style="color: var(--rose);">L3</span>
-        <h3 class="item-title">No regime-conditional analysis</h3>
-        <div class="item-body">
-          <p>Full-sample Sharpe averages over BTC's bull, bear, and chop regimes. <strong>Next step:</strong> regime-conditional results to see if any model survives within a single regime.</p>
-        </div>
-      </div>
-
-      <div class="item-card">
-        <span class="item-tag" style="color: var(--rose);">L4</span>
-        <h3 class="item-title">Symbolic extraction is fold-specific</h3>
-        <div class="item-body">
-          <p>Closed-form formula is extracted from fold 27 alone. <strong>Next step:</strong> per-fold extraction to count which features and primitives recur.</p>
-        </div>
-      </div>
-
-      <div class="item-card">
-        <span class="item-tag" style="color: var(--rose);">L5</span>
         <h3 class="item-title">Architectural simplifications for symbolifiability</h3>
         <div class="item-body">
           <p>KAN trained with single hidden layer, grid = 3, top 3 features only. <strong>Next step:</strong> test whether richer KANs improve trading performance.</p>
@@ -2629,12 +2613,14 @@
       </div>
 
       <div class="item-card">
-        <span class="item-tag" style="color: var(--rose);">L6</span>
-        <h3 class="item-title">Simplified transaction-cost model</h3>
+        <span class="item-tag" style="color: var(--rose);">L4</span>
+        <h3 class="item-title">Computational cost</h3>
         <div class="item-body">
-          <p>Flat 10 bps round-trip cost; no slippage, no market impact, no size dependence. <strong>Next step:</strong> volatility- and size-aware cost model.</p>
+          <p>Optuna was run with limited <code>n_trials = 40</code> and simplified parameter dictionaries to keep training tractable across 28 CPCV folds and 6 models. <strong>Next step:</strong> larger search budgets and richer hyper-parameter spaces, especially for KAN and LSTM.</p>
         </div>
       </div>
+
+    
 
     
 
