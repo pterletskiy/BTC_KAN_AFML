@@ -1068,115 +1068,43 @@ Aligned dataset $(X, y, w, t_1)$ & 1,168 \\
 
 \subsection{Cross-Validation Framework}\label{subsec:cpcv}
 
-% Opening claim (T-R3): "Standard k-fold CV is invalid for financial
-% time series with overlapping labels; CPCV prevents the resulting
-% leakage." Invest 1.5 to 2 pages. The committee must understand purging
-% and embargo to evaluate the results.
+The standard k-fold cross-validation procedure is invalid for financial time series with overlapping labels. The triple-barrier labels of Section 3.2.3 span multi-day intervals, so each label depends on the price path over the entire barrier window rather than on a single timestamp. If two events sit in different folds but their barrier windows overlap on the calendar, the training label and the test label both draw on the same price moves, and information leaks across the train-test boundary. Combinatorial Purged Cross-Validation (CPCV) of \citet[Chapter 12]{lopez_de_prado_2018} prevents this leakage by purging training events whose barrier windows reach into the test fold, embargoing the calendar days immediately after the test fold, and combining multiple test-group choices into a backtest that consumes each event exactly once. The remainder of this section sets out the leakage mechanism (Section 3.5.1), the CPCV split construction adopted in this thesis, the purging and embargo rules, and the path-stitching procedure that aggregates the 28 splits into 7 non-overlapping backtest paths.
 
 
 \subsubsection{Why standard CV fails}\label{subsubsec:cv_fail}
 
-% Topics:
-%   - TBL labels span [t0, t1] (multi-day intervals).
-%   - Overlapping spans across folds -> training labels carry information
-%     about test-period prices.
-%   - Inflates metrics: model appears to predict the future but is
-%     recognising patterns from overlapping training labels.
+The labels produced by triple-barrier labelling are not point estimates but multi-day intervals. The label of event $i$ is determined by the price path between the event timestamp $t_{0,i}$ and the barrier-touch timestamp $t_{1,i}$, which in the locked-run distribution averages 5 days and reaches 10 days at the time-out barrier (Section 3.2.3). Every label therefore depends on the next several days of prices, not just on the day of the event.
+
+Standard k-fold cross-validation assigns observations to folds without regard to this structure. Events are shuffled and divided into $k$ equal partitions, after which each partition takes its turn as the test fold while the others train the model. Because the shuffling ignores time, the training fold typically contains events whose barrier windows extend into the test fold. The training label of such an event reflects price moves that the test set also draws its labels from, and the model is therefore exposed to test-period prices through the training data.
+
+The consequence is a metric that overstates true forecasting ability. A model that scores well on these test folds is not necessarily forecasting the future. It may simply be exploiting the partial agreement between its training labels and its test labels, since both draw on overlapping price paths. Reported AUC, accuracy, and Sharpe ratio on standard k-fold splits therefore inflate the genuine out-of-sample performance of any model trained with overlapping-label data.
 
 
 \subsubsection{CPCV configuration}\label{subsubsec:cpcv_config}
 
-% Topics:
-%   - N\_GROUPS = 8, K\_TEST\_GROUPS = 2, EMBARGO\_PCT = 0.01.
-%   - Groups 0 to 6 of size floor(T/N), group 7 absorbs remainder.
-%   - Total splits: C(8, 2) = 28; backtest paths:
-%     C(N-1, k-1) = C(7, 1) = 7.
-%   - Each group appears in 7 test sets. Per-group sample size
-%     approximately 146 events at the locked configuration.
-%
-% Justification for N=8, k=2:
-%   - Yields approximately 146 events per group while keeping the
-%     training fold at approximately 858 events on average (73.4\% of
-%     the 1,168 aligned events) after purging and embargo.
-%   - 28 splits and 7 paths give denser combinatorial diversity for PBO
-%     than the earlier N=6 configuration (which produced 15 splits and
-%     5 paths) without dropping per-group sample size below the rough
-%     lower bound for daily-bar AFML pipelines.
-%   - The choice trades a smaller test fold per split against a larger
-%     Sharpe-matrix cross-section for PBO and DSR.
-%
-% Locked-run audit (informational): across all 28 splits the average
-% train size is 858 events, average test size is 292, average purged-
-% per-split is 1.9 observations, and average embargoed-per-split is
-% 16.5 observations. Per-group sample size is 146 events (uniform
-% across all 8 groups). Group date ranges span 2015-08-08 (G0) to
-% 2026-05-02 (G7). Zero leakage detected across all 28 splits.
-%
-% Table suggestion: group boundaries (group ID, positional index range,
-% date range, count). Self-contained caption.
+The CPCV pipeline partitions the 1,168 aligned observations into $N = 8$ contiguous groups of 146 observations each, with $k = 2$ groups serving as the test set in each split and an embargo of 1\% applied to the calendar boundary. The number of splits is $\binom{8}{2} = 28$, and each group appears in $\binom{7}{1} = 7$ test sets, which equals the number of non-overlapping backtest paths that the 28 splits combine into (Section 3.5.4).
+
+The choice of $N = 8$ and $k = 2$ balances three competing demands. The 146-event group size is large enough that within-fold AUC and Sharpe estimates are not dominated by sampling noise. The 28 splits provide the combinatorial diversity required by the Probability of Backtest Overfitting (PBO) test of Section 3.11.4. The 7 backtest paths give the Deflated Sharpe Ratio (DSR) of Section 3.11.3 enough independent draws to populate a stable test-statistic distribution. Reducing either $N$ or $k$ would shrink one of these three dimensions without a corresponding gain elsewhere.
+
+Across all 28 splits the average training fold contains 858 observations (73.4\% of the labelling window) and the test fold contains 292. The purging step drops an average of 1.9 events per split, and the embargo absorbs an average of 16.5. The eight groups span 2015-08-08 to 2026-05-02, and a zero-leakage check returns clean across all 28 splits. The group partitions are shown on the BTC price chart in \autoref{fig:cpcv_groups}.
 
 
 \subsubsection{Purging, embargo, and leakage verification}\label{subsubsec:purging_embargo_leakage}
 
-% Three mechanisms close the leakage channels that overlapping TBL
-% labels create across CPCV folds: purging removes overlapping training
-% labels, embargo absorbs serial correlation past the test boundary,
-% and an empirical leakage audit verifies both work.
-%
-% ── Purging ───────────────────────────────────────────────────────
-%
-% Three sufficient overlap conditions for training observation i against
-% test [t\_test\_start, t\_test\_end]:
-%   1. t\_test\_start <= t0\_i <= t\_test\_end
-%      (observation falls in test window).
-%   2. t\_test\_start <= t1\_i <= t\_test\_end
-%      (label resolves in test window).
-%   3. t0\_i <= t\_test\_start AND t\_test\_end <= t1\_i
-%      (label spans the entire test window).
-%
-% Any training observation satisfying at least one condition is removed
-% for that split.
-%
-% Cite: \cite{lopez_de_prado_2018}, Snippet 7.1.
-%
-% ── Embargo ──────────────────────────────────────────────────────
-%
-% Topics:
-%   - int(EMBARGO\_PCT * T) = 11 observations removed immediately after
-%     each test group (1.0\% of T=1,168, rounded down).
-%   - Applied only after the test group, not before: training labels
-%     resolving before the test starts contain no future test
-%     information.
-%   - Prevents serial-correlation leakage (autocorrelation in volatility,
-%     momentum spillover).
-%
-% Cite: \cite{lopez_de_prado_2018}, Section 7.4.2.
-%
-% ── Leakage verification ─────────────────────────────────────────
-%
-% T-R15: write for reviewers.
-%
-% Topics:
-%   - Empirical audit across all 28 splits: zero training observations
-%     whose t1 falls within the assigned test group's date range.
-%
-% Table suggestion: leakage audit (28 rows, columns: split, test groups,
-% train count, test count, leaks, status). Self-contained caption.
+Three mechanisms close the leakage channels that overlapping triple-barrier labels create across CPCV folds. Purging removes training observations whose label windows overlap the test fold. The embargo absorbs the residual serial correlation that crosses the calendar boundary after the test fold. An empirical leakage audit then verifies that the two mechanisms together leave no overlapping observations in any of the 28 splits.
+
+Purging removes from the training fold any observation whose barrier window overlaps the test fold's calendar range \citep[Snippet 7.1]{lopez_de_prado_2018}. Three sufficient conditions cover the overlap geometry. The first condition fires when the entry timestamp $t_{0,i}$ of training observation $i$ falls inside the test window $[t_{\text{start}}, t_{\text{end}}]$. The second condition fires when the barrier-touch timestamp $t_{1,i}$ falls inside the test window. The third condition fires when the training observation's barrier window fully encloses the test window, that is, when $t_{0,i} \leq t_{\text{start}}$ and $t_{\text{end}} \leq t_{1,i}$. Any training observation satisfying at least one condition is dropped from the training fold for that split.
+
+The embargo removes a fixed number of training observations immediately after each test group. With an embargo of 1\% and 1,168 total observations, this drops 11 training observations per test-group boundary, namely those whose entry timestamps fall inside the embargo window. The embargo is applied only after the test group, not before, because training labels that resolve before the test starts cannot carry information about future test prices. The mechanism guards against residual serial-correlation leakage that purging alone does not catch, such as the autocorrelation of returns and volatility that can transmit information across the immediate post-test boundary \citep[Section 7.4.2]{lopez_de_prado_2018}.
+
+An empirical leakage audit verifies that the combined purging and embargo machinery leaves no overlap in any split. For each of the 28 splits, the audit counts training observations whose barrier-touch timestamp $t_{1,i}$ falls within the date range of the assigned test group. A non-zero count would indicate that purging missed an overlap. The audit returns zero across all 28 splits, confirming that the pipeline produces leak-free training and test partitions throughout the labelling window. The per-split counts are listed in \autoref{tab:leakage_audit} in the appendix.
 
 
 \subsubsection{Path matrix}\label{subsubsec:path_matrix}
 
-% Topics:
-%   - 7 backtest paths, each covering all 8 groups exactly once.
-%   - For group g, path p uses the p-th split that includes g in its
-%     test set.
-%   - Enables distribution-level Sharpe analysis instead of single-point
-%     estimates.
-%
-% Figure suggestion: CPCV split visualization for representative splits
-% (0, 13, 27) with train, test, purged, and embargo regions.
-%
-% Cite: \cite{lopez_de_prado_2018}, Section 12.4.1.
+The 28 splits combine into 7 backtest paths, each of which is a complete out-of-sample sequence covering all 1,168 observations exactly once. The construction rule is the one in \citet[Section 12.4.1]{lopez_de_prado_2018}. For path $p$ and group $g$, the test prediction for $g$ comes from the $p$-th split in canonical order in which $g$ appears as a test group. Each of the eight groups is tested in 7 of the 28 splits, which is why exactly 7 paths are available. Each path therefore uses 4 of the 28 splits, with their test groups together covering all eight groups exactly once.
+
+The path structure converts a single backtest into a distribution. The 7 paths each yield a separate Sharpe ratio, AUC, accuracy, and equity curve for each model. The distribution of these 7 metric values across paths is what the Deflated Sharpe Ratio and the Probability of Backtest Overfitting consume as input (Sections 3.11.3 and 3.11.4), in place of the single-point estimate that a non-combinatorial cross-validation would deliver. A model that performs well on average across paths but with high path-to-path variance is exposed by the distribution analysis in a way that a single-number Sharpe estimate cannot achieve.
 
 
 \subsection{Per-Fold Preprocessing}\label{subsec:preprocessing}
@@ -4042,6 +3970,54 @@ Log returns lag 30 & 30-day lag of daily log returns & 30-day \\
 \end{longtable}
 
 \subsection{CPCV Split Details}\label{app:cpcv_splits}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{cpcv_groups.png}
+\caption{Eight CPCV groups overlaid on BTC closing price, each holding 146 of the 1,168 aligned observations.}
+\label{fig:cpcv_groups}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcrrcc}
+\toprule
+Split & Test groups & Train & Test & Leaks & Status \\
+\midrule
+0 & (0, 1) & 865 & 292 & 0 & OK \\
+1 & (0, 2) & 851 & 292 & 0 & OK \\
+2 & (0, 3) & 853 & 292 & 0 & OK \\
+3 & (0, 4) & 853 & 292 & 0 & OK \\
+4 & (0, 5) & 853 & 292 & 0 & OK \\
+5 & (0, 6) & 853 & 292 & 0 & OK \\
+6 & (0, 7) & 864 & 292 & 0 & OK \\
+7 & (1, 2) & 864 & 292 & 0 & OK \\
+8 & (1, 3) & 852 & 292 & 0 & OK \\
+9 & (1, 4) & 852 & 292 & 0 & OK \\
+10 & (1, 5) & 852 & 292 & 0 & OK \\
+11 & (1, 6) & 852 & 292 & 0 & OK \\
+12 & (1, 7) & 863 & 292 & 0 & OK \\
+13 & (2, 3) & 862 & 292 & 0 & OK \\
+14 & (2, 4) & 850 & 292 & 0 & OK \\
+15 & (2, 5) & 850 & 292 & 0 & OK \\
+16 & (2, 6) & 850 & 292 & 0 & OK \\
+17 & (2, 7) & 861 & 292 & 0 & OK \\
+18 & (3, 4) & 864 & 292 & 0 & OK \\
+19 & (3, 5) & 852 & 292 & 0 & OK \\
+20 & (3, 6) & 852 & 292 & 0 & OK \\
+21 & (3, 7) & 863 & 292 & 0 & OK \\
+22 & (4, 5) & 864 & 292 & 0 & OK \\
+23 & (4, 6) & 852 & 292 & 0 & OK \\
+24 & (4, 7) & 863 & 292 & 0 & OK \\
+25 & (5, 6) & 864 & 292 & 0 & OK \\
+26 & (5, 7) & 863 & 292 & 0 & OK \\
+27 & (6, 7) & 875 & 292 & 0 & OK \\
+\bottomrule
+\end{tabular}
+\caption{Per-split leakage audit for the 28 CPCV splits. Train and test counts are after purging and embargo. Leaks count training observations whose barrier-touch timestamp falls within the assigned test group's calendar range, with zero indicating a clean split.}
+\label{tab:leakage_audit}
+\end{table}
+
 % Group boundaries, train/test timelines for all 28 splits, leakage
 % audit.
 
