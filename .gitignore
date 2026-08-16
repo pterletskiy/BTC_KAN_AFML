@@ -1,11 +1,10 @@
 # Models and Results Folders
+backup_old_version/
 figures/
 new_version/cache/
 new_version/model/
-backup_old_version/model/
-backup_old_version/PREPROCESSING_COMPARISON.md
-new_version/presentation_report/presentation/presentation_files
-test.ipynb
+new_version/miscellaneous/extra/
+new_version/presentation_report/miscellaneous/
 
 # Cache Files
 __pycache__/
