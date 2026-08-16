@@ -1,0 +1,46 @@
+\section{Introduction}\label{sec:introduction}
+
+Recent machine-learning studies report striking accuracies for Bitcoin (BTC) direction prediction, yet many rely on evaluation pipelines whose safeguards against information leakage are incomplete, leaving open how much of the reported predictability is genuine. This thesis re-examines that question under a leakage-free protocol and pairs it with a concern that the financial machine-learning literature rarely treats alongside prediction: interpretability. It applies a Kolmogorov-Arnold Network (KAN) to BTC direction prediction within the Advances in Financial Machine Learning (AFML) framework \citep{lopez_de_prado_2018}, benchmarks the KAN against five baselines under identical conditions, and extracts a closed-form symbolic decision function for the probability that BTC closes higher than its entry price ($P(\text{Up})$) as its novel deliverable. The guiding stance of this work is that interpretability is a contribution separable from predictive accuracy.
+
+
+\subsection{Research Context and Motivation}\label{subsec:context}
+
+% Why BTC
+
+The cryptocurrency asset class emerged with Bitcoin (BTC), presented to the world on 31 October 2008 by Satoshi Nakamoto. Since its first transaction on 12 January 2009, BTC has grown into the anchor asset of a market whose total capitalisation reached approximately \$4.27 trillion at its October 2025 peak and stands near \$2.2 trillion in mid-2026, with BTC alone accounting for 56 to 58 percent of that total. Market maturation has accelerated since January 2024, when the U.S. Securities and Exchange Commission approved the first eleven spot Bitcoin exchange-traded funds; these products have absorbed roughly \$58 billion in cumulative net inflows by mid-2026.
+
+This thesis studies BTC in isolation for four reasons: it has the longest continuous price history in the asset class, the largest market capitalisation and highest liquidity, the deepest on-chain data coverage among cryptocurrencies, and returns to which altcoins exhibit high beta, so BTC captures the systematic cryptocurrency factor through a single instrument.
+
+% Why KANs
+
+Bitcoin's daily direction is a classic multivariate signal-extraction problem, driven by feature families whose functional forms are unknown. Unlike classical econometric methods that impose functional forms a priori, machine learning (ML) models can infer structure directly from the data. However, most ML models, and neural networks in particular, operate as black boxes whose internal logic cannot be directly interpreted. \citet{liu_kan_2024} propose KANs as a multi-layer perceptron (MLP) alternative with univariate learnable activation functions on the edges of the network rather than fixed activations on the nodes; these edge functions can be distilled into closed-form symbolic expressions, making the trained model as auditable as a linear regression while retaining nonlinear representational power. To the author's knowledge, no prior work applies KANs to BTC price direction prediction or extracts symbolic formulas from a classification KAN under the AFML framework \citep{lopez_de_prado_2018}. This gap defines the four research questions of this thesis: the six-model benchmark (Q4) provides the methodological scaffolding, and the closed-form formula (Q3) is the primary novel contribution.
+
+
+\subsection{Problems and Research Questions}\label{subsec:objectives}
+
+% Q1 (feature families; the question that originated the thesis)
+\textbf{Q1.} Most cryptocurrency ML studies rely on one or two feature families, typically technical indicators or price histories \citep{bourday_crypto_dl_2024}, and there is no consensus on whether macroeconomic, crypto-macro, or on-chain features add information beyond price-derived inputs. This thesis asks which families carry signal under a leakage-free evaluation. Multi-model permutation importance across the 28 Combinatorial Purged Cross-Validation (CPCV) folds provides the answer.
+
+% Q2 (predictability under leakage-free evaluation; was Q4)
+\textbf{Q2.} Many recent BTC ML studies that apply traditional ML pipelines to financial time series report daily-direction accuracies of 80 to 90 percent \citep{omole_enke_2024}, but these figures rest on pipelines with fixed-horizon labels, overlapping label spans, and train-test splits that never purge concurrent observations, so the reported accuracies may be inflated by an unknown margin. The second question revisits whether BTC price direction remains predictable once labels and features stop leaking the future, tested through three corrections on the six-model cross-section: the Deflated Sharpe Ratio (DSR), the Probability of Backtest Overfitting (PBO), and pairwise Area Under the Curve (AUC) comparisons via the DeLong test.
+
+% Q3 (symbolic extraction)
+\textbf{Q3.} Existing KAN symbolic-extraction work in finance targets regression problems on relatively predictable series \citep{cho_lee_kim_2025, oad_kasper_2025, gao_decokan_2025}, and no published work has extracted a closed-form classification formula from a CPCV-trained KAN in a weak-signal regime. This thesis asks whether a human-readable expression for $P(\text{Up})$ can be extracted from a CPCV-trained KAN while preserving most of its predictive accuracy.
+
+% Q4 (KAN positioning; was Q2)
+\textbf{Q4.} KANs have been applied to VIX forecasting \citep{cho_lee_kim_2025}, stock prediction \citep{oad_kasper_2025}, and cryptocurrency regression \citep{gao_decokan_2025}, but never to BTC direction classification under a uniform protocol. The fourth question places the KAN in a six-model cross-section (the KAN plus five baselines) against Autoregressive (AR) Logistic, Logistic Regression, Random Forest, Extreme Gradient Boosting (XGBoost), and Long Short-Term Memory (LSTM) under identical CPCV splits, features, sample weights, and metrics.
+
+
+\subsection{Contributions}\label{subsec:contributions}
+
+% C1 (73-feature universe; mirrors Q1)
+\textbf{C1.} This thesis assembles a 73-feature universe spanning four families: 25 technical, 9 mathematical, 29 external (macroeconomic, crypto-macro, on-chain), and 10 autoregressive lag features, all competing in multi-model permutation importance selection across the 28 CPCV folds with no family privileged a priori.
+
+% C2 (full AFML stack; mirrors Q2, was C4)
+\textbf{C2.} This thesis applies the complete AFML stack to BTC direction prediction: Cumulative Sum (CUSUM) event sampling, triple-barrier labelling (TBL), sample weighting, fixed-width window fractional differentiation (FFD), CPCV with purging and embargo, and the DSR, PBO, and DeLong AUC corrections, in a single reproducible workflow that implements every leakage and multiple-testing safeguard the framework prescribes.
+
+% C3 (closed-form classification formula; mirrors Q3)
+\textbf{C3.} This thesis extracts a human-readable expression for $P(\text{Up})$ from the trained KAN through a pruning and symbolic-extraction pipeline, the first closed-form classification formula derived from a CPCV-trained KAN in a weak-signal regime and the primary novel contribution of this work.
+
+% C4 (KAN benchmark; mirrors Q4, was C2)
+\textbf{C4.} Chapter 4 benchmarks the KAN against the five baselines under identical CPCV splits, features, sample weights, and metrics, with pairwise DeLong AUC tests flagging significant cross-section differences.

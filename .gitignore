@@ -3,9 +3,7 @@ backup_old_version/
 figures/
 new_version/cache/
 new_version/model/
-new_version/miscellaneous/articles/
-new_version/miscellaneous/extra/
-new_version/miscellaneous/html/
+new_version/miscellaneous/
 new_version/presentation_report/miscellaneous/
 
 # Cache Files

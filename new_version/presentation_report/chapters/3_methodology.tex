@@ -1,0 +1,288 @@
+\newpage
+\section{Methodology}\label{sec:methodology}
+
+The methodology unfolds in three sequential phases. Phase I (pre-CPCV) transforms the raw 4,208 daily bars into the aligned tuple $(X, y, w, t_1)$ through data acquisition (Section 3.1), event filtering and triple-barrier labelling (Section 3.2), AFML sample weighting (Section 3.3), and feature engineering (Section 3.4).
+
+Phase II runs the CPCV pipeline. It assembles per-split training and test folds (Section 3.5), applies per-fold preprocessing (Section 3.6), trains six models with nested hyperparameter tuning (Sections 3.7 and 3.8), and calibrates predicted probabilities (Section 3.9) to produce a test-fold prediction stream across all 28 splits.
+
+Phase III is the post-CPCV evaluation and interpretability layer. It bet-sizes predictions, stitches paths, and computes the DSR, the PBO, and pairwise DeLong AUC tests across the seven backtest paths (Section 3.10), and extracts the closed-form symbolic decision function from the trained KAN (Section 3.11). The full pipeline is shown in \phantomsection\label{ref:pipeline_call}\autoref{fig:pipeline_diagram}.
+
+
+\subsection{Data}\label{subsec:data}
+
+The base instrument is Bitcoin priced in US dollars (BTC-USD). Daily Open-High-Low-Close-Volume (OHLCV) bars are retrieved from Yahoo Finance for 2014-11-01 to 2026-05-09 (4,208 daily bars), with the closing-price series plotted in \phantomsection\label{ref:btc_price_call}\autoref{fig:btc_usd_close_price}. The start date is set to satisfy the longest-warmup feature in the engineered set, the 50/200 exponential moving average ratio at 200 days, so every shorter-warmup feature inherits a clean starting point.
+
+All rolling windows operate on the BTC 24/7 trading calendar: 7-day weeks, 30-day months, 90-day quarters, 180-day semesters, and 365-day years. The 365-day convention flows downstream into the Sharpe annualisation of Section 3.10.2 and the DSR reference distribution.
+
+Three external sources extend the feature set beyond price and volume, detailed in Section 3.4. Macroeconomic series (yield curves, the CBOE Volatility Index, commodity prices, the dollar index) come from Yahoo Finance and the Federal Reserve Economic Data (FRED) database. The ETH/BTC ratio comes from the CoinMetrics Community API with Yahoo Finance as fallback. Eight on-chain features (active addresses, transaction count, hash rate, MVRV, net exchange flow, fee per transaction, exchange supply fraction, native-unit issuance) come from CoinMetrics. External series align onto BTC's calendar through a backward-looking join, using only the most-recent observation timestamped at or before each BTC trading day. CoinMetrics observations shift forward by one trading day to respect the API's end-of-day reporting convention, so a metric timestamped at $t$ enters the feature matrix at $t+1$.
+
+
+\subsubsection{Sample-period price dynamics}\label{subsubsec:price_dynamics}
+
+The labelling window (2015-08-08 to 2026-05-02, established in Section 3.2.2) covers four complete Bitcoin cycles, plotted in \autoref{fig:btc_usd_close_price}. The 2017 retail bull cycle peaked at approximately \$19{,}000 in December 2017 before the year-long 2018 collapse to \$3{,}000. Recovery began in 2019 and was interrupted by the March 2020 COVID-19 crash to \$4{,}000, followed by a rapid rebound as Federal Reserve liquidity expansion supported risk assets across the board. The 2021 institutional bull cycle, marked by treasury allocations from Tesla and MicroStrategy and by early speculation on a US spot-ETF approval, peaked at approximately \$69{,}000 in November 2021. The 2022 crypto winter followed, driven by the Terra/Luna collapse in May, the Celsius Network bankruptcy in July, and the FTX collapse in November, with prices bottoming near \$16{,}000. Recovery through 2023 and 2024 was punctuated by two structural events: the SEC's January 2024 approval of eleven spot Bitcoin ETFs, and the fourth halving in April 2024 (a 50\% reduction in the block reward, further tightening the supply schedule). The 2025 rally, supported by the maturation of the ETF ecosystem and expanding institutional participation, peaked at approximately \$120{,}000 in October 2025 before a correction to \$79{,}000 by the labelling window's end in May 2026.
+
+The price trajectory spans roughly four orders of magnitude in absolute terms across the sample, but the modelling task is direction prediction on triple-barrier-labelled returns (Section 3.2.3), which are scale-invariant by construction. The AFML sample-weighting scheme of Section 3.3, which discounts events sharing calendar days with concurrent labels and applies linear time decay, further attenuates the influence of any single cycle on the trained models. The 2018 and 2022 bear cycles are represented in the aligned event set at their natural frequency, so the classifier trains against genuine downside regimes rather than a bull-market-only sample.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=1.0\textwidth]{btc_usd_close_price.png}
+\caption{BTC-USD daily closing price from 2014-11-01 to 2026-05-09. The labelling window (2015-08-08 to 2026-05-02) covers four complete Bitcoin cycles: the 2017 retail bull, the 2020 COVID crash and recovery, the 2021 institutional bull, and the 2022 crypto winter, followed by the 2023 to 2025 ETF-driven rally and the early-2026 correction. \hyperref[ref:btc_price_call]{$\hookleftarrow$}}
+\label{fig:btc_usd_close_price}
+\end{figure}
+
+
+\subsection{Labelling}\label{subsec:labeling}
+
+\subsubsection{Daily volatility}\label{subsubsec:vol}
+
+The daily volatility series feeds two downstream steps. It is estimated as the Exponentially Weighted Moving Average (EWMA) standard deviation of log returns with span 50 \citep[Snippet 3.1]{lopez_de_prado_2018}:
+\begin{equation}
+\sigma_t^2 = (1 - \alpha)\,\sigma_{t-1}^2 + \alpha\, r_t^2,\qquad \alpha = \frac{2}{\text{span} + 1},
+\label{eq:ewma}
+\end{equation}
+with $\sigma_t = \sqrt{\sigma_t^2}$. The span is shortened from the AFML default of 100 days for equities. The shorter span tracks BTC's faster regime transitions, driven by the four-year halving cycle and by regulatory shocks that compress volatility responses into days rather than months. The half-life of approximately 17 days gives the estimator a memory of roughly two trading weeks \phantomsection\label{ref:ewma_call}(\autoref{fig:ewma_vol}). The CUSUM threshold in Section 3.2.2 takes a multiple of the series' mean, so the event filter fires at a roughly constant signal-to-noise ratio across the sample. The triple-barrier widths in Section 3.2.3 scale by the daily volatility at each event, so barriers expand and contract with the prevailing regime rather than sitting at a fixed return percentage.
+
+
+\subsubsection{CUSUM event filter}\label{subsubsec:cusum}
+
+The CUSUM filter selects the timestamps at which the cumulative drift in log returns crosses a volatility-scaled threshold and retains the bars at those timestamps for triple-barrier labelling, discarding everything in between. Two accumulators are maintained in parallel: an upward accumulator $S^+_t$ that adds positive returns and floors at zero, and a downward accumulator $S^-_t$ that adds negative returns and ceils at zero:
+\begin{equation}
+S^+_t = \max\!\left(0,\, S^+_{t-1} + r_t\right),\qquad
+S^-_t = \min\!\left(0,\, S^-_{t-1} + r_t\right),
+\label{eq:cusum}
+\end{equation}
+with $S^+_0 = S^-_0 = 0$. An event fires at the first $t$ for which $S^+_t \geq h$ or $S^-_t \leq -h$, at which point the offending accumulator resets to zero. The implementation follows AFML Snippet 2.4 \citep{lopez_de_prado_2018}.
+
+The threshold is set to $h = 1.0 \times \overline{\sigma}$, where $\overline{\sigma}$ is the mean of the daily volatility series from Section 3.2.1 over the labelling window. Lower multipliers fire too many events with limited information content per event, while higher multipliers leave long stretches of the sample without any event and undersample the active periods; $h = 1.0 \times \overline{\sigma}$ balances the event count against the resulting class composition after triple-barrier labelling. The mechanism is illustrated over a three-month window in early 2026 \phantomsection\label{ref:cusum_call}(\autoref{fig:cusum_window}).
+
+The accumulators run on the full raw return series from 2014-11-01 onwards, but the event-firing window is truncated to start on 2015-08-08. Two constraints set this date: the 50/200 EMA ratio needs 200 calendar days to populate (Section 3.1), and the ETH/USD price series, which feeds the ETH/BTC ratio feature, begins on 2015-08-08 (shortly after the Ethereum Frontier launch on 30 July 2015). Events that survive truncation therefore reflect the genuine state of the cumulative drift at firing, not a reset on 2015-08-08. The filter produces 1,270 events that enter triple-barrier labelling in Section 3.2.3.
+
+
+\subsubsection{Triple barrier labelling}\label{subsubsec:tbl}
+
+The triple-barrier method assigns a label to each CUSUM event by simulating a path-dependent trading position opened at the event timestamp and closed at the first of three barriers it touches \citep[Snippet 3.2]{lopez_de_prado_2018}. The upper horizontal barrier (profit-take) and lower horizontal barrier (stop-loss) are placed at $\pm 1.5 \times \sigma_t$ around the entry price, where $\sigma_t$ is the daily volatility from Section 3.2.1 at the event timestamp. The vertical barrier (time limit) is set 10 calendar days after the event, approximately one and a half weeks on the BTC continuous calendar. The label is $+1$ on an upper-barrier hit and $-1$ on a lower-barrier hit. When the vertical barrier is reached first (neither horizontal barrier was touched within the 10 days), the label is the sign of the realised return at expiry if the absolute return exceeds the 2\% minimum-return threshold, and is set to zero otherwise; the zero-class events are dropped in the removal step below so the downstream task is strictly binary. The symmetric profit-take and stop-loss multipliers reflect the absence of a directional bias in the labelling step. The prediction problem remains directional and is delegated to the models in Section 3.7.
+
+The output is a table indexed by event timestamp with three columns: the realised return $ret$ (entry-to-exit price change), the label $bin \in \{-1, 0, +1\}$ (which barrier was touched first, modulated by the minimum-return threshold for vertical-barrier hits), and the barrier-touch timestamp $t_1$ (the calendar day the position closed, used for the purging and embargo steps of Section 3.5.3). Three representative events, one for each barrier type, are shown in \phantomsection\label{ref:tbl_examples_call}\autoref{fig:tbl_examples} of Appendix~\ref{app:labelling_diagnostics}.
+
+The empirical distribution validates the parameter choices. The mean holding period is 5.0 days against a maximum of 10, with a median of 4 days, and only 19.7\% of events expire at the vertical barrier, so the horizontal barriers close approximately 80\% of positions before the time-out. The 5-day mean also keeps the average barrier-touch timestamp clear of the next CUSUM event, which limits the magnitude of the AFML uniqueness correction in Section 3.3. The 102 vertical-barrier ties that received the zero label are then dropped in a zero-class removal step, since the downstream task is binary direction prediction and a third class with no consistent return interpretation would only add noise to training. The pipeline therefore delivers a strict binary classification problem $bin \in \{-1, +1\}$ with no neutral-return events to manage downstream.
+
+Numerically, the 1,270 events that survive CUSUM truncation enter triple-barrier labelling. The minimum-return threshold collapses 102 into class zero; the zero class is then dropped, leaving 1,168 final binary-labelled observations. The pipeline therefore compresses 4,208 daily bars to 1,168 observations, a ratio of roughly 28\%. The class balance settles at 56.85\% Up against 43.15\% Down (\phantomsection\label{ref:label_dist_call}\autoref{fig:label_distribution}), close enough to balanced that no resampling is required beyond the class-balanced weighting argument applied in Section 3.7.
+
+
+\subsection{Sample Weights}\label{subsec:weights}
+
+The triple-barrier labelling produces overlapping observations. A position opened at event $i$ with a 10-day vertical barrier remains open through days that may host subsequent CUSUM events, so consecutive events sharing part of their barrier windows are partially redundant. As a concrete example, suppose event $A$ fires on day 10 and event $B$ on day 12: if neither hits a horizontal barrier early, both positions remain open between day 12 and day 20, so the realised returns of $A$ and $B$ over those eight shared days are mechanically correlated and the two events are not independent observations. Training without correction overweights densely-clustered events and biases the gradient towards the most active periods of the market. AFML proposes a three-component weighting scheme that addresses this redundancy and the asymmetric information content across events \citep[Chapter 4]{lopez_de_prado_2018}, with a fourth step (outlier capping) added here to control the tail. The first component measures redundancy. For each bar $t$, the concurrent label count $c_t$ records how many event positions remain open on day $t$. The average uniqueness $\bar{u}_i$ of event $i$ is then the mean of $1/c_t$ over the days inside its barrier window, so an event sharing its span with no others has $\bar{u}_i = 1$ and an event sharing fully with two others has $\bar{u}_i \approx 1/3$.
+
+The second component scales uniqueness by absolute return, giving $w_i = \bar{u}_i \times |ret_i|$, which rewards events with large realised moves since these carry more directional information than near-zero returns. The weights are normalised so that their sum equals the number of events. The third component applies a linear time decay, downweighting old events by a factor that decreases from one at the most recent event to 0.4 at the oldest, with the slope set so that the average decay is unity. The 0.4 floor reflects BTC's regime non-stationarity: the asset has matured substantially over the labelling window, evolving from a primarily retail-driven market in the mid-2010s into one with structural institutional participation by the early 2020s, so recent observations carry more information about current dynamics than equally-aged observations from earlier periods. The two multiplicative scalings combine into a per-event weight $w_i = \bar{u}_i \times |ret_i| \times d_i$, where $d_i$ is the decay factor at event $i$.
+
+The fourth step is an outlier cap added here, limiting extreme weights to the 99th percentile of the post-decay distribution. Events combining a large absolute return, high uniqueness, and a recent timestamp accumulate weights several times the mean, and a handful of these can dominate the empirical risk minimisation of an entire fold. The 99th percentile sits at approximately 2.862, and 12 events hit the cap (notably the COVID-19 crash, the FTX collapse, and the early-2019 rally). The weight distribution is shown in \phantomsection\label{ref:weights_call}\autoref{fig:sample_weights} and the full capped-event list is in \autoref{tab:capped_events}.
+
+The final per-event weight vector enters each model's training procedure through its standard weight-aware fitting interface. The classical ML classifiers (AR Logistic, LR, RF, XGBoost) accept the vector as a per-sample weighting argument. The neural models (LSTM, KAN) apply the weights as multipliers inside the cross-entropy loss, scaling the gradient at observation $i$ by $w_i$ before averaging across the batch.
+
+
+\subsection{Feature Engineering}\label{subsec:features}
+
+
+\subsubsection{Feature families}\label{subsubsec:feature_families}
+
+The 25 technical indicators cover returns and volatility (including the range-based Garman-Klass and Yang-Zhang estimators \citep{garman_klass_1980, yang_zhang_2000}), momentum and trend (anchored on RSI, MACD, and the 14-day rate of change (ROC); the inclusion of ROC is supported by \citet{mate_confluence_2024}, with the 14-day window calibrated separately), volume, distribution shape, and trend ratios. Indicator periods are kept at canonical values rather than optimised over the labelling window, to avoid a second layer of overfitting risk.
+
+The nine mathematical features come from AFML Part 4 \citep{lopez_de_prado_2018} and capture information content (Shannon entropy, negentropy, Lempel-Ziv complexity), random-walk diagnostics (Hurst exponent, the variance-ratio test of \citet{lo_mackinlay_1988}), and distributional or structural-break tests (Jarque-Bera, the Supremum Augmented Dickey-Fuller statistic, Sub- and Super-Martingale Tests (SMT) with polynomial-1 and exponential trends).
+
+The 29 external features cover the macroeconomic backdrop (twenty Yahoo Finance and FRED series spanning the dollar index, yield curves, the VIX, and commodity-and-equity returns at 30-day and 14-day windows), the cryptoasset cross-section (the ETH/BTC ratio from CoinMetrics with Yahoo Finance fallback), and on-chain activity (eight CoinMetrics features on network activity and balance-sheet dynamics). All external series enter the feature matrix through the backward-looking join of Section 3.1, with CoinMetrics observations shifted forward by one trading day.
+
+Ten lagged log-return features encode the autoregressive structure of BTC's own returns at lags $\{1, 2, 3, 4, 5, 6, 7, 14, 21, 30\}$ days. Lag features participate in multi-model Mean Decrease Accuracy (MDA) on equal footing with the other 63 engineered features. The full 73-feature universe is catalogued in \phantomsection\label{ref:features_call}\autoref{tab:full_features}.
+
+
+\subsubsection{Phase I alignment output}\label{subsubsec:alignment}
+
+Three features receive a log transform before alignment. The Average True Range (ATR) is replaced by its natural logarithm to compress its heavy upper tail, and the On-Balance Volume (OBV) and Chaikin Oscillator are passed through a sign-preserving log transform to bring their unbounded positive and negative cumulative excursions onto a comparable scale.
+
+Feature engineering produces rolling-window outputs with missing values from two sources: rolling-window warmup at the start of the sample, and external-data calendar gaps. Phase I does not impute these values; per-fold missing-value imputation is deferred to inside the CPCV loop (Section 3.6.1) so the imputation policy uses only training-fold information.
+
+The alignment step intersects the indices of the feature matrix, the label vector, the sample weights, and the barrier-touch timestamps to produce the four-tuple $(X, y, w, t_1)$. Hard assertions guard the output: the intersected index must be non-empty, free of duplicates, and monotonic; the four arrays must share lengths and indices; $t_1$ must be fully populated; weights strictly positive; labels in $\{-1, 0, +1\}$. The output is a $1{,}168 \times 73$ feature matrix paired with a binary label vector $y \in \{-1, +1\}$, a positive weight vector, and a barrier-touch timestamp vector. Phase I therefore closes with the aligned $(X, y, w, t_1)$ dataset, ready for the cross-validation pipeline of Section 3.5.
+
+\subsection{Cross-Validation Framework}\label{subsec:cpcv}
+
+The standard k-fold cross-validation procedure is invalid for financial time series with overlapping labels: each triple-barrier label spans multi-day intervals (Section 3.2.3), so events in different folds whose barrier windows overlap on the calendar share information through the train-test boundary. Combinatorial Purged Cross-Validation (CPCV) of \citet[Chapter 12]{lopez_de_prado_2018} prevents this leakage through three mechanisms covered below: purging training events whose barrier windows reach into the test fold, embargoing the calendar days immediately after the test fold, and combining multiple test-group choices into a backtest that consumes each event exactly once.
+
+
+\subsubsection{Why standard CV fails}\label{subsubsec:cv_fail}
+
+Triple-barrier labels are multi-day intervals averaging 5 days, so standard k-fold cross-validation routinely places training-fold barrier windows inside the test fold and exposes the model to test-period prices through its training labels. Reported AUC, accuracy, and Sharpe on standard k-fold splits therefore inflate the genuine out-of-sample performance of any model trained on overlapping-label data.
+
+
+\subsubsection{CPCV configuration}\label{subsubsec:cpcv_config}
+
+The CPCV pipeline partitions the 1,168 aligned observations into $N = 8$ contiguous groups of 146 observations each, with $k = 2$ groups serving as the test set in each split and an embargo of 1\% applied to the calendar boundary. The number of splits is $\binom{8}{2} = 28$, and each group appears in $\binom{7}{1} = 7$ test sets, which equals the number of non-overlapping backtest paths into which the splits combine. One such split is illustrated in \phantomsection\label{ref:cpcv_schematic_call}\autoref{fig:cpcv_schematic}.
+
+The choice of $N = 8$ and $k = 2$ balances three competing demands. The 146-event group size is large enough that within-fold Area Under the Curve (AUC) and Sharpe estimates are not dominated by sampling noise. The 28 splits provide the combinatorial diversity required by the PBO test of Section 3.10.3. The 7 paths give the DSR of Section 3.10.3 enough independent draws to populate a stable test-statistic distribution.
+
+The 7 paths are built so that each is a complete out-of-sample sequence covering all 1,168 observations exactly once \citep[Section 12.4.1]{lopez_de_prado_2018}, with each path using 4 of the 28 splits. This converts a single backtest into a per-model distribution of Sharpe ratios, AUC, and accuracy that DSR and PBO consume in place of a single point estimate. Across all 28 splits the average training fold contains 858 observations (73.4\% of the labelling window) and the test fold contains 292. Purging drops an average of 1.9 events per split, and the embargo absorbs an average of 16.5. The eight groups span 2015-08-08 to 2026-05-02 and are shown on the BTC price chart in \phantomsection\label{ref:cpcv_groups_call}\autoref{fig:cpcv_groups}.
+
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  gbox/.style={draw=gray!55, fill=gray!12, line width=0.8pt,
+               minimum width=1.15cm, minimum height=1.0cm, inner sep=0pt},
+  tbox/.style={draw=isegred, fill=isegred!55, line width=0.8pt,
+               minimum width=1.15cm, minimum height=1.0cm, inner sep=0pt,
+               font=\footnotesize\bfseries, text=white},
+  emb/.style={draw=orange!70!black, fill=orange!70, line width=0.5pt,
+              minimum width=0.16cm, minimum height=1.0cm, inner sep=0pt},
+  lbl/.style={font=\footnotesize, text=black}
+]
+\foreach \i/\n in {0/G0, 1/G1, 2/G2, 3/G3, 4/G4, 5/G5, 6/G6, 7/G7}{
+  \node[lbl] at (\i*1.30, 0.95) {\n};
+}
+\node[gbox] at (0*1.30, 0) {};
+\node[gbox] at (1*1.30, 0) {};
+\node[tbox] at (2*1.30, 0) {T};
+\node[gbox] at (3*1.30, 0) {};
+\node[gbox] at (4*1.30, 0) {};
+\node[tbox] at (5*1.30, 0) {T};
+\node[gbox] at (6*1.30, 0) {};
+\node[gbox] at (7*1.30, 0) {};
+\node[emb] at (3*1.30 - 0.50, 0) {};
+\node[emb] at (6*1.30 - 0.50, 0) {};
+\node[font=\small] at (4.55, -1.0) {Split 12: test $= \{$G2, G5$\}$};
+\end{tikzpicture}
+\caption{Schematic of one CPCV split with $N = 8$ groups and $k = 2$ test groups (Split 12 shown). Red blocks (labelled T) are the two test groups; grey blocks are training groups; orange strips immediately after each test group mark the 1\% embargo removed from training data. Across the $\binom{8}{2} = 28$ splits, every group appears in $\binom{7}{1} = 7$ test sets, which combine into 7 disjoint out-of-sample backtest paths covering the 1{,}168 events exactly once. \protect\hyperref[ref:cpcv_schematic_call]{$\hookleftarrow$}}
+\label{fig:cpcv_schematic}
+\end{figure}
+
+
+\subsubsection{Purging and embargo}\label{subsubsec:purging_embargo}
+
+Purging removes from the training fold any observation whose barrier window overlaps the test fold's calendar range \citep[Snippet 7.1]{lopez_de_prado_2018}. Three sufficient conditions cover the overlap geometry, catching respectively the cases where a training event starts inside the test window, resolves inside the test window, or straddles it. The first fires when the entry timestamp $t_{0,i}$ of training observation $i$ falls inside the test window $[t_{\text{start}}, t_{\text{end}}]$. The second fires when the barrier-touch timestamp $t_{1,i}$ falls inside the test window. The third fires when the training observation's barrier window fully encloses the test window, that is, $t_{0,i} \leq t_{\text{start}}$ and $t_{\text{end}} \leq t_{1,i}$. Any training observation satisfying at least one condition is dropped for that split.
+
+The embargo removes a fixed number of training observations immediately after each test group: at 1\% of 1,168 total observations, this drops 11 training observations per test-group boundary. The embargo is applied only after the test group because training labels that resolve before the test starts cannot carry information about future test prices, while the post-test boundary can still leak through serial correlation in returns and volatility \citep[Section 7.4.2]{lopez_de_prado_2018}. An empirical leakage audit on the 28 splits returns zero training-observation barrier-touch timestamps falling inside their assigned test groups, so the pipeline produces leak-free training and test partitions throughout the labelling window.
+
+
+\subsection{Per-Fold Preprocessing}\label{subsec:preprocessing}
+
+
+\subsubsection{Fractional differentiation}\label{subsubsec:ffd}
+
+An Augmented Dickey-Fuller (ADF) test applied to each of the 73 features inside the training fold at $\alpha = 0.05$ identifies the Average True Range (ATR) as the only feature for which the unit-root null is not rejected. The remaining 72 features are already stationary, either because they are returns and ratios with bounded ranges, or because they are normalised counts and rolling z-scores. Fixed-width window fractional differentiation (FFD) \citep[Chapter 5]{lopez_de_prado_2018} is therefore applied to ATR only, with the objective of removing the price-level trend that ATR inherits from the close-price magnitude while preserving as much of the column's memory as possible. The differencing order $d^{\ast}$ is selected per fold by sweeping $d$ over $\,]0, 1[\,$ in steps of $0.05$ and taking the smallest value for which the ADF test on the training-fold ATR series rejects the unit-root null. The minimum-$d$ rule preserves the longest available memory among the values that achieve stationarity, with a fallback to $d^{\ast} = 1.0$ (standard first difference) if no value in the sweep achieves stationarity. The weight recursion and truncation threshold for the fractional-difference convolution are given in \phantomsection\label{ref:ffd_weights_call}\autoref{app:ffd_weights}.
+
+Once $d^{\ast}$ is fixed on the training fold, the transformation is applied to the full ATR series. The convolution is strictly backward-looking, so applying it to the full series does not leak any test-fold information back into the training fold. This walk-forward use of FFD follows \citet{slepaczuk_bieganowski_2024}. The lookback creates a short block of missing values at the start of the FFD column, which are dropped from the affected fold rather than forward-filled, since forward-filling FFD output would propagate a stale lookback estimate into observations that should already have a valid one. The number of dropped rows is logged per split and typically lies between two and ten rows. The remaining 72 columns of $X$ can also contain missing values from external-data calendar gaps and rolling-indicator warmups, handled with a forward-then-backward fill applied independently within each fold so that no fill value crosses the train-test boundary. The asymmetric treatment reflects that a rolling-window warmup can be safely propagated, whereas a fractional-differencing lookback estimate is structurally different at every position.
+
+
+\subsubsection{Feature scaling}\label{subsubsec:scaling}
+
+All 73 features, including the fractionally-differenced ATR, are rescaled with a RobustScaler:
+\begin{equation}
+\tilde{x}_j = \frac{x_j - \text{median}(x_j)}{Q_3(x_j) - Q_1(x_j)},
+\label{eq:robust_scaler}
+\end{equation}
+where $Q_1$ and $Q_3$ are the first and third quartiles respectively, so the denominator is the interquartile range. Both statistics are fitted on the training fold and applied to the test fold without refitting. Most BTC features show fat tails and occasional extreme values from regime breaks (the March 2020 COVID crash, the May 2021 China mining ban, the November 2022 FTX collapse) that displace the mean and inflate the standard deviation. The median and IQR are by construction insensitive to these outliers and centre the bulk of the distribution rather than its tails.
+
+
+\subsubsection{Multi-model MDA feature selection}\label{subsubsec:mda}
+
+The feature-selection stage scores each feature using Mean Decrease Accuracy (MDA), a permutation-based importance measure, and selects a fold-specific subset of the training-fold feature matrix \citep[Section 8.4]{lopez_de_prado_2018}. MDA is typically computed with a single classifier, whose inductive bias influences the resulting ranking. The implementation here uses two estimators and averages their scores: a Random Forest with 500 trees that captures nonlinear interactions, and a Logistic Regression that captures linear marginal effects, both with balanced class weights. Because the two estimators produce scores on different absolute scales (Random Forest drops F1 by 0.005 to 0.05 per feature, Logistic Regression drops an order of magnitude smaller), and the multi-model MDA is reported as the unweighted mean $\bar{m}_j = (m^{\text{RF}}_j + m^{\text{LR}}_j) / 2$ of the two F1-drop vectors, the Random Forest signal effectively anchors the ranking, with the Logistic Regression scores acting as a soft tiebreaker that can move a feature in or out of the positive-MDA bucket near the zero boundary.
+
+The MDA computation runs inside an inner 3-fold purged cross-validation on the training fold, using the same $t_1$-based overlap conditions as the outer CPCV (Section 3.5.3). For each estimator, a baseline cross-validated macro-F1 is recorded, and each feature in turn is permuted to measure the resulting F1 drop. The mean across the three inner folds gives the feature's MDA score. A feature is retained if its averaged $\bar{m}_j$ is strictly positive, with the set capped at the top 20\% of the MDA-ranked features (14 to 15 of the 73) and a minimum floor of five against pathological folds. The cap is anchored in the 80/20 split of Section 3.9: with approximately 686 model-training events and the KAN and LSTM parameter counts of Section 3.7, 14 features already approaches a one-sample-per-parameter regime, so a looser cap would deepen overparameterisation without a corresponding gain in signal.
+
+The AR Logistic model bypasses the MDA stage entirely. As an autoregressive specification, it is restricted to the ten lag features of Section 3.4.1 regardless of the MDA ranking. The five remaining models (Logistic Regression, Random Forest, XGBoost, LSTM, and KAN) receive the post-MDA matrix with between 14 and 15 features per fold.
+
+
+\subsection{Models}\label{subsec:models}
+
+All six models share the same training-pipeline scaffolding. The AFML sample weights of Section 3.3 are passed to each estimator as per-sample multipliers, and each model is trained with five seeds per CPCV fold with split-level metrics averaged across the five seeds for every (model, split) cell. Class-balanced weighting compensates for the 56.85\% / 43.15\% class skew through each estimator's class-rebalancing mechanism, with the exception of XGBoost, which is fit with AFML sample weights alone. The five engineered-feature models also enter the Optuna per-split tuning loop of Section 3.8 with 40 trials per split. Fixed architectures and per-fold search spaces for all six models are listed in \phantomsection\label{ref:model_summary_call}\autoref{tab:model_summary} in the appendix.
+
+
+\subsubsection{AR Logistic (econometric baseline)}\label{subsubsec:ar}
+
+The AR Logistic model is the econometric baseline of the comparison, testing whether pure price-momentum signals carry enough information to forecast the direction of each triple-barrier event. The specification is a logistic regression on the ten autoregressive lags of daily log returns from Section 3.4.1 (lags 1, 2, 3, 4, 5, 6, 7, 14, 21, and 30 days). Hyperparameters are fixed across folds (default L2 penalty at $C = 1.0$, balanced class weights, lbfgs solver), so the AR Logistic does not enter the per-split Optuna loop.
+
+
+\subsubsection{Logistic Regression (linear ML baseline)}\label{subsubsec:lr}
+
+The Logistic Regression model is the linear baseline among the engineered-feature classifiers, and the gap between its Sharpe distribution and those of the tree ensembles and neural architectures isolates the contribution of nonlinear interactions. The implementation is scikit-learn logistic regression with balanced class weights, with the regularisation strength and penalty type tuned per split via Optuna.
+
+
+\subsubsection{Random Forest}\label{subsubsec:rf}
+
+The Random Forest model \citep{breiman_2001} is the nonlinear ensemble baseline, capturing feature interactions and threshold effects through tree splits. The architecture is a Random Forest with the number of trees tuned per fold (Section 3.8), bootstrap sampling, and random feature subsampling at each split, with class imbalance handled by drawing each tree's bootstrap from a class-balanced version of the training fold. Four hyperparameters are tuned per fold; the depth cap at 6 and the minimum-samples-per-leaf floor at 15 events (1.8\% of the training fold) prevent overfitting on noisy daily BTC data.
+
+
+\subsubsection{XGBoost}\label{subsubsec:xgb}
+
+The XGBoost model \citep{chen_guestrin_2016} adds gradient boosting to the ensemble comparison, growing trees sequentially against the residuals of the previous ensemble. The architecture is a 500-tree ensemble with binary logistic objective and early stopping after 20 rounds without improvement on the 20\% holdout of Section 3.9. Eight hyperparameters are tuned per fold; the depth cap is set at 3 rather than the Random Forest's 6 because sequential boosting compounds depth nonlinearly across rounds. The shared use of this holdout for early stopping and calibrator fitting is a mild coupling that affects only the final ensemble size.
+
+
+\subsubsection{LSTM}\label{subsubsec:lstm}
+
+The LSTM model \citep{hochreiter_schmidhuber_1997} is the temporal-dependence model in the comparison, processing the feature matrix as a sequence rather than as independent rows. The architecture is a single-layer LSTM whose final hidden state passes through layer normalisation, dropout, and a linear classifier; the depth is hardcoded at one because two- and three-layer variants overfit on 1,168 events. The input is reshaped into overlapping sequences of length 14, spanning the 10-day vertical barrier with four additional days of context, with feature values normalised by a tanh transformation $z = \tanh((x - \mu) / \sigma)$ fitted on the training fold and applied unchanged to the test fold. The training loop uses AdamW \citep{loshchilov_adamw_2019} with label smoothing 0.1, gradient clipping at norm 1.0, and cosine annealing with warm restarts; Optuna trials run at a reduced 50-epoch budget while the final per-fold refit uses 100 epochs.
+
+
+\subsubsection{KAN}\label{subsubsec:kan_model}
+
+The KAN model \citep{liu_kan_2024} is implemented with a single hidden layer of width $w$, a grid range of $[-1, 1]$ matching the tanh input normalisation, and spline order three. The single-hidden-layer choice is driven by two considerations. First, the symbolic-extraction pipeline of Section 3.11: a two-hidden-layer KAN would compose trigonometric primitives inside trigonometric primitives, producing fourth-order expressions that lose the interpretability that motivates the architecture. Second, the labelled dataset of 1,168 events is small relative to the parameter counts of deeper KAN configurations, so additional layers would risk overparameterisation without a corresponding gain in signal. The cap on $w$ at 6 keeps the symbolic formula humanly readable, since each surviving hidden unit becomes one additive term plus interactions in the closed-form expression. The training loop matches the LSTM's (AdamW, label smoothing 0.1, gradient clipping at norm 1.0, cosine annealing with warm restarts).
+
+
+\subsection{Hyperparameter Tuning}\label{subsec:tuning}
+
+Hyperparameter selection happens entirely inside each CPCV training fold, following the nested-cross-validation discipline of \citet[Chapter 7]{lopez_de_prado_2018}. Within each training fold, Optuna evaluates trial configurations against a purged 3-fold inner cross-validation, with each validation block extended by a positional embargo of 10 observations on either side to drop the overlapping training rows. The 10-observation embargo matches the 10-day vertical barrier of Section 3.2.3, so it covers the same horizon as the outer CPCV's $t_1$-based purging without the per-event timestamp lookup. The search is driven by the Tree-Structured Parzen Estimator (TPE) sampler \citep{akiba_optuna_2019} with a fixed seed for reproducibility, and a MedianPruner stops trials whose intermediate inner-CV log-loss falls below the running median of completed trials, freeing compute for more promising configurations. The pruner waits for 5 completed trials on the classical models and 3 on the neural models before it begins to prune, with the lower neural startup threshold reflecting the larger per-trial training cost on LSTM and KAN.
+
+The trial budget is 40 per tuned model per CPCV split, applied uniformly across Logistic Regression, Random Forest, XGBoost, LSTM, and KAN. The uniform budget is a deliberate design choice: giving every tuned model the same number of explorations prevents the between-model comparison from being confounded by asymmetric search effort. The AR Logistic baseline of Section 3.7.1 is not part of the tuning loop, with its hyperparameters fixed by the econometric specification. At the end of each per-fold Optuna study, the best-trial hyperparameters are written into the model's module-level constants before that split's refit, and they are overwritten by the next split's best-trial values before the next refit, so a split's training never sees another split's tuned values.
+
+The Optuna trials produce inner-CV log-loss scores, not test-fold Sharpe estimates, so they do not enter the strategy population over which the Deflated Sharpe Ratio of Section 3.10.3 corrects for multiple testing. The DSR multiple-testing count is the six models in the comparison, not the 5,600 Optuna trials that the tuning loop runs in total.
+
+
+\subsection{Calibration}\label{subsec:calibration}
+
+Bet sizing depends on calibrated probabilities: a model that assigns $P(\text{Up}) \approx 0.7$ to events whose actual Up rate is 55\% is overconfident on the long side, and its bets are systematically oversized. Each model's raw probabilities are therefore passed through a per-fold calibrator before they are consumed by the metric computations of Section 3.11. Within each outer training fold, the data are partitioned chronologically into an 80\% model-training partition and a 20\% holdout. The holdout serves a dual role: it provides the early-stopping signal for XGBoost, the LSTM, and the KAN during model fitting, and it is the partition on which the calibrator itself is then fitted. At $N = 8$, the model-training partition contains approximately 686 events and the holdout contains approximately 172 events, with neither overlapping the outer test fold. The shared use of the holdout for both early stopping and calibration introduces a mild coupling, since the calibrator sees logits from a model that has already been selected on the same partition; the alternative of a third dedicated calibration slice was rejected because it would have shrunk the model-training partition to roughly 600 events and risked underfitting the KAN and LSTM.
+
+The calibration method is selected automatically by model type. The four classical models (AR Logistic, Logistic Regression, Random Forest, XGBoost) are calibrated with Platt scaling \citep{platt_1999}, which maps the classifier's log-odds output to a calibrated probability through a logistic regression with no regularisation fitted on the holdout. The two neural models (LSTM and KAN) are calibrated with vector scaling, a generalisation of temperature scaling proposed by \citet[Section 4.2]{guo_temperature_2017}: the calibrator fits a temperature $T$ and a per-class bias vector $b \in \mathbb{R}^{2}$ that minimise the negative log-likelihood of $\text{softmax}((\text{logits} + b) / T)$ on the holdout, with $T$ constrained to $[0.05, 20]$ and the bias entries to $[-5, 5]$, optimised by L-BFGS-B starting from $T = 1$ and $b = 0$. For the LSTM, raw logits are sliced to the valid-index set before calibration so that incomplete-lookback windows do not distort the fitted temperature.
+
+
+\subsection{Evaluation Framework}\label{subsec:evaluation}
+
+
+\subsubsection{Trading simulation}\label{subsubsec:trading_simulation}
+
+The bet-sizing rule converts each model's calibrated probability into a discretised directional position in $\{-0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75\}$ \citep[Chapter 10]{lopez_de_prado_2018}. The direction is set to $+1$ when $P(\text{Up}) > P(\text{Down})$ and to $-1$ otherwise. The confidence $p = \max(P(0), P(1)) \in [0.5, 1.0]$ enters a z-score $z = (p - 0.5) / \sqrt{p(1 - p) + 10^{-10}}$, which is mapped to a raw bet $2\Phi(z) - 1$ on $[-1, 1]$, clipped at $\pm 0.75$, thresholded at $0.05$ in absolute value (sub-threshold bets become zero), discretised to the nearest of $\{0, 0.25, 0.5, 0.75\}$, and finally signed. Predictions with $p$ near $0.5$ therefore produce bets near zero, giving the rule an implicit abstention mechanism consistent with the Conservative Predictions framework of Section 2.2.3.
+
+Per-event strategy returns are the product of the signed bet and the triple-barrier label return, $\text{gross} = \text{bet} \cdot r_{\text{label}}$. Turnover is $|\Delta \text{bet}|$ between consecutive events, and transaction costs are charged at $0.001$ per unit of turnover, giving $\text{net} = \text{gross} - 0.001 \cdot \text{turnover}$. The cost level is conservative relative to the maker and taker fee schedules of the major BTC exchanges \citep{nabar_shroff_2023}, with slippage added on top. Returns are annualised at a factor of 365 because BTC trades continuously, and the risk-free rate, the baseline return that a strategy must exceed to compensate for the risk it takes on, is set to zero on the basis that no universally accepted crypto risk-free rate exists.
+
+The path-stitching procedure assembles the 28 per-split prediction streams into the 7 backtest paths of Section 3.5.2. For each path, predictions from each (group, split) pair are filtered to the events within the assigned group's boundaries, sorted by timestamp, and asserted free of duplicates. The five per-seed prediction vectors for each (model, split) cell are averaged at the calibrated-probability stage before any bet sizing, reducing seed-driven variance by approximately $1/\sqrt{5}$.
+
+
+\subsubsection{Path performance metrics}\label{subsubsec:path_metrics}
+
+Each of the 7 paths produces a self-contained backtest with its own performance summary. The annualised Sharpe is computed as the per-event mean divided by the per-event standard deviation, scaled by $\sqrt{365}$. Cumulative return is $\prod_t (1 + r_t) - 1$, and the maximum drawdown is the minimum value of $(E_t - M_t) / M_t$ where $E_t$ is the equity curve and $M_t$ its running maximum. The remaining metrics report the trade frequency (traded-event count) and distributional shape (win rate and profit factor).
+
+The $\sqrt{365}$ annualisation factor deserves an explicit note. Strategy returns are sampled at CUSUM events rather than at daily bars, and the labelling window averages approximately 109 events per year, so annualising at the bet-frequency rate $\sqrt{109} \approx 10.4$ would deflate every reported Sharpe by roughly half. The $\sqrt{365}$ convention is chosen to keep absolute Sharpe numbers on the daily-equivalent scale that the finance literature typically uses. The DSR computation of Section 3.10.3 de-annualises by the same $\sqrt{365}$ before applying the multiple-testing correction, so DSR verdicts and model rankings are invariant under the annualisation convention.
+
+
+\subsubsection{Statistical correction layer: DSR, PBO, and DeLong}\label{subsubsec:correction_layer}
+
+Three statistical corrections are applied to the path-level performance distribution. The Deflated Sharpe Ratio addresses multiple-testing across the six compared models. The Probability of Backtest Overfitting tests whether the in-sample model-selection generalises out-of-sample. The DeLong test gives pairwise $p$-values for the 15 model-pair AUC comparisons.
+
+The Deflated Sharpe Ratio \citep[Chapter 11]{lopez_de_prado_2018} corrects the observed Sharpe against the maximum Sharpe expected under a population of $n = 6$ candidate strategies (the six compared models). The full formula and the expected-maximum and standard-error expressions sit in \phantomsection\label{ref:dsr_formula_call}\autoref{app:dsr_formula}. Values above 0.95 are taken as significant after the multiple-testing correction.
+
+The Probability of Backtest Overfitting \citep[Chapter 14]{lopez_de_prado_2018} measures the probability that the in-sample best model underperforms the out-of-sample median on the complementary path subset. Enumerating $\binom{7}{3} = 35$ partitions of the 7 paths into a 3-path IS and 4-path OOS, PBO is the fraction of partitions on which the IS-best model's OOS median Sharpe falls below the cross-model median. Values below 0.3 indicate the selection procedure generalises, values above 0.5 indicate the IS-best is anti-predictive OOS.
+
+The DeLong pairwise AUC test \citep{delong_1988} compares each of the $\binom{6}{2} = 15$ model pairs. For each (model, split) cell predicted probabilities are seed-averaged across the five seeds; the seed-averaged predictions are pooled across the 28 splits, and the $z$-statistic (\phantomsection\label{ref:delong_formula_call}\autoref{app:delong_formula}) is converted to a two-sided $p$-value under the standard normal. The pairwise $p$-values are reported as a descriptive diagnostic rather than as a selection mechanism.
+
+
+\subsubsection{Stability diagnostics, model comparison, and ranking}\label{subsubsec:stability_ranking}
+
+Two stability diagnostics complement the main evaluation. The first counts, for each feature, the share of CPCV folds in which it survives the multi-model MDA of Section 3.6.3, flagging features above 80\% as stable; a flat selection profile across many features signals a diffuse rather than a concentrated signal (a finding about the data rather than a defect in the selection rule). The second tracks the per-fold $d^{\ast}$ used to fractionally-difference ATR (Section 3.6.1), reporting its mean and standard deviation: a standard deviation below 0.1 indicates a consistent stationarity structure across folds, while higher values point to time-varying persistence and motivate a regime-aware refit.
+
+Models are ranked by median path Sharpe across the 7 paths in descending order, with the standard deviation of the path Sharpe distribution as a tiebreaker in ascending order. The standard-deviation tiebreaker prefers a stable model over a spikier one at the same median Sharpe, on the principle that a high-variance backtest distribution is harder to deploy in practice even at the same expected return. The full model-comparison table reported in Chapter 4 lists the median Sharpe and its tiebreaker, the DSR, the mean F1, accuracy, and AUC across paths, and the median values of maximum drawdown, cumulative return, win rate, and profit factor.
+
+
+\subsection{Symbolic Extraction}\label{subsec:symbolic}
+
+The symbolic-extraction stage produces a closed-form approximation of the trained KAN model \citep{liu_kan_2024} on a single CPCV fold. The output is fold-specific by construction, which Section 5.2 discusses as a limitation to manage rather than a flaw of the method.
+
+The stage operates after all 28 CPCV splits have been evaluated. It selects the last split (split 27 in the CPCV ordering, whose test set covers the most recent observations and is therefore closest to a deployment scenario), reconstructs the fold's preprocessing state from the stored $d^{\ast}$, RobustScaler, and selected feature list, reduces the input dimensionality to the top three features by 28-fold MDA selection frequency, and re-trains a fresh KAN on the resulting preprocessed inputs. The architecture is determined by a data-aware safety envelope: a samples-per-parameter floor that ensures the model has enough events to support its parameters, clamped against the same hidden-layer width ceiling used in the CPCV loop. When per-fold tuned width and grid values are available, the envelope honours them within these bounds; otherwise the safety-envelope choice becomes the realised architecture.
+
+The trained model is then processed through the four-step symbolic-extraction algorithm of \citet{cho_lee_kim_2025} (see also \citet{noorizadegan_2026}). Step 1 trains the model under a three-phase schedule (Adam, LBFGS warmup, LBFGS with L1 plus entropy sparsity regularisation), in which only the third phase applies sparsity pressure. Step 2 prunes edges below an importance threshold; the number of edges removed depends on how concentrated the trained spline weights were during Step 1. On folds where the sparsity regularisation in the final LBFGS phase concentrated weights into a subset of edges, the architecture compresses; on folds where all edges retain comparable importance, no compression occurs. Step 3 replaces each surviving spline edge with the best-fitting symbolic function from a 14-element library covering polynomials, transcendentals, non-smooth primitives, and the zero function, retaining the spline form where no candidate clears the $R^2$ threshold of 0.30. Step 4 fine-tunes the affine parameters $a, b, c, d$ in $a \cdot f(b x + c) + d$ for each symbolic edge by a short LBFGS pass. Algebraic simplification then converts the decision function $\text{logit}_{\text{bullish}} - \text{logit}_{\text{bearish}}$ into a closed-form expression in the surviving features, with implied probability $P(\text{Up}) = \sigma(\text{decision})$. The per-step parameters, the symbolic candidate library, the pruning thresholds, the known fragilities, and the workarounds are given in \phantomsection\label{ref:symbolic_appendix_call}\autoref{app:symbolic_details}. The extracted formula, the per-edge $R^2$ values, and the partial-derivative sensitivity analysis appear in Chapter 4.
+
+Three limitations of the output deserve acknowledgement and are discussed further in Section 5.2. The formula is fold-specific by construction, and different folds may produce different formulas with different surviving features. The training sample of 540 events is small, which limits the complexity of the representations that the data can identify and motivates the conservative $R^2$ threshold. The post-symbolic accuracy can fall below the pre-symbolic accuracy when the symbolic library fits the trained spline less faithfully than the spline fitted the data, in which case the formula approximates the model imperfectly even when the symbolification rate is high.

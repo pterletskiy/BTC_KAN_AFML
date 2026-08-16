@@ -1,0 +1,847 @@
+% ISEG MASTER DISSERTATION
+% MASTER'S IN MATHEMATICAL FINANCE
+% AUTHOR: Petr Terletskiy
+% SUPERVISOR: Prof. João Afonso Bastos
+%
+% Based on the ISEG template by Costa (2017),
+% adapted by Domingos Guerreiro Seward and Luís F. Costa (2018).
+%
+% NOTE: Compile with pdfLaTeX (or XeLaTeX if fontspec is used)
+%
+% =============================================
+% Preamble
+% =============================================
+
+\documentclass[11pt,a4paper,oneside]{article}
+
+% Font
+\usepackage{times}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% Language
+\usepackage[english]{babel}
+\hyphenation{Differentiation}
+
+% Appendix
+\usepackage[toc,page]{appendix}
+
+\makeatletter
+\def\@biblabel#1{\hspace*{-\labelsep}}
+\makeatother
+
+% Bibliography
+\usepackage[authoryear,round]{natbib}
+\setlength{\bibsep}{1pt}
+
+% Margins (3cm all sides per ISEG guidelines)
+\usepackage[top=2.7cm, bottom=2.7cm, left=2.7cm, right=2.7cm]{geometry}
+
+% Change margins command
+\def\changemargin#1#2{\list{}{\rightmargin#2\leftmargin#1}\item[]}
+\let\endchangemargin=\endlist
+
+% Paragraph indentation
+\usepackage{indentfirst}
+
+% 1.5 line spacing
+\usepackage{setspace}
+\onehalfspacing
+
+% Paragraph spacing
+\parskip=0pt
+
+% Headers and footers
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\footnotesize \textsc{Petr Terletskiy}}
+\rhead{\footnotesize\textsc{BTC Direction Prediction Using KANs}}
+\cfoot{\thepage}
+
+% Section formatting
+\usepackage{titlesec}
+\titleformat{\chapter}[display]
+  {\scshape\center}
+  {}
+  {0pt}
+  {\thechapter.\ }
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd{\chapter}{\if@openright\cleardoublepage\else\clearpage\fi}{}{}{}
+\makeatother
+\titleformat{\section}
+  {\scshape\center}{\thesection}{1em}{}
+\titleformat{\subsection}
+  {\itshape\center}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\itshape\center}{\thesubsubsection}{1em}{}
+\titlespacing*{\section}{0pt}{12pt}{6pt}
+\titlespacing*{\subsection}{0pt}{10pt}{4pt}
+\titlespacing*{\subsubsection}{0pt}{8pt}{2pt}
+
+% Hyperlinks
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+    urlcolor=blue
+}
+
+% Table of contents
+\usepackage{tocloft}
+\setlength{\cftbeforetoctitleskip}{0pt}
+\setlength{\cftbeforeloftitleskip}{0pt}
+\setlength{\cftbeforelottitleskip}{0pt}
+\setcounter{tocdepth}{2}
+
+% Tables
+\renewcommand*\thetable{\Roman{table}}
+\addto\captionsenglish{\renewcommand{\tablename}{\textsc{Table}}}
+\addto\captionsenglish{\renewcommand{\figurename}{\textsc{Figure}}}
+
+\usepackage{lipsum}
+\usepackage{booktabs}
+\usepackage{adjustbox}
+\setlength\heavyrulewidth{0.3ex}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{threeparttable}
+\usepackage{multirow}
+\usepackage{multicol}
+\usepackage{longtable}
+\setlength{\tabcolsep}{4pt}
+\usepackage{pdflscape}
+
+% Quotes
+\usepackage{csquotes}
+
+% Mathematics
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{bm}
+
+% Graphics
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{float}
+\usepackage{subcaption}
+\captionsetup{font=small}
+\usepackage{chngcntr}
+\counterwithin{figure}{section}
+\counterwithin{table}{section}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning}
+
+% Custom colours
+\definecolor{isegred}{RGB}{166,25,46}
+
+% Code listings (for algorithm pseudocode)
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% Glossary / Acronyms
+\usepackage[automake,nonumberlist,nogroupskip]{glossaries}
+\makeglossaries
+
+% ── Acronyms ──────────────────────────────────────────────────────────
+% AFML \& Methodology
+\newacronym{afml}{AFML}{Advances in Financial Machine Learning}
+\newacronym{tbl}{TBL}{Triple Barrier Labelling}
+\newacronym{cusum}{CUSUM}{Cumulative Sum}
+\newacronym{ffd}{FFD}{Fixed-width Window Fractional Differentiation}
+\newacronym{cpcv}{CPCV}{Combinatorial Purged Cross-Validation}
+\newacronym{dsr}{DSR}{Deflated Sharpe Ratio}
+\newacronym{pbo}{PBO}{Probability of Backtest Overfitting}
+\newacronym{mda}{MDA}{Mean Decrease Accuracy}
+
+% Models
+\newacronym{kan}{KAN}{Kolmogorov-Arnold Network}
+\newacronym{lstm}{LSTM}{Long Short-Term Memory}
+\newacronym{rf}{RF}{Random Forest}
+\newacronym{xgb}{XGBoost}{Extreme Gradient Boosting}
+\newacronym{lr}{LR}{Logistic Regression}
+\newacronym{ar}{AR}{Autoregressive}
+\newacronym{mlp}{MLP}{Multi-Layer Perceptron}
+\newacronym{ann}{ANN}{Artificial Neural Network}
+\newacronym{cnn}{CNN}{Convolutional Neural Network}
+\newacronym{svm}{SVM}{Support Vector Machine}
+\newacronym{rnn}{RNN}{Recurrent Neural Network}
+\newacronym{gru}{GRU}{Gated Recurrent Unit}
+\newacronym{tcn}{TCN}{Temporal Convolutional Network}
+\newacronym{lstnet}{LSTNet}{Long- and Short-term Time-series Network}
+\newacronym{har}{HAR}{Heterogeneous Autoregressive}
+
+% Technical
+\newacronym{btc}{BTC}{Bitcoin}
+\newacronym{ohlcv}{OHLCV}{Open-High-Low-Close-Volume}
+\newacronym{ta}{TA}{Technical Analysis}
+\newacronym{ewma}{EWMA}{Exponentially Weighted Moving Average}
+\newacronym{adf}{ADF}{Augmented Dickey-Fuller}
+\newacronym{rsi}{RSI}{Relative Strength Index}
+\newacronym{macd}{MACD}{Moving Average Convergence Divergence}
+\newacronym{atr}{ATR}{Average True Range}
+\newacronym{obv}{OBV}{On-Balance Volume}
+\newacronym{mfi}{MFI}{Money Flow Index}
+\newacronym{cci}{CCI}{Commodity Channel Index}
+\newacronym{vix}{VIX}{CBOE Volatility Index}
+\newacronym{mvrv}{MVRV}{Market Value to Realized Value}
+\newacronym{sadf}{SADF}{Supremum Augmented Dickey-Fuller}
+\newacronym{smt}{SMT}{Sub- and Super-Martingale Test}
+
+% Financial
+\newacronym{mfw}{MFW}{Master's Final Work}
+\newacronym{jel}{JEL}{Journal of Economic Literature}
+\newacronym{emh}{EMH}{Efficient Market Hypothesis}
+
+
+% =============================================
+% Begin Document
+% =============================================
+
+\begin{document}
+
+% ── 1. Cover Page ─────────────────────────────────────────────────────
+\begin{titlepage}
+    \begin{flushleft}
+        \includegraphics[width=5cm]{ISEG_logo.png}
+    \end{flushleft}
+    
+    \vspace{1.5cm}
+    
+    \begin{center}
+        {\Large \textsc{Master}}\\[0.5cm]
+        {\Large \textsc{MATHEMATICAL FINANCE}}\\[2cm]
+        
+        {\Large \textsc{Master's Final Work}}\\[0.5cm]
+        {\Large \textsc{PROJECT}}\\[3cm]
+        
+        {\LARGE \textbf{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK}}\\[3cm]
+        
+        {\Large \textsc{Petr Terletskiy}}\\[1.5cm]
+                
+        \vfill
+        
+        {\large \textsc{May 2026}}
+    \end{center}
+\end{titlepage}
+
+% ── 2. Title Page (Inside Cover) ──────────────────────────────────────
+\begin{titlepage}
+    \begin{flushleft}
+        \includegraphics[width=5cm]{ISEG_logo.png}
+    \end{flushleft}
+    
+    \vspace{1.5cm}
+    
+    \begin{center}
+        {\Large \textsc{Master}}\\[0.5cm]
+        {\Large \textsc{MATHEMATICAL FINANCE}}\\[1.5cm]
+        
+        {\Large \textsc{Master's Final Work}}\\[0.5cm]
+        {\Large \textsc{PROJECT}}\\[2cm]
+        
+        {\LARGE \textbf{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK}}\\[2cm]
+        
+        {\Large \textsc{Petr Terletskiy}}\\[2cm]
+        
+        {\large \textsc{Supervision:}}\\[0.2cm]
+        {\Large \textsc{Prof. João Afonso Bastos}}\\[2cm]
+        
+        \vfill
+        
+        {\large \textsc{May 2026}}
+    \end{center}
+\end{titlepage}
+
+% ── 4. Dedication ─────────────────────────────────────────────────────
+\newpage
+\thispagestyle{empty}
+\vspace*{\fill}
+\begin{flushright}
+\textit{%
+To my family and God.
+}
+\end{flushright}
+
+% ── 5. Erratum (commented out unless needed for final post-viva) ──────
+%\newpage
+%\thispagestyle{plain}
+%\addcontentsline{toc}{section}{Erratum}
+%\section*{Erratum}
+
+% ── 6. Glossary ───────────────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Glossary}
+
+\setcounter{page}{1}
+\pagenumbering{roman}
+
+\glsaddall
+\setglossarystyle{index}
+\section*{\normalfont\scshape\normalsize Glossary}
+\begin{multicols*}{2}
+\small
+\printglossary[type=\acronymtype, title={}]
+\end{multicols*}
+
+
+% ── 7. Abstract ───────────────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Abstract, Keywords, and JEL Codes}
+
+\section*{Abstract, Keywords, and \gls{jel} Codes}
+
+This dissertation evaluates whether Kolmogorov-Arnold Networks can predict Bitcoin price direction and extract interpretable symbolic formulas, benchmarked against five models within López de Prado's Advances in Financial Machine Learning framework. Using Combinatorial Purged Cross-Validation with the Deflated Sharpe Ratio and Probability of Backtest Overfitting, the study finds that no model achieves statistically significant predictive performance, consistent with market efficiency. The core contribution is KAN symbolic expression extraction, deriving closed-form decision functions from the trained network.
+
+\vspace{1em}
+
+\textsc{Keywords}: Bitcoin; Kolmogorov-Arnold Networks; Symbolic Extraction; Triple Barrier Labelling; Combinatorial Purged Cross-Validation; Financial Machine Learning.
+
+\vspace{1em}
+
+\textsc{\gls{jel} Codes}: C45; C53; C58; G11; G17.
+
+
+% ── 8. Table of Contents ──────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Table of Contents}
+\renewcommand*\contentsname{\hfill\normalfont\scshape\normalsize Table of Contents \hfill}
+\tableofcontents
+
+% ── 9. List of Figures and List of Tables (combined on one page) ──────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{List of Figures}
+\renewcommand*\listfigurename{\hfill\normalfont\scshape\normalsize List of Figures \hfill}
+\begingroup
+\footnotesize
+\listoffigures
+\endgroup
+
+\vspace{3em}
+
+\addcontentsline{toc}{section}{List of Tables}
+\renewcommand*\listtablename{\hfill\normalfont\scshape\normalsize List of Tables \hfill}
+\begingroup
+\footnotesize
+\listoftables
+\endgroup
+
+% ── 11. Preface (optional) ────────────────────────────────────────────
+%\newpage
+%\thispagestyle{plain}
+%\addcontentsline{toc}{section}{Preface}
+%\section*{Preface}
+
+
+% ── 12. Acknowledgements ──────────────────────────────────────────────
+\newpage
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Acknowledgements}
+\section*{Acknowledgements}
+
+I would like to begin by thanking ISEG for the opportunity to pursue the Master's in Mathematical Finance, and for the academic environment in which this work could take shape.
+
+I am deeply grateful to my supervisor, Professor João Afonso Bastos, for his support, guidance, and crucial insights he offered throughout the development of this challenging work.
+
+To my Master's colleagues Rodrigo, Mariana and Jamila, thank you for the companionship that made the demanding moments lighter, and, above all, to Tiago, for being there from the start.
+
+To the gym crew, thank you for always pushing my limits under the bar and beyond and, in doing so, helping me become a better, more disciplined, and more resilient human being.
+
+To Henriques, Alves, Mixão, Chica, Afonso, Miguel, and Tomás, thank you for standing at my side and supporting me for more than a decade. Friendships that last that long become a foundation.
+
+To Paulo, thank you for being so supportive and so patient, for teaching me so much along the way, and for your constant presence. What I have learned from you I will carry with me for life, and I am profoundly grateful for every conversation we have had.
+
+To Filipa and Leonor, thank you for always being ready to help me, for supporting me, and for offering your insights when I needed them the most.
+
+To my family supporting me from Russia, my babushka Larissa, dedushka Yuriy, and dedushka Anatoliy, my uncle Nikita, my step-mother Alexandra, my aunt Lyubov, my brother Maxim and sister Liza, and my cousin Fyodor, thank you for the love, the kind words, and the support from afar.
+
+To my father Mikhail, thank you for being so supportive from so far away, for always reminding me that I am capable of everything, and for reminding me of my last name. I hope I make you proud.
+
+To my step-father Francisco, thank you for supporting my journey, for always being ready to give your helping hand, for the precious advice you have always shared, and for listening even when my difficulties were hard to put into words.
+
+To my brother Nicolas, thank you for listening to my complaints, for your simple, clarifying insights, for silly jokes and moments that lightened the load, and for your unconditional support.
+
+To grandmother Maria, whose warmth welcomed me as one of her own from my first day in Portugal, thank you for your love, for the moments shared, for the small lessons, and for every meal that turned a new country into home. I called you avó because you were one. I hope I make you proud.
+ 
+To my babushka Tatiana, who accompanied me through the first years of my life and loved me like no one else has, thank you for holding me close, and for seeing me as your light at the end of the tunnel. I hope, from wherever you watch, I am still that light and that I make you proud.
+
+To my mother Elena, who lived this work alongside me, who absorbed my frustrations and steadied my doubts, who has always known me better than I know myself, and who always reminds me of who I am, of what I have already achieved, and that I am capable of everything. I am endlessly grateful for the food, the comfort, the knowledge, and, above all else, for your unconditional love. Thank you for everything and for making anything possible! Your pride has been one of the quiet forces that carried me forward. This work, and the person who wrote it, exist because of you.
+
+\vspace{0.2cm}
+
+In the interest of transparency, I acknowledge the use of AI-based tools during the preparation of this dissertation. Their use was confined to language refinement and code optimisation. The research design, the methodology, the implementation, the analysis, and the conclusions are entirely my own.
+
+
+% =============================================
+% TEXTUAL PART BEGINS
+% =============================================
+\newpage
+\thispagestyle{plain}
+
+\setcounter{page}{1}
+\pagenumbering{arabic}
+
+\begin{center}
+\textsc{BITCOIN DIRECTION PREDICTION USING KOLMOGOROV-ARNOLD NETWORKS WITHIN THE AFML FRAMEWORK BY PETR TERLETSKIY}\\
+\end{center}
+
+\input{chapters/1_introduction}
+\input{chapters/2_literature_review}
+\input{chapters/3_methodology}
+\input{chapters/4_results}
+\addtocontents{toc}{\protect\newpage}
+\input{chapters/5_discussion}
+\input{chapters/6_conclusion}
+
+
+% =============================================
+% BIBLIOGRAPHY
+% =============================================
+\newpage
+\phantomsection
+\thispagestyle{plain}
+\addcontentsline{toc}{section}{Bibliography}
+\bibliographystyle{apalike}
+\bibliography{mfw_references}
+
+
+% =============================================
+% APPENDICES
+% =============================================
+\newpage
+\phantomsection
+\thispagestyle{plain}
+
+\appendix
+\section{Appendices}\label{sec:appendices}
+
+\subsection{Methodology Pipeline}\label{app:pipeline}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=5mm and 5mm,
+    every node/.style={font=\footnotesize},
+    process/.style={rectangle, draw, rounded corners=2pt, minimum width=4.4cm, minimum height=1.4cm, align=center, text width=4cm, inner sep=2pt},
+    data/.style={rectangle, draw, very thick, minimum width=4.4cm, minimum height=1.4cm, align=center, text width=4cm, fill=gray!12, inner sep=2pt},
+    phase/.style={font=\small\bfseries, align=center},
+    arrow/.style={-Latex, thick}
+]
+
+% ── Phase I (Sections 3.1 to 3.4) ──
+\node[data] (a) {Raw OHLCV \\ 4{,}208 daily bars};
+\node[process, right=of a] (b) {CUSUM event filter \\ and triple-barrier labelling};
+\node[process, right=of b] (c) {AFML sample weights};
+\node[phase, above=3mm of b] (p1) {Phase I: Pre-CPCV (Sections 3.1 to 3.4)};
+
+\node[process, below=of a] (d) {Feature engineering \\ (73 features)};
+\node[data, right=of d] (e) {Aligned $(X, y, w, t_1)$ \\ $n = 1{,}168$};
+
+\draw[arrow] (a) -- (b);
+\draw[arrow] (b) -- (c);
+\draw[arrow] (c.south) -- ++(0,-2.5mm) -| (d.north);
+\draw[arrow] (d) -- (e);
+
+% ── Phase II (Sections 3.5 to 3.9) ──
+\node[process, below=14mm of d] (f) {CPCV setup \\ $N{=}8$, $k{=}2$, 28 splits};
+\node[process, right=of f] (g) {Per-fold preprocessing \\ (FFD, scaling, MDA)};
+\node[process, right=of g] (h) {Hyperparameter tuning \\ (Optuna TPE, 40 trials)};
+\node[phase, above=3mm of g] (p2) {Phase II: CPCV Pipeline (Sections 3.5 to 3.9)};
+
+\node[process, below=of f] (i) {Model training \\ 6 models $\times$ 5 seeds $\times$ 28 splits};
+\node[process, right=of i] (j) {Calibration \\ (Platt or vector scaling)};
+\node[data, right=of j] (k) {Test-fold predictions \\ 840 entries};
+
+\draw[arrow] (e.south) -- ++(0,-2mm) -| (f.north);
+\draw[arrow] (f) -- (g);
+\draw[arrow] (g) -- (h);
+\draw[arrow] (h.south) -- ++(0,-2.5mm) -| (i.north);
+\draw[arrow] (i) -- (j);
+\draw[arrow] (j) -- (k);
+
+% ── Phase III (Sections 3.10 to 3.11) ──
+\node[process, below=14mm of i] (l) {Path stitching \\ (7 backtest paths)};
+\node[process, right=of l] (m) {Statistical evaluation \\ (DSR, PBO, DeLong) \\ + symbolic extraction};
+\node[data, right=of m] (n) {Model comparison and \\ $P(\textup{Up})$ formula};
+\node[phase, above=3mm of m] (p3) {Phase III: Post-CPCV (Sections 3.10 to 3.11)};
+
+\draw[arrow] (k.south) -- ++(0,-2mm) -| (l.north);
+\draw[arrow] (l) -- (m);
+\draw[arrow] (m) -- (n);
+
+\end{tikzpicture}
+\caption{End-to-end methodology pipeline. Light-bordered boxes are processing steps, dark-bordered shaded boxes are data states. \hyperref[ref:pipeline_call]{$\hookleftarrow$}}
+\label{fig:pipeline_diagram}
+\end{figure}
+
+\subsection{Data and Labelling Diagnostics}\label{app:labelling_diagnostics}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{ewma_vol.png}
+\caption{EWMA daily volatility of BTC-USD log returns with span 50. \hyperref[ref:ewma_call]{$\hookleftarrow$}}
+\label{fig:ewma_vol}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{cusum_filter_example.png}
+\caption{CUSUM event filter applied to BTC daily log returns over a three-month window. \hyperref[ref:cusum_call]{$\hookleftarrow$}}
+\label{fig:cusum_window}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{tbl_examples.png}
+\caption{Triple-barrier labelling on three representative events at $pt\_sl = (1.5, 1.5)$ and $num\_days = 10$. Left: profit-take hit at nine days. Middle: stop-loss hit at ten days. Right: vertical-barrier expiry at ten days. \hyperref[ref:tbl_examples_call]{$\hookleftarrow$}}
+\label{fig:tbl_examples}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{label_distribution.png}
+\caption{Class distribution of the 1,168 binary-labelled observations after zero-class removal. \hyperref[ref:label_dist_call]{$\hookleftarrow$}}
+\label{fig:label_distribution}
+\end{figure}
+
+\subsection{Weighting Diagnostics}\label{app:weighting_diagnostics}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=1.0\textwidth]{sample_weights.png}
+\caption{Sample weight diagnostics. Left: distribution of per-event weights after the AFML three-component scheme and 99th-percentile capping. Right: weights over time. \hyperref[ref:weights_call]{$\hookleftarrow$}}
+\label{fig:sample_weights}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l*{12}{c}}
+\toprule
+Date        & 11/18 & 03/19 & 03/20 & 02/21 & 09/22 & 11/22 & 02/23 & 03/23 & 10/23 & 02/25 & 10/25 & 02/26 \\
+Label       & $-1$ & $+1$ & $-1$ & $+1$ & $+1$ & $-1$ & $+1$ & $+1$ & $+1$ & $+1$ & $-1$ & $-1$ \\
+Return      & $-0.151$ & $+0.191$ & $-0.387$ & $+0.233$ & $+0.135$ & $-0.123$ & $+0.114$ & $+0.133$ & $+0.115$ & $+0.117$ & $-0.083$ & $-0.171$ \\
+Holding (d) & 5 & 4 & 4 & 5 & 3 & 4 & 6 & 4 & 3 & 4 & 5 & 2 \\
+\bottomrule
+\end{tabular}}
+\caption{The twelve events at the 99th-percentile weight cap (2.862). Dates as MM/YY. \hyperref[ref:weights_call]{$\hookleftarrow$}}
+\label{tab:capped_events}
+\end{table}
+
+
+\subsection{Feature Universe}\label{app:features}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.95}
+\begin{tabular}{p{2.6cm}cp{9.0cm}p{2cm}}
+\toprule
+Family & Count & Examples and parameters & Source \\
+\midrule
+Technical analysis & 25 & Daily log returns, realised volatility (21d, $\sqrt{365}$), Garman-Klass and Yang-Zhang volatility, ATR (log, span 14), Bollinger width, volatility-term ratios (7/30, 30/90), RSI, MACD (line, signal, histogram), ROC 14, Stochastic \%K and \%D, Williams \%R, CCI, OBV (log), Chaikin oscillator, MFI, rolling skewness and kurtosis, EMA ratios (20/50, 50/200), VWMA ratio (20/50) & BTC OHLCV \\
+\midrule
+Mathematical & 9 & Shannon entropy (30d), Lempel-Ziv complexity (90d), negentropy (30d), Hurst exponent (180d, sub-windows 14/30/60/90), Lo-MacKinlay variance ratio (90d, lag 7), Jarque-Bera (90d), SADF (min sub-length 90, lag 1), SMT polynomial-1, SMT exponential & BTC log returns \\
+\midrule
+Macroeconomic & 20 & DXY ROC 30, US 2Y and 10Y yields, 2Y-10Y and 10Y-30Y slopes, VIX, return-over-window pairs (14d, 30d) for S\&P 500, Nasdaq, gold, silver, copper, oil, natural gas & Yahoo Finance, FRED \\
+\midrule
+Crypto cross-sectional & 1 & ETH/BTC ratio (daily ETH-USD over BTC-USD price) & CoinMetrics \\
+\midrule
+On-chain & 8 & Active-address ROC 14, transaction-count ROC 14, hash-rate ROC 30, MVRV, net exchange flow, fee per transaction, exchange supply percent, native-unit issuance & CoinMetrics (shifted by 1 day) \\
+\midrule
+Autoregressive lag & 10 & Log returns at lags $\{1, 2, 3, 4, 5, 6, 7, 14, 21, 30\}$ & BTC log returns \\
+\bottomrule
+\end{tabular}
+\caption{Feature universe (73 features), grouped by family. \hyperref[ref:features_call]{$\hookleftarrow$}}
+\label{tab:full_features}
+\end{table}
+
+\subsection{CPCV Groups}\label{app:cpcv_splits}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{cpcv_groups.png}
+\caption{Eight CPCV groups overlaid on BTC closing price, each holding 146 of the 1,168 aligned observations. \hyperref[ref:cpcv_groups_call]{$\hookleftarrow$}}
+\label{fig:cpcv_groups}
+\end{figure}
+
+\subsection{Hyperparameter Search Spaces}\label{app:hyperparams}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.9}
+\begin{tabular}{p{1.5cm}p{1.5cm}p{2.4cm}p{5.4cm}p{1.9cm}}
+\toprule
+Model & Family & Architecture & Hyperparameters & Role \\
+\midrule
+AR Logistic & Econometric & LR on lags 1 to 7, 14, 21, 30 & $\bullet$\ deterministic: $C=1.0$, L2, balanced, max\_iter=1000 & Pure momentum baseline (Q1, Q2) \\
+Logistic Regression & Linear ML & LR on MDA-selected features &
+$\bullet$\ $C \in [10^{-4}, 10^{2}]$ \newline
+$\bullet$\ penalty $\in \{\text{L1}, \text{L2}\}$ \newline
+(balanced, max\_iter=1000)
+& Linear baseline (Q4) \\
+Random Forest & Ensemble & Bootstrap sampling, balanced\_subsample &
+$\bullet$\ n\_estimators $\in [100, 250]$ \newline
+$\bullet$\ max\_depth $\in [2, 6]$ \newline
+$\bullet$\ min\_samples\_leaf $\in [15, 40]$ \newline
+$\bullet$\ max\_features $\in \{\text{sqrt}, \text{log2}\}$ \newline
+(n\_jobs=$-1$)
+& Nonlinear ensemble (Q4) \\
+XGBoost & Ensemble & 500 trees, early stopping at 20 rounds &
+$\bullet$\ max\_depth $\in [1, 3]$ \newline
+$\bullet$\ lr $\in [10^{-2}, 0.3]$ \newline
+$\bullet$\ min\_child\_weight $\in [5, 30]$ \newline
+$\bullet$\ subsample, colsample\_bytree $\in [0.6, 1.0]$ \newline
+$\bullet$\ gamma $\in [10^{-8}, 1]$ \newline
+$\bullet$\ reg\_alpha, reg\_lambda $\in [10^{-8}, 10]$ \newline
+(binary:logistic)
+& Gradient boosting (Q4) \\
+LSTM & Neural & window=14, single layer, last-hidden pooling &
+$\bullet$\ hidden $\in \{16, 32\}$ \newline
+$\bullet$\ dropout $\in [0.1, 0.5]$ \newline
+$\bullet$\ lr $\in [10^{-4}, 5 \times 10^{-2}]$ \newline
+($T_0=25$, batch=64, label smoothing 0.1)
+& Temporal dependencies (Q4) \\
+KAN & Neural & efficient\_kan $[n, \text{width}_1, 2]$, single hidden, spline order 3 &
+$\bullet$\ width$_1 \in [2, 6]$ \newline
+$\bullet$\ grid $\in \{3, 5\}$ \newline
+$\bullet$\ lr $\in [5 \times 10^{-4}, 5 \times 10^{-2}]$ \newline
+$\bullet$\ weight\_decay $\in [10^{-5}, 5 \times 10^{-3}]$ \newline
+(width$_2=0$, $T_0=30$, label smoothing 0.1)
+& Interpretable architecture (Q3, Q4) \\
+\bottomrule
+\end{tabular}
+\caption{Summary of the six models. Tuned hyperparameter ranges are listed as bullets, with fixed parameters in parentheses. \hyperref[ref:model_summary_call]{$\hookleftarrow$}}
+\label{tab:model_summary}
+\end{table}
+
+
+\newpage
+\subsection{Statistical Test Formulae}\label{app:math}
+\setlength{\abovedisplayskip}{4pt}
+\setlength{\belowdisplayskip}{4pt}
+
+\begin{itemize}\itemsep=3pt
+\item \textbf{Fractional-difference weight recursion.}\label{app:ffd_weights} For fractional difference of order $d$: $\omega_0 = 1$,\newline $\omega_k = -\omega_{k-1} \cdot (d - k + 1)/k$. Truncated at the first $k$ with $|\omega_k| < 10^{-4}$, or at $k = 200$. \hyperref[ref:ffd_weights_call]{$\hookleftarrow$}
+
+\item \textbf{Deflated Sharpe Ratio.}\label{app:dsr_formula} Define
+\[
+E[\max \text{SR}] = \sqrt{2 \ln n}\!\left(1 - \frac{\gamma}{2 \ln n}\right) + \frac{\gamma}{2\sqrt{2 \ln n}}, \qquad
+\sigma_{\text{SR}} = \sqrt{\frac{1 - \text{skew} \cdot \text{SR} + \tfrac{\text{kurt} + 2}{4} \cdot \text{SR}^2}{n_{\text{obs}} - 1}}.
+\]
+Then $\text{DSR} = \Phi\!\left((\text{SR}_{\text{obs}} - E[\max\text{SR}])/\sigma_{\text{SR}}\right)$, with $n$ the number of candidate strategies and $\gamma$ the Euler-Mascheroni constant \citep[Chapter 11]{lopez_de_prado_2018}. \hyperref[ref:dsr_formula_call]{$\hookleftarrow$}
+
+\item \textbf{DeLong pairwise AUC test.}\label{app:delong_formula}
+\[
+z = \frac{\text{AUC}_a - \text{AUC}_b}{\sqrt{\text{Var}(\text{AUC}_a) + \text{Var}(\text{AUC}_b) - 2 \, \text{Cov}(\text{AUC}_a, \text{AUC}_b)}},
+\]
+with $\text{Var}$ and $\text{Cov}$ from the structural-component method on pooled predicted probabilities. Two-sided $p$-value from the standard normal CDF \citep{delong_1988}. \hyperref[ref:delong_formula_call]{$\hookleftarrow$}
+\end{itemize}
+
+\vspace{0.2cm}
+
+\subsection{Symbolic-Extraction Pipeline Specification}\label{app:symbolic_details}
+
+The pipeline runs on split 27. The stored $d^{\ast}$ and RobustScaler (Section 3.6) are applied to the ATR series and training-fold features, dimensionality is reduced to the top three MDA-selected features, and the data are split chronologically 80/20 into training (540) and validation (135 events), with tanh normalisation $z = \tanh((x - \mu) / (\sigma + 10^{-8}))$ fitted on the training portion. Default architecture is hidden width 5, grid size 5, spline order 3, falling back to hidden width 3 and grid size 3 via the samples-per-parameter envelope of Section 3.11 (Table~\ref{tab:pykan_pipeline} details the four steps; Section 4.6 reports the realised split-27 architecture).
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{0.85}
+\begin{tabular}{p{0.5cm}p{2.2cm}p{12cm}}
+\toprule
+Step & Operation & Parameters and detail \\
+\midrule
+1 & Three-phase training & Phase 1: 600 Adam steps (learning rate $10^{-3}$, weight decay $10^{-3}$, Gaussian noise $\sigma = 0.05$ clamped to $[-1, 1]$, early stopping on validation loss). Phase 2a: 20 LBFGS steps (learning rate $10^{-2}$, no regularisation). Phase 2b: 20 LBFGS steps with L1 plus entropy regularisation at $\lambda = 0.002$ to encourage sparse activations. Grid extension disabled. Dynamic gates after Phase 1 and pre-prune check validation accuracy against the larger of 0.53 and the validation-set majority-class baseline plus 0.01. \\
+\midrule
+2 & Pruning & Validation forward pass populates cached activations; each edge is scored by activation magnitude, and edges below threshold 0.01 are removed. The pruned model reverts to the pre-prune state if any edge removal breaks the forward pass. \\
+\midrule
+3 & Symbolification & 14 candidates: $x$, $x^2$, $x^3$, $x^4$, $\exp$, $\log$, $\sqrt{\cdot}$, $\tanh$, $\sin$, $\cos$, $\arctan$, $|x|$, $\text{sgn}(x)$, and the zero function. Per-edge winner is the candidate with $R^2 \geq 0.30$; below threshold the edge keeps its spline form. A brute-force fallback iterates through the 13 non-zero candidates when the default symbolic-suggestion routine returns the zero function, fitting each candidate explicitly and recording its $R^2$. \\
+\midrule
+4 & Fine-tuning & 30 LBFGS steps at learning rate $4 \times 10^{-4}$ on each edge's affine parameters $a \cdot f(bx + c) + d$. The model reverts if any step produces a non-finite parameter. \\
+\bottomrule
+\end{tabular}
+\caption{Four-step symbolic-extraction pipeline.}
+\label{tab:pykan_pipeline}
+\end{table}
+
+After fine-tuning, symbolic algebra simplifies $\text{logit}_{\text{bullish}} - \text{logit}_{\text{bearish}}$ into a closed form on the surviving features (30-second timeout). The $|x|$ primitive is non-differentiable at zero and would break the partial-derivative sensitivity analysis at any feature whose mean falls there; it does not appear in the surviving primitive set.
+
+
+\subsection{Supplementary Results}\label{app:supp_results}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/equity_curves.png}
+\caption{Path-by-path equity curves per model. Seven CPCV paths in muted colours, median path in bold black. Log-scaled vertical axis; dashed line at $1.0$ marks breakeven. \hyperref[ref:equity_curves_call]{$\hookleftarrow$}}
+\label{fig:equity_curves}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.80\textwidth]{figures/sharpe_boxplot.png}
+\caption{Path Sharpe distribution across the seven CPCV backtest paths, six trained models. Dashed line: $\text{SR} = 0$. \hyperref[ref:sharpe_boxplot_call]{$\hookleftarrow$}}
+\label{fig:sharpe_boxplot}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/confusion_matrices.png}
+\caption{Confusion matrices for the six trained models, seed-averaged per (model, split) and pooled across the 28 splits ($n = 6{,}783$, LSTM $n = 6{,}419$). \hyperref[ref:confusion_matrices_call]{$\hookleftarrow$}}
+\label{fig:confusion_matrices}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/bet_size_distribution.png}
+\caption[{Bet-size distribution per model, pooled across the seven backtest paths. \protect\hyperref[ref:bet_size_dist_call]{$\hookleftarrow$}}]{Bet-size distribution per model, pooled across the seven backtest paths. Discrete support $\{-0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75\}$. \hyperref[ref:bet_size_dist_call]{$\hookleftarrow$}}
+\label{fig:bet_size_dist}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.9}
+\begin{tabular}{lrrrrrc}
+\toprule
+Pair & $\text{AUC}_a$ & $\text{AUC}_b$ & $\Delta \text{AUC}$ & $z$ & $p$ & Sig. \\
+\midrule
+AR Logistic vs Logistic         & 0.5117 & 0.5084 & $+0.0032$ &  0.3982 & 0.6905 & \\
+AR Logistic vs Random Forest    & 0.5117 & 0.5068 & $+0.0048$ &  0.5671 & 0.5706 & \\
+AR Logistic vs XGBoost          & 0.5117 & 0.4942 & $+0.0175$ &  2.0263 & 0.0427 & yes \\
+AR Logistic vs LSTM             & 0.5149 & 0.5048 & $+0.0100$ &  0.9918 & 0.3213 & \\
+AR Logistic vs KAN              & 0.5117 & 0.5062 & $+0.0055$ &  0.7018 & 0.4828 & \\
+Logistic vs Random Forest       & 0.5084 & 0.5068 & $+0.0016$ &  0.2528 & 0.8005 & \\
+Logistic vs XGBoost             & 0.5084 & 0.4942 & $+0.0143$ &  1.7728 & 0.0763 & \\
+Logistic vs LSTM                & 0.5100 & 0.5048 & $+0.0052$ &  0.4964 & 0.6196 & \\
+Logistic vs KAN                 & 0.5084 & 0.5062 & $+0.0022$ &  0.3596 & 0.7191 & \\
+Random Forest vs XGBoost        & 0.5068 & 0.4942 & $+0.0127$ &  2.1466 & 0.0318 & yes \\
+Random Forest vs LSTM           & 0.5091 & 0.5048 & $+0.0043$ &  0.4331 & 0.6650 & \\
+Random Forest vs KAN            & 0.5068 & 0.5062 & $+0.0006$ &  0.0932 & 0.9258 & \\
+XGBoost vs LSTM                 & 0.4956 & 0.5048 & $-0.0092$ & $-0.9208$ & 0.3572 & \\
+XGBoost vs KAN                  & 0.4942 & 0.5062 & $-0.0121$ & $-1.6872$ & 0.0916 & \\
+LSTM vs KAN                     & 0.5067 & 0.5073 & $-0.0006$ & $-0.0561$ & 0.9552 & \\
+\bottomrule
+\end{tabular}
+\caption{Full DeLong pairwise AUC test results, all 15 pairs. Pooled across 28 splits with seed-averaging per (model, split) cell. Significance at $\alpha = 0.05$. \hyperref[ref:delong_pairs_full_call]{$\hookleftarrow$}}
+\label{tab:delong_pairs_full}
+\end{table}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.9}
+\begin{tabular}{lrrrrrr}
+\toprule
+ & AR Logistic & Logistic & Random Forest & XGBoost & LSTM & KAN \\
+\midrule
+Mean $P(\text{Up})$           & 0.5440    & 0.5506    & 0.5418    & 0.5314    & 0.5497    & 0.5421    \\
+$\Delta$ vs base rate         & $-0.0245$ & $-0.0179$ & $-0.0267$ & $-0.0371$ & $-0.0187$ & $-0.0263$ \\
+Within $\pm 0.03$             & yes       & yes       & yes       & \textbf{no} & yes     & yes       \\
+\bottomrule
+\end{tabular}
+\caption{Calibration first-moment audit. Empirical base rate $P(\text{Up}) = 0.5685$; tolerance $\pm 0.03$. Only XGBoost misses ($\Delta = -0.0371$). \hyperref[ref:calibration_audit_call]{$\hookleftarrow$}}
+\label{tab:calibration_audit}
+\end{table}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.9}
+\begin{tabular}{lrrrrrr}
+\toprule
+Model & $n_{\text{events}}$ & Abstention & Mean $|\text{bet}|$ & At max ($0.75$) & Long share & Short share \\
+\midrule
+AR Logistic   & 3{,}129 & 50.5\% & 0.273 & 0.6\% & 81.0\% & 19.0\% \\
+Logistic      & 3{,}129 & 52.6\% & 0.287 & 2.8\% & 73.3\% & 26.7\% \\
+Random Forest & 3{,}129 & 54.2\% & 0.274 & 1.5\% & 81.2\% & 18.8\% \\
+XGBoost       & 3{,}129 & 73.1\% & 0.269 & 0.5\% & 79.2\% & 20.8\% \\
+LSTM          & 3{,}103 & 53.2\% & 0.257 & 0.0\% & 84.0\% & 16.0\% \\
+KAN           & 3{,}129 & 70.1\% & 0.272 & 0.9\% & 89.6\% & 10.4\% \\
+\bottomrule
+\end{tabular}
+\caption{Bet-size distribution per model. Long/short shares exclude abstentions; LSTM count reflects its 14-day warmup (Section 3.7.5). \hyperref[ref:bet_size_call]{$\hookleftarrow$}}
+\label{tab:bet_size}
+\end{table}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.9}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+Model excluded       & Logistic Regression & AR Logistic & LSTM     & XGBoost  & KAN      & Random Forest \\
+\midrule
+5-model PBO          & 0.371               & 0.457       & 0.457    & 0.543    & 0.543    & 0.657         \\
+$\Delta$ vs baseline & $-0.286$            & $-0.200$    & $-0.200$ & $-0.114$ & $-0.114$ & $+0.000$      \\
+\bottomrule
+\end{tabular}}
+\caption{Leave-one-out PBO. Baseline (six-model) PBO is 0.657. Each column drops one model and recomputes PBO on the remaining $5 \times 7$ Sharpe matrix. \hyperref[ref:loo_pbo_call]{$\hookleftarrow$}}
+\label{tab:loo_pbo}
+\end{table}
+
+\newpage
+\subsection{Closed-Form Decision Function}\label{app:symbolic}
+
+The closed-form decision function produced by the four-step symbolic-extraction pipeline of Section 3.11 is given in Equation~\ref{eq:decision_function}, with coefficients reported as rationals from symbolic-algebra rational simplification at tolerance $10^{-3}$.
+
+{\footnotesize
+\begin{equation}
+\label{eq:decision_function}
+\begin{split}
+\text{decision}(x) ={}
+& \tfrac{3}{283}\!\left(\!-\tfrac{284\,\text{ETH/BTC}}{505} - \tfrac{1}{1000}\!\left(\!-\tfrac{1766\,\text{LogRet}_6}{179} - \tfrac{1529}{843}\!\right)^{\!4} \right. \\
+& \quad \left. - \tfrac{434}{663}\tanh\!\left(\tfrac{3217\,\text{NatGas}_{30}}{944} + \tfrac{2141}{935}\right) + \tfrac{4511}{913}\right)^{\!2} \\
+& - \tfrac{351}{877}\sin\!\bigl(A_2(x)\bigr) + \tfrac{197}{828}\cos\!\bigl(A_3(x)\bigr) + \tfrac{455}{932}\tanh\!\bigl(A_4(x)\bigr) + \tfrac{11}{19}
+\end{split}
+\end{equation}
+}
+
+The inner arguments $A_2(x)$, $A_3(x)$, $A_4(x)$ are themselves multi-feature compositions of the three surviving features under the six surviving primitives ($\sin$, $\cos$, $\tanh$, $x^2$, $x^3$, $x^4$). The implied upward-move probability is $P(\text{Up} \mid x) = \sigma(\text{decision}(x))$ with $\sigma$ the standard logistic.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=1.0\textwidth]{figures/marginal_effect.png}
+\caption{Marginal effect of each surviving feature on $P(\text{Up})$, with the other two features held at their median values, in the tanh-normalised space. Grey dashed line: $P(\text{Up}) = 0.5$. Red dotted line: feature median. \hyperref[ref:marginal_effect_call]{$\hookleftarrow$}}
+\label{fig:marginal_effect}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.9}
+\begin{tabular}{lrrrrr}
+\toprule
+Feature & Median & Std & $\partial/\partial x$ at median & $\sigma$-effect on logit & $\sigma$-$\Delta p$ \\
+\midrule
+ETH/BTC ratio     & $+0.0460$ & $0.0247$ & $-41.1765$ & $-0.2805$ & $-0.0598$ \\
+Log returns lag 6 & $-0.0008$ & $0.0394$ & $+30.6748$ & $-0.4608$ & $-0.0983$ \\
+Natgas ret 30     & $+0.0025$ & $0.1618$ & $+0.4236$  & $+0.0838$ & $+0.0179$ \\
+\bottomrule
+\end{tabular}
+\caption{Numerical sensitivity at the dataset median. $\sigma$-effect on logit is $(\partial \text{decision} / \partial x) \cdot \sigma_x$, and $\sigma$-$\Delta p$ is its linearised probability shift. \hyperref[ref:sensitivity_call]{$\hookleftarrow$}}
+\label{tab:sensitivity}
+\end{table}
+
+
+% =============================================
+% End Document
+% =============================================
+\end{document}

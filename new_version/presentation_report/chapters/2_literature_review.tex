@@ -1,0 +1,112 @@
+\newpage
+\section{Literature Review}\label{sec:literature}
+
+\subsection{Kolmogorov-Arnold Networks}\label{subsec:lit_kan}
+
+\subsubsection{Mathematical foundation}\label{subsubsec:kan_math}
+
+The Kolmogorov-Arnold representation theorem decomposes any continuous multivariate function into a finite sum of continuous univariate functions. \citet{kolmogorov_1957} and \citet{arnold_1958} established that any continuous $f : [0,1]^n \to \mathbb{R}$ admits the representation
+\begin{equation}
+f(x_1, \ldots, x_n) = \sum_{q=1}^{2n+1} \Phi_q \! \left( \sum_{p=1}^{n} \varphi_{q,p}(x_p) \right),
+\label{eq:kst}
+\end{equation}
+where $\varphi_{q,p}$ and $\Phi_q$ are continuous univariate functions, so addition is the only multivariate operation.
+
+The theorem was long considered useless for neural-network design because Kolmogorov's inner functions $\varphi_{q,p}$ can be highly non-smooth and even fractal, with no universal inner family compatible with $C^1$ regularity \citep{liu_kan_2024}. \citet{liu_kan_2024} resolve this on two fronts: they parameterise each univariate function as a learnable B-spline rather than insisting on the pathological inner functions of the existence proof, and they generalise the architecture beyond the two-layer, $2n+1$-width form to arbitrary widths and depths. The justification is empirical: most functions of practical interest are smooth and have sparse compositional structure, so splines can approximate the decomposition even if they cannot realise it exactly. The authors prove a B-spline approximation rate that is independent of input dimension, avoiding the curse of dimensionality.
+
+
+\subsubsection{How KANs work}\label{subsubsec:kan_arch}
+
+Where an MLP places fixed activations on nodes and learns scalar weights on edges, a KAN places learnable activations on edges and lets the nodes do nothing but sum \citep{liu_kan_2024}. Each edge parameterises its activation as a B-spline
+\begin{equation}
+g(x) = \sum_{k=0}^{K} a_k B_k(x),
+\label{eq:kan_edge}
+\end{equation}
+of order $K$ over $G$ grid intervals, with coefficients $a_k$ trained alongside the rest of the network. A KAN is specified by a width vector $[n_{\text{input}}, n_{\text{hidden}}, n_{\text{output}}]$, with every directed edge between layers carrying one trainable univariate spline rather than a scalar weight.
+
+Training runs Adam first to escape shallow local minima, then L-BFGS to exploit second-order curvature once Adam has positioned the model. The loss carries two sparsity penalties on top of the prediction term: an $L_1$ term on edge activations that drives small-magnitude splines toward zero, and an entropy term that concentrates importance on a few edges. Together they let a trained KAN be pruned cleanly and make the surviving edges amenable to symbolic replacement.
+
+The property exploited in this thesis is what happens after training. Each retained edge's spline is a numerically defined univariate function, and the symbolic-extraction pipeline provides a library of symbolic candidates ($\sin$, $\cos$, $\exp$, $\tanh$, $x^2$, and others) that match against the learned shape \citep{liu_kan_2024}. Once every retained edge is replaced by its best symbolic match, the network collapses to a closed-form expression in the input features. No other neural family decomposes cleanly into univariate functions whose shapes can be read off, named, and substituted.
+
+
+\subsubsection{KAN variants}\label{subsubsec:kan_variants}
+
+A growing ecosystem of KAN variants has emerged since the original release, surveyed by \citet{yamak_et_al_2025}, who note that symbolic distillation applied to financial time series remains underexplored. Two variants matter for this thesis. KAN 2.0 \citep{liu_kan2_2024} introduces multiplication nodes alongside the original addition nodes, enabling discovery of multiplicative feature interactions (for example, an interaction between RSI and the Stochastic oscillator) through the same train-prune-symbolify pipeline; it is cited as future work rather than implemented. The Temporal Kolmogorov-Arnold Network (TKAN) of \citet{genet_inzirillo_2024} replaces an LSTM cell's dense gates with KAN-parameterised gates, gaining temporal memory at the cost of breaking the static feedforward structure that the symbolic-extraction pipeline requires.
+
+
+\subsubsection{KANs in finance}\label{subsubsec:kan_finance}
+
+\citet{cho_lee_kim_2025} apply KANs to forecasting the CBOE Volatility Index (VIX) and introduce the four-step symbolic-extraction pipeline this thesis adapts: train a small KAN with $L_1$ and entropy regularisation, prune low-importance edges, symbolify each surviving spline against a candidate library, and fine-tune the affine parameters introduced during symbolification. Their extracted formulas recover well-known stylised facts of the VIX with explicit coefficients. The caveat is that the VIX is mean-reverting and structurally predictable, while BTC price direction is binary classification in a weak-signal regime, which makes the same pipeline substantially harder to satisfy.
+
+\citet{oad_kasper_2025} sit closest to this thesis on the joint axis of KAN methodology, finance applications, and interpretability. Their KASPER framework stacks two KAN layers, the first performing soft regime detection via a Gumbel-Softmax classifier, the second performing regime-conditioned spline forecasting, reporting $R^2 = 0.89$ and Sharpe 12.02 on Yahoo Finance stock data. The methodological setup differs from this thesis on several axes: KASPER targets stock-price regression with a regime-detection layer, derives interpretability from Shapley attributions rather than closed-form expressions, and uses conventional walk-forward splits.
+
+\citet{gao_decokan_2025} are the closest related work on the asset-class axis. DecoKAN combines a discrete wavelet transform with KAN-based temporal and feature mixers, extracting closed-form expressions for detail-branch dynamics with $R^2 > 0.99$ on Bitcoin, Ethereum, and Monero daily series. The methodological setup differs from this thesis despite the shared asset class: DecoKAN targets multivariate price-level regression at multiple horizons and uses chronological splits, with evaluation reported in $R^2$ terms rather than through the Deflated Sharpe Ratio, Probability of Backtest Overfitting, or multiple-testing corrections that the AFML framework introduces for classification and trading tasks.
+
+Three intersecting gaps emerge, and this thesis closes all three. No prior work applies KANs to BTC price direction prediction (the literature targets regression on the VIX, stock prices, or crypto price levels). No prior work extracts symbolic formulas from a classification KAN: the two precedents that distil cleanly (\citet{cho_lee_kim_2025} on VIX, \citet{gao_decokan_2025} on crypto price levels) are both regression on more predictable targets. Finally, no prior work combines KAN symbolic extraction with the AFML framework, since every KAN-in-finance application surveyed evaluates under chronological splits without purging, embargo, multiple-testing correction, or backtest-overfitting checks.
+
+
+\subsection{Bitcoin Price Prediction with Machine Learning}\label{subsec:lit_btc}
+
+\subsubsection{Market efficiency and technical trading rules in cryptocurrency}\label{subsubsec:btc_emh}
+
+The Efficient Market Hypothesis \citep{fama_1970} posits that asset prices fully reflect available information, so past-price signals should carry no exploitable predictive content in an efficient market. \citet{brock_lakonishok_lebaron_1992} provided the seminal empirical test of this position for technical trading rules, applying moving-average and trading-range-break strategies to 90 years of Dow Jones Industrial Average data and finding that the rules generated returns inconsistent with the random-walk null under bootstrap inference. Their methodology (a broad rule universe evaluated against a resampled null distribution) established the empirical template that cryptocurrency researchers extended to Bitcoin from 2016 onwards, once its price history had accumulated enough observations to support the same tests.
+
+\citet{urquhart_2016} conducted the first formal weak-form efficiency test on Bitcoin, applying autocorrelation, unit-root, non-linearity, and long-memory tests to daily returns from 2010 to 2016. The random-walk null was rejected across the full sample, though the second subperiod showed some evidence of efficiency, opening a research programme on how Bitcoin's informational efficiency evolves over time. The subsequent literature is surveyed comprehensively in \citet{bariviera_merediz_sola_2021}, which converges on an adaptive-efficiency framing: Bitcoin's departures from efficiency are largest in its early years and narrow as trading volume, exchange coverage, and institutional participation grow, with the specific empirical verdict conditional on the test choice and sample window.
+
+The natural companion question, whether the residual inefficiencies translate into net-of-costs profits, was addressed comprehensively by \citet{hudson_urquhart_2021}. Following the Brock et al. tradition, they evaluated nearly 15{,}000 technical trading rules from five rule families on two Bitcoin markets and three other cryptocurrencies, applying multiple-hypothesis-testing corrections to protect against data snooping. Their in-sample results showed significant predictive power across all rule classes, with estimated breakeven transaction costs well above prevailing exchange fees. In the out-of-sample analysis, however, no predictability survived on the two Bitcoin markets, though it persisted for the three other cryptocurrencies. Their finding provides an informative benchmark for this thesis: even a data-snooping-corrected exhaustive search over technical rules did not identify an out-of-sample tradable edge on Bitcoin, which sets the context in which the six ML architectures compared in Chapter~4 are evaluated. The framing that this thesis adopts is therefore not that predictability is absent, but that identifying it requires the evaluation discipline introduced in Section~\ref{subsec:lit_afml}.
+
+
+\subsubsection{Technical analysis and ML for BTC}\label{subsubsec:btc_ta}
+
+\citet{mate_confluence_2024} provide the most directly relevant precedent for the technical-indicator portion of this thesis's feature set. They train four machine-learning models (Artificial Neural Network (ANN), Convolutional Neural Network combined with LSTM (CNN-LSTM), Support Vector Machine (SVM), Random Forest) on 27 technical indicators to classify BTC daily direction, reporting accuracies of 81 to 82\%. Two of their findings carry into the design choices made here: the Price Rate of Change (ROC) emerges among the top feature-importance contributors, justifying the inclusion of ROC in this thesis's 25-indicator set with the 14-day window calibrated separately, and the four-model comparison shows that multi-indicator strategies consistently outperform single-indicator rules, justifying engineering an indicator universe rather than committing to one canonical signal. The evaluation setup is the standard ML protocol at the time of publication: standard train-test splits with fixed-horizon labels (which assign $+1$ or $-1$ based purely on whether the price is up or down a fixed number of days ahead), no purging or embargo, and equal sample weights. Under the AFML evaluation protocol adopted in this thesis, headline accuracies from such setups sit on a different evaluation basis and are not directly comparable to those reported in Chapter~4, a distinction returned to at the literature level in Section~\ref{subsubsec:btc_weaknesses}.
+
+
+\subsubsection{Deep learning for BTC direction}\label{subsubsec:btc_dl}
+
+\citet{omole_enke_2024} target the same problem as this thesis: predicting the direction of BTC with a deep-learning classifier. They compare CNN-LSTM, Long- and Short-term Time-series Network (LSTNet), and Temporal Convolutional Network (TCN) architectures on on-chain blockchain indicators, with three feature-selection algorithms (Boruta, genetic algorithm, LightGBM) addressing the curse of dimensionality. Their best configuration (Boruta + CNN-LSTM) reaches 82.44\% test accuracy on a fixed-horizon binary label, and backtested trading on these predictions reports annualised returns in the thousands of percent. The evaluation follows the standard ML protocol of the crypto-DL literature: fixed-horizon labels with no CUSUM event filtering, chronological split without purging or embargo, and equal sample weights. Under the AFML protocol adopted in this thesis, such setups produce accuracy and backtest-return figures that are not directly comparable to those reported in Chapter~4 (Section~\ref{subsubsec:btc_weaknesses}).
+
+
+\subsubsection{Crypto-DL surveys and selective abstention}\label{subsubsec:btc_dl_landscape}
+
+Beyond the closely related work, the broader crypto deep-learning landscape contains dozens of further studies surveyed in recent reviews. \citet{wu_crypto_dl_review_2024} compare seven architectures (Recurrent Neural Network (RNN), LSTM, bidirectional LSTM, Gated Recurrent Unit (GRU), 1D-CNN, TCN, Transformer) on Bitcoin, Ethereum, Litecoin, and Ripple across pre-COVID and COVID windows; \citet{bourday_crypto_dl_2024} survey hybrid Transformer-plus-ML approaches with similar coverage. Both document the same recurring characteristics of the field: small datasets, evaluation on train-set metrics, backtest returns reported without transaction costs or slippage, limited use of risk-adjusted performance metrics, and diverse evaluation protocols across studies. Each of these characteristics is addressed by a specific AFML correction, and their prevalence in the literature explains why this thesis treats the 80 to 90 percent accuracy band cited in Section~\ref{subsec:objectives} as a literature-level rather than a model-level pattern.
+
+A separate strand argues that, in noisy financial regimes, a model should be allowed to skip predictions on observations where it lacks confidence rather than being forced to make a prediction on every observation. \citet{nabar_shroff_2023} train cascaded classifiers that decline to predict on observations where the model's Gini impurity exceeds a confidence threshold, reporting that the selective predictions achieve higher accuracy and higher risk-adjusted returns at the cost of lower support. The principle directly motivates the bet-sizing threshold this thesis adopts in Section~\ref{subsubsec:trading_simulation}: predictions with calibrated probability near 0.5 produce a bet size near zero, which is structural abstention. The architectures differ (one classifier with continuous bet-sizing rather than a cascade of selective classifiers), but the insight is the same: a model that abstains when its confidence is low outperforms one that predicts on every observation.
+
+
+\subsubsection{Evaluation conventions in the literature}\label{subsubsec:btc_weaknesses}
+
+The work surveyed in Sections~\ref{subsubsec:btc_ta} through \ref{subsubsec:btc_dl_landscape} shares a recurring set of evaluation conventions that differ from the AFML protocol adopted here in five specific ways: (i) chronological splits without purging or embargo; (ii) fixed-horizon labelling at $t+1$ rather than triple-barrier labelling; (iii) equal sample weights across observations rather than uniqueness-weighted sample weights; (iv) accuracy reported without class-balance or economic-significance adjustment; and (v) no multiple-testing correction for selected Sharpe ratios. Under the AFML framework surveyed next, headline accuracies from these conventions sit on a different evaluation basis and are not directly comparable to results reported under AFML evaluation.
+
+
+\subsection{The AFML Methodology}\label{subsec:lit_afml}
+
+\subsubsection{Motivation}\label{subsubsec:afml_motivation}
+
+The five conventions synthesised in Section~\ref{subsubsec:btc_weaknesses} are not isolated to any single paper but recur across the broader ML-in-finance tradition. \citet{lopez_de_prado_2018} proposes an asset-agnostic framework that treats financial ML as a methodology-first discipline, motivated by structural features of financial time series (label overlap, non-stationarity, selection bias in strategy comparison) that general-purpose ML protocols do not accommodate by default. The components fall into two groups: data-side corrections that change how the training tuples $(X, y, w, t_1)$ are constructed (Section~\ref{subsubsec:afml_data_side}), and evaluation-side corrections that change how cross-validation and reported performance are computed in the presence of multiple-testing and overfitting risks (Section~\ref{subsubsec:afml_eval_side}).
+
+
+\subsubsection{Data-side corrections}\label{subsubsec:afml_data_side}
+
+The CUSUM event filter reduces the training set to informationally meaningful events. It tracks a cumulative deviation and triggers whenever the deviation crosses a volatility-calibrated threshold, resetting after each trigger \citep[Snippet 2.4]{lopez_de_prado_2018}. Quiet observations are discarded; the classifier sees only bars where the series has moved meaningfully.
+
+Triple-barrier labelling replaces fixed-horizon labels with a rule that reflects actual trading outcomes. Each event is followed by three barriers (upper take-profit, lower stop-loss, vertical time limit), and the label is whichever barrier is touched first. The resolution timestamp $t_1$ on each event lets downstream purging identify training observations whose labels overlap the test period.
+
+Sample weights compensate for the redundancy that overlapping labels introduce. When two events fire close enough in time that their barrier windows share calendar days, the realised returns over those shared days are mechanically correlated, so the two events are not independent observations. AFML's weights combine three components: a uniqueness factor that discounts events whose return windows overlap concurrent labels, a return-attribution factor that emphasises events with larger absolute returns, and an optional time-decay factor for older observations.
+
+Fractional differentiation addresses a stationarity-versus-memory dilemma: integer differencing achieves stationarity but destroys long memory, while price levels preserve memory but are non-stationary. Fixed-width Window Fractional Differentiation (FFD) finds the minimum exponent $d^* \in \,]0, 1[$ that achieves stationarity under an Augmented Dickey-Fuller (ADF) test while preserving as much memory as possible, computed via a fixed-width window. In this thesis $d^*$ is estimated per fold on training data only, inside the CPCV loop.
+
+
+\subsubsection{Evaluation-side corrections}\label{subsubsec:afml_eval_side}
+
+Combinatorial Purged Cross-Validation (CPCV) replaces standard k-fold cross-validation, which is invalid for financial ML because overlapping labels leak across folds. CPCV partitions the data into $N$ contiguous groups, selects $k$ as the test set, and yields $\binom{N}{k}$ splits and $\binom{N-1}{k-1}$ backtest paths. Purging removes training observations whose labels overlap the test period under three sufficient conditions \citep[Ch.~7]{lopez_de_prado_2018}, and an embargo removes a buffer of bars after each test group to prevent serial-correlation leakage. The output is a matrix of out-of-sample predictions over multiple paths, enabling distribution-level analysis of the Sharpe ratio. The Sharpe ratio, defined as a strategy's mean return divided by the standard deviation of its returns \citep{sharpe_1966}, is the canonical risk-adjusted performance metric in finance.
+
+The Deflated Sharpe Ratio (DSR) corrects observed Sharpe ratios for the fact that the maximum across many trials is systematically higher than a single pre-registered Sharpe. DSR deflates for selection bias across $n_{\text{trials}}$ configurations and for non-normal returns, whose negative skewness and excess kurtosis inflate naive estimates. A DSR above 0.95 indicates a result that survives multiple-testing correction at the 5\% level. The Probability of Backtest Overfitting (PBO) is computed via combinatorially symmetric cross-validation. The procedure repeatedly splits the backtest paths into in-sample and out-of-sample halves and checks whether the in-sample best underperforms the out-of-sample median. A PBO near zero means in-sample selection is reliable; a PBO above 0.5 means selection is adversarial, with the in-sample best systematically losing out-of-sample.
+
+
+\subsubsection{AFML in practice and the fitting-scheme finding}\label{subsubsec:afml_practice_gap}
+
+\citet{slepaczuk_bieganowski_2024} apply FFD and triple-barrier labelling to supervised autoencoders on BTC, ETH, and LTC with walk-forward $d^*$ estimation, reporting that the data-side AFML corrections transfer to crypto and improve risk-adjusted returns. The evaluation setup differs from this thesis on the axis identified in Section~\ref{subsubsec:btc_dl}: walk-forward splits rather than CPCV, and neither DSR nor PBO reported. Their contribution validates the data-side corrections for crypto; the evaluation-side corrections remain to be tested.
+
+\citet{chassot_audrino_2026} show that a properly fitted linear Heterogeneous Autoregressive (HAR) model \citep{corsi_2009} outperforms Random Forest, lasso, gradient-boosted trees, and a feed-forward neural network across 1,445 US equities for realised volatility forecasting, tracing prior reports of ML superiority to suboptimal fitting schemes that handicapped the baseline. The finding directly anticipates this thesis's Chapter~4: under proper AFML evaluation all six models sit well below the DSR significance threshold, the outcome Chassot and Audrino predict for a weak-signal regime where the fitting scheme has been done correctly.
+
+No surveyed study combines AFML and KANs, and none reports DSR and PBO for KAN-based predictions. This thesis is the first to apply the complete pipeline to BTC direction prediction with a KAN classifier and five baselines.

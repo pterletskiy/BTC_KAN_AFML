@@ -1,0 +1,85 @@
+\newpage
+\section{Results}\label{sec:results}
+
+Each model is trained with five seeds per CPCV split, producing 840 prediction entries ($28 \text{ splits} \times 6 \text{ models} \times 5 \text{ seeds}$), with the path-level Sharpe matrix averaged over the five seeds per (model, split) cell before entering the DSR and PBO computations of Section 3.10.3. Interpretation against the research questions is held to Chapter 5. Three supporting figures (the path-Sharpe boxplot, the confusion matrices, and the bet-size histograms) are provided in \autoref{app:supp_results}.
+
+
+\subsection{Model Comparison}\label{subsec:results_comparison}
+
+Table~\ref{tab:model_comparison} reports the six trained models plus buy-and-hold as a naive baseline, ranked by median path Sharpe over the seven CPCV backtest paths, with the standard deviation of the path Sharpe distribution as a tiebreaker in ascending order.
+
+\begin{table}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+Model & Med Sharpe & Sharpe CI & Std SR & DSR & Med Sortino & Mean F1 & Mean AUC & Med Max DD & Med Cum Ret \\
+\midrule
+Buy-and-Hold        &  2.2722 & $]1.8903, 2.4685[$   & 0.5768 & n/a    &  2.3390 & n/a    & n/a    & $-0.9998$ & $45{,}896.39$ \\
+KAN                 &  0.5588 & $]-0.4677, 1.1607[$  & 0.7539 & 0.2470 &  0.3211 & 0.4070 & 0.5103 & $-0.2466$ & $0.0841$ \\
+AR Logistic         &  0.3806 & $]-0.0544, 1.2101[$  & 0.7355 & 0.1896 &  0.3894 & 0.4666 & 0.5204 & $-0.2739$ & $0.0852$ \\
+LSTM                &  0.1541 & $]-0.3902, 0.7032[$  & 0.6388 & 0.1291 &  0.1189 & 0.4238 & 0.5105 & $-0.2986$ & $0.0102$ \\
+XGBoost             &  0.0493 & $]-0.0638, 0.2514[$  & 0.5830 & 0.1065 &  0.0259 & 0.4271 & 0.5008 & $-0.2696$ & $-0.0027$ \\
+Random Forest       &  0.0287 & $]-0.6165, 0.8834[$  & 0.7533 & 0.1023 &  0.0257 & 0.4390 & 0.5166 & $-0.3775$ & $-0.0579$ \\
+Logistic Regression & $-0.2173$ & $]-0.7321, 2.0594[$  & 1.5969 & 0.0618 & $-0.1872$ & 0.4355 & 0.5156 & $-0.3874$ & $-0.0797$ \\
+\bottomrule
+\end{tabular}}
+\caption{Model comparison ranked by median path Sharpe. DSR is computed against $n_{\text{trials}} = 6$ and is undefined for buy-and-hold.}
+\label{tab:model_comparison}
+\end{table}
+
+Three patterns stand out. The top three DSRs (KAN 0.2470, AR Logistic 0.1896, LSTM 0.1291) span 0.12, with smaller gaps to XGBoost (0.1065), Random Forest (0.1023), and Logistic Regression (0.0618).
+
+All mean AUCs sit in the 0.5008 to 0.5204 band. Models are nearly indistinguishable at the classification level, and bet sizing and the dual-weighted loss translate the small classification edges into the wider Sharpe spread.
+
+Six of the seven bootstrap 95\% CIs cross zero, and only buy-and-hold stays strictly positive (Table~\ref{tab:model_comparison}). The full path-level Sharpe distributions are visualised in \phantomsection\label{ref:sharpe_boxplot_call}\autoref{fig:sharpe_boxplot}.
+
+Buy-and-hold posts the highest median Sharpe (2.2722) and the highest cumulative return ($45{,}896\times$ from compounding the +1 bet across all 1,168 TBL events; the simple HODL return over the labelling window is roughly $306\times$, with BTC going from approximately \$258 on 2015-08-08, peaking near \$120,000 in October 2025, and finishing at roughly \$79,000 on 2026-05-02). The compounded-TBL figure exceeds the simple-HODL figure because TBL event windows overlap, so the same calendar return is counted across multiple events. Trained models trade return for downside protection: KAN's cumulative return of 0.0841 is roughly six orders of magnitude smaller than buy-and-hold's, but its maximum drawdown of $-0.2466$ is four times shallower.
+
+
+\subsection{Classification Metrics}\label{subsec:results_classification}
+
+Per-split F1 ranges narrowly from 0.4070 (KAN) to 0.4666 (AR Logistic). Pooled AUC across all 28 splits sits in the 0.4942 to 0.5149 band. This pooled-across-splits AUC differs slightly from the per-path Mean AUC reported in Table~\ref{tab:model_comparison} because the two metrics aggregate predictions differently. XGBoost's pooled AUC (0.4942) sits below 0.5. The confusion matrices pooled across all splits and seed-averaged at the predicted-probability stage are provided in \phantomsection\label{ref:confusion_matrices_call}\autoref{fig:confusion_matrices}.
+
+Two pairs clear $\alpha = 0.05$. Random Forest versus XGBoost at $z = 2.1466$ ($p = 0.0318$) and AR Logistic versus XGBoost at $z = 2.0263$ ($p = 0.0427$). Both are significant in the direction of XGBoost being the lower-AUC half. The full 15-pair table sits in Appendix~\ref{app:supp_results}, \phantomsection\label{ref:delong_pairs_full_call}Table~\ref{tab:delong_pairs_full}.
+
+The thirteen non-significant pairs include all KAN comparisons, with the closest non-significant pair on the KAN side being KAN versus XGBoost at $z = -1.6872$ ($p = 0.0916$). The entire AUC range across all six models is 0.021, comparable to the seed-to-seed variation, and both significant pairs lean on the XGBoost lower tail. The practical reading is that XGBoost's AUC is significantly lower than the top two trained models, not that arbitrary pairs of trained models differ at the classification level.
+
+
+\subsection{Financial Performance}\label{subsec:results_financial}
+
+The equity curves of the six trained models, with each model's seven paths shown in light colours and the median path highlighted in black, are presented in \phantomsection\label{ref:equity_curves_call}\autoref{fig:equity_curves} of Appendix~\ref{app:supp_results}. The vertical axis is logarithmic so that the relative behaviour of paths in the $0.6\times$ to $3\times$ band of cumulative return is readable.
+
+The path-level Sharpe distributions underlying Table~\ref{tab:model_comparison} produce the bootstrap CIs reported there. Sortino reorders the trained models slightly: AR Logistic (0.3894) leads, followed by KAN (0.3211), LSTM (0.1189), XGBoost (0.0259), Random Forest (0.0257), and Logistic Regression ($-0.1872$). AR Logistic's Sortino edge over KAN despite a lower Sharpe suggests its path-Sharpe distribution loads more variance on the upside than on the downside. Calmar (Sharpe over maximum drawdown) compresses the trained models into a narrow $-0.04$ to $+0.08$ band, with KAN at 0.0820 leading among trained models.
+
+A calibration audit on the test-fold predictions checks each model's mean $P(\text{Up})$ against the empirical base rate of 0.5685. Five of six trained models sit within the $\pm 0.03$ tolerance set on the holdout; XGBoost narrowly misses ($\Delta = -0.0371$). KAN's mean $P(\text{Up})$ is 0.5421 ($\Delta = -0.0263$), well within tolerance. The full per-model audit is in \phantomsection\label{ref:calibration_audit_call}Table~\ref{tab:calibration_audit} of Appendix~\ref{app:supp_results}. The per-fold calibrator of Section 3.9 therefore delivers well-calibrated probabilities, on which the bet-sizing mechanism below operates.
+
+The bet-sizing mechanism of Section 3.10.1 turns calibrated probabilities into discretised bets on $\{-0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75\}$, with probabilities near 0.5 producing zero bets (structural abstention). KAN and XGBoost abstain on roughly 70\% of events (70.1\% and 73.1\% respectively), against the 50\% to 54\% band for the other four trained models. KAN also carries the most pronounced long bias on non-abstained bets at 89.6\%, against Logistic Regression's milder 73.3\% long, 26.7\% short, the least directionally biased among trained models. The combination of high abstention and strong long bias for KAN is consistent with the bet-sizing-on-calibrated-probabilities reading: KAN takes few bets but takes them with directional confidence, and this discipline aligns with KAN's small median maximum drawdown ($-0.2466$, the shallowest among trained models, with XGBoost's $-0.2696$ the second-shallowest, Table~\ref{tab:model_comparison}). The full per-model bet-size distribution is in \phantomsection\label{ref:bet_size_call}Table~\ref{tab:bet_size} of Appendix~\ref{app:supp_results}, with the per-model histograms in \phantomsection\label{ref:bet_size_dist_call}\autoref{fig:bet_size_dist}.
+
+The Probability of Backtest Overfitting evaluates to $\text{PBO} = 0.657$ ($23 / 35$ IS/OOS partitions), placing the cross-section in the adversarial regime: in roughly two of three partitions, the model that wins on three IS paths underperforms the OOS median on the complementary four paths. The IS ranking is anti-informative.
+
+Re-running PBO on the $5 \times 7$ Sharpe matrix with one model dropped at a time identifies Random Forest as the anchor (its exclusion leaves PBO unchanged at 0.657) and Logistic Regression as the largest destabiliser (its exclusion drops PBO to 0.371, $\Delta = -0.286$). The IS/OOS rotation is therefore concentrated in the top five trained models. The full leave-one-out PBO table is in \phantomsection\label{ref:loo_pbo_call}Table~\ref{tab:loo_pbo} of Appendix~\ref{app:supp_results}.
+
+The joint reading is consistent. No trained model achieves predictive ability that survives multiple-testing correction (top DSR 0.2470 well below 0.95), the in-sample ranking of the six-model cross-section is anti-informative ($\text{PBO} = 0.657 > 0.5$), six of seven bootstrap CIs on the median Sharpe cross zero, and only buy-and-hold posts a strict-positive interval over the labelling window.
+
+
+\subsection{Feature Selection Stability and FFD Stability}\label{subsec:results_features}
+
+Across the 28 CPCV folds, no feature achieves stable selection (defined as more than 80\% of folds). Two features reach the moderate-stability bucket of 50\% to 80\%: the ETH/BTC ratio at 57.1\% (16 of 28 folds) and log returns at lag 6 at 53.6\% (15 of 28 folds). The third-highest is the 30-day natural gas return at 39\%, the third feature used in symbolic extraction (Section 4.6). No on-chain feature reaches 50\% selection frequency, so the Q1 on-chain free-lunch hypothesis fails at the cross-fold stability level under the daily-data design of this thesis. The intraday case, where on-chain indicators may carry more signal, is left to future work (Section 5.3, L1).
+
+ATR is the only feature subject to fractional differentiation, the only column flagged non-stationary by the cross-fold ADF audit at $\alpha = 0.05$. Across 140 per-fold $d^{\ast}$ estimates (28 folds $\times$ 5 seeds), the mean is 0.198 and the standard deviation is 0.085, with $d^{\ast} \in [0.050, 0.400]$. The $\text{std}(d^{\ast}) < 0.1$ result indicates a consistent stationarity structure across time periods, validating the FFD-only-on-ATR design choice of Section 3.6.1. The contrast between high feature-selection turnover and low FFD-$d^{\ast}$ turnover indicates that the noise-to-signal ratio for individual features changes across regimes while the underlying time-series property motivating fractional differentiation is stable.
+
+
+\subsection{Symbolic Extraction Results}\label{subsec:results_symbolic}
+
+The symbolic-extraction pipeline runs on split 27, whose test set covers the most recent CPCV partition and is therefore closest to a deployment scenario. The KAN F1 on this fold is 0.3232 averaged over five seeds, below KAN's cross-split mean F1 of 0.4070. Input dimensionality is reduced to the top three features by 28-fold MDA stability selection: the ETH/BTC ratio (57\%), log returns at lag 6 (54\%), and the 30-day natural gas return (39\%). The training sample is 540 events (the 80\% portion of the 675 events that survive split 27's preprocessing) and the validation sample is 135 events. The data-aware fallback determines the architecture (the symbolic-extraction stage receives only the CPCV predictions and split metadata, not the per-fold tuned hyperparameters), producing the architecture $[3, 3, 2]$ (three input features, three hidden units, two output classes) with 15 active edges (samples-per-parameter ratio $6.0\times$). The samples-per-parameter floor of 5 sets the hidden width at 3 for this fold's 540 training events, clamped against the CPCV-side default hidden width of 5.
+
+Both Phase 1 (validation accuracy 0.4815 against threshold 0.5693) and the pre-prune gate (0.4667 against 0.5359) fail. The pre-prune edge analysis at importance threshold 0.01 finds 15 of 15 edges active, so no edges are pruned. All 15 surviving edges clear the $R^2$ threshold of 0.30 under symbolification, giving a 100\% symbolification rate. The $R^2$ distribution has minimum 0.734, median 0.990, and maximum 1.000, with the top five edges all posting $R^2 > 0.99$ under the $\sin$ primitive.
+
+Algebraic simplification converts the post-fine-tune logits into a closed-form decision function with rational coefficients in the three surviving features. The full expression and its inner-argument decomposition are in Equation~\ref{eq:decision_function} of Appendix~\ref{app:symbolic}. The implied probability of an upward move is $P(\text{Up} \mid x) = \sigma(\text{decision}(x))$ where $\sigma$ is the standard logistic.
+
+Six primitives appear: $\sin$, $\cos$, $\tanh$, $x^2$, $x^3$, and $x^4$, distributed across four outer wrappers (squared, $\sin$, $\cos$, $\tanh$). The ETH/BTC ratio and the 30-day natural gas return appear in all four outer terms, log returns at lag 6 in three. With $\lvert x \rvert$ absent, the formula is everywhere-differentiable at the dataset median.
+
+Pre-symbolic accuracy on the test fold is 46.67\% and post-symbolic is 51.85\%, a 5.18 percentage-point gain, but neither figure exceeds the 56.85\% majority-class baseline, and the post-symbolic figure only marginally clears the 50\% baseline.
+
+The marginal effect of each surviving feature on $P(\text{Up})$ is plotted in \phantomsection\label{ref:marginal_effect_call}\autoref{fig:marginal_effect} of Appendix~\ref{app:symbolic}. A marginal-effect curve traces how the predicted upward-move probability changes as one feature varies across its observed range, with the other two held fixed at their dataset median, isolating the per-feature contribution to the decision function. The three curves show distinct functional shapes: a near-flat curve for the ETH/BTC ratio, indicating low marginal sensitivity at the median despite the feature appearing in all four outer terms of Equation~\ref{eq:decision_function}; a cyclic shape for log returns at lag 6, produced by the $\sin$ and $\cos$ primitives in the formula and yielding $P(\text{Up})$ crossings of the 0.5 line as the feature sweeps its range; and a monotonic sigmoid-like curve for the 30-day natural gas return, dominated by the bounded $\tanh$ primitive that saturates at the extremes. Per-sigma effects at the median are largest for log returns at lag 6 ($-0.4608$ on the logit, $-0.098$ linearised) via the quartic primitive in the first outer term, then the ETH/BTC ratio ($-0.2805$, $-0.060$), and smallest for the 30-day natural gas return ($+0.0838$, $+0.018$) despite its appearance in all four outer terms, since the bounded $\tanh$ and $x^3$ primitives saturate near the median (full sensitivity in \phantomsection\label{ref:sensitivity_call}Table~\ref{tab:sensitivity}).
