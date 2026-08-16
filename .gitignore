@@ -1,10 +1,10 @@
 # Models and Results Folders
 backup_old_version/
+cache/
 figures/
-new_version/cache/
-new_version/model/
-new_version/miscellaneous/
-new_version/presentation_report/miscellaneous/
+model/
+miscellaneous/
+presentation_report/miscellaneous/
 
 # Cache Files
 __pycache__/
