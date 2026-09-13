@@ -4,14 +4,11 @@
 **Defended:** 22 July 2026 — **Grade:** 19/20
 Petr Terletskiy, supervised by Prof. João Afonso Bastos
 
-This repository is the frozen reproducibility snapshot for the thesis. Every
+This repository is the reproducibility artifact for the thesis. Every
 number in Chapter 4 is reproducible from the code and configuration here.
 
 The full thesis PDF is at [`presentation_report/main.pdf`](presentation_report/main.pdf)
 (built from the LaTeX sources in `presentation_report/`).
-
-Active product-development work continues in a separate private repository and
-is not part of this snapshot.
 
 ---
 
